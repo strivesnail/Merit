@@ -1,0 +1,21 @@
+# Build artifacts
+diskann/build/
+**/build/
+*.o
+*.a
+
+# Datasets, indices, profiles, logs
+data/
+*.index
+*.u8bin
+*.fbin
+*.bin
+
+*.log
+nohup.out
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
