@@ -153,6 +153,8 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
                                                           const std::string &output_prefix, uint64_t rank_skip = 0,
                                                           bool unified_single_file = false, uint32_t k_hops = 2,
                                                           const std::string &layout = "node");
+    // Load existing sidecar from prefix_merit_dc.{data,nodes} without repacking.
+    DISKANN_DLLEXPORT int load_merit_disk_cache_from_prefix(const std::string &output_prefix);
     // Rebuild disk cache (batch eviction); evicted = nodes dropped vs previous map.
     DISKANN_DLLEXPORT int reload_merit_disk_cache(const std::string &profile_prefix, double base_ratio,
                                                   const std::string &output_prefix, uint64_t rank_skip,

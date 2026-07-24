@@ -63,7 +63,9 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
                       const bool merit_memory_runtime_admit = false,
                       const double merit_evict_memory_gb = 0.0, const double merit_evict_disk_ratio = 0.0,
                       const bool merit_unified_disk_cache = false, uint32_t merit_disk_cache_k_hops = 2,
-                      const std::string &merit_disk_cache_layout = "node")
+                      const std::string &merit_disk_cache_layout = "node",
+                      const std::string &merit_disk_cache_reuse_prefix = "",
+                      const std::string &dump_query_stats_path = "")
 {
     diskann::cout << "Search parameters: #threads: " << num_threads << ", ";
     if (beamwidth <= 0)
@@ -242,9 +244,18 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
             diskann::cout << "MERIT disk-cache: rank_skip=" << dc_rank_skip
                           << " (exclude memory-tier nodes from disk cache)." << std::endl;
         }
-        if (_pFlashIndex->build_and_load_merit_disk_cache(profile, dc_nodes, dc_out, dc_rank_skip,
-                                                          merit_unified_disk_cache, merit_disk_cache_k_hops,
-                                                          merit_disk_cache_layout) != 0)
+        if (!merit_disk_cache_reuse_prefix.empty())
+        {
+            diskann::cout << "MERIT disk-cache: reusing sidecar at prefix " << merit_disk_cache_reuse_prefix << std::endl;
+            if (_pFlashIndex->load_merit_disk_cache_from_prefix(merit_disk_cache_reuse_prefix) != 0)
+            {
+                diskann::cerr << "Failed to load MERIT disk cache from " << merit_disk_cache_reuse_prefix << std::endl;
+                return -1;
+            }
+        }
+        else if (_pFlashIndex->build_and_load_merit_disk_cache(profile, dc_nodes, dc_out, dc_rank_skip,
+                                                               merit_unified_disk_cache, merit_disk_cache_k_hops,
+                                                               merit_disk_cache_layout) != 0)
         {
             diskann::cerr << "Failed to build/load MERIT disk cache." << std::endl;
             return -1;
@@ -600,6 +611,25 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
                 diskann::cout << "      sector histogram written to " << hist_path << std::endl;
             }
         }
+        if (!dump_query_stats_path.empty())
+        {
+            std::ofstream qout(dump_query_stats_path);
+            if (qout.is_open())
+            {
+                qout << "query_id,total_us,io_us,cpu_us,n_ios,n_base_pages,n_sidecar_pages,n_merit_hits,"
+                        "n_disk_reads,n_sector_cache_hits,n_hops,max_sector_jump\n";
+                for (size_t qi = 0; qi < query_num; qi++)
+                {
+                    const auto &s = stats[qi];
+                    qout << qi << ',' << s.total_us << ',' << s.io_us << ',' << s.cpu_us << ',' << s.n_ios << ','
+                         << s.n_unique_sectors << ',' << s.n_unique_merit_sectors << ',' << s.n_merit_dc_hits << ','
+                         << s.n_disk_reads << ',' << s.n_sector_cache_hits << ',' << s.n_hops << ','
+                         << s.max_sector_jump << '\n';
+                }
+                qout.close();
+                diskann::cout << "      per-query stats written to " << dump_query_stats_path << std::endl;
+            }
+        }
         delete[] stats;
     }
 
@@ -668,6 +698,8 @@ int main(int argc, char **argv)
     bool merit_unified_disk_cache = false;
     uint32_t merit_disk_cache_k_hops = 2;
     std::string merit_disk_cache_layout = "node";
+    std::string merit_disk_cache_reuse_prefix;
+    std::string dump_query_stats_path;
     float fail_if_recall_below = 0.0f;
 
     po::options_description desc{
@@ -770,6 +802,12 @@ int main(int argc, char **argv)
         optional_configs.add_options()(
             "merit_disk_cache_layout", po::value<std::string>(&merit_disk_cache_layout)->default_value("node"),
             "MERIT disk sidecar packing: flat | node (hot-node k-hop) | edge (Jiang edge-importance packing).");
+        optional_configs.add_options()(
+            "merit_disk_cache_reuse_prefix", po::value<std::string>(&merit_disk_cache_reuse_prefix)->default_value(""),
+            "Load existing sidecar from prefix_merit_dc.{data,nodes} instead of repacking.");
+        optional_configs.add_options()(
+            "dump_query_stats", po::value<std::string>(&dump_query_stats_path)->default_value(""),
+            "Write per-query QueryStats CSV after search (for tail-latency analysis).");
 
         // Merge required and optional parameters
         desc.add(required_configs).add(optional_configs);
@@ -858,7 +896,7 @@ int main(int argc, char **argv)
                     merit_memory_gb, merit_profile_prefix, merit_host_memory_gb, merit_memory_reserve_gb,
                     merit_disk_cache_ratio, merit_disk_cache_exclude_memory, merit_memory_runtime_admit,
                     merit_evict_memory_gb, merit_evict_disk_ratio, merit_unified_disk_cache, merit_disk_cache_k_hops,
-                    merit_disk_cache_layout);
+                    merit_disk_cache_layout, merit_disk_cache_reuse_prefix, dump_query_stats_path);
             else if (data_type == std::string("int8"))
                 return search_disk_index<int8_t, uint16_t>(
                     metric, index_path_prefix, result_path_prefix, query_file, gt_file, num_threads, K, W,
@@ -867,7 +905,7 @@ int main(int argc, char **argv)
                     merit_memory_gb, merit_profile_prefix, merit_host_memory_gb, merit_memory_reserve_gb,
                     merit_disk_cache_ratio, merit_disk_cache_exclude_memory, merit_memory_runtime_admit,
                     merit_evict_memory_gb, merit_evict_disk_ratio, merit_unified_disk_cache, merit_disk_cache_k_hops,
-                    merit_disk_cache_layout);
+                    merit_disk_cache_layout, merit_disk_cache_reuse_prefix, dump_query_stats_path);
             else if (data_type == std::string("uint8"))
                 return search_disk_index<uint8_t, uint16_t>(
                     metric, index_path_prefix, result_path_prefix, query_file, gt_file, num_threads, K, W,
@@ -876,7 +914,7 @@ int main(int argc, char **argv)
                     merit_memory_gb, merit_profile_prefix, merit_host_memory_gb, merit_memory_reserve_gb,
                     merit_disk_cache_ratio, merit_disk_cache_exclude_memory, merit_memory_runtime_admit,
                     merit_evict_memory_gb, merit_evict_disk_ratio, merit_unified_disk_cache, merit_disk_cache_k_hops,
-                    merit_disk_cache_layout);
+                    merit_disk_cache_layout, merit_disk_cache_reuse_prefix, dump_query_stats_path);
             else
             {
                 std::cerr << "Unsupported data type. Use float or int8 or uint8" << std::endl;
@@ -894,7 +932,7 @@ int main(int argc, char **argv)
                                                 merit_host_memory_gb, merit_memory_reserve_gb, merit_disk_cache_ratio,
                                                 merit_disk_cache_exclude_memory, merit_memory_runtime_admit,
                                                 merit_evict_memory_gb, merit_evict_disk_ratio, merit_unified_disk_cache, merit_disk_cache_k_hops,
-                    merit_disk_cache_layout);
+                    merit_disk_cache_layout, merit_disk_cache_reuse_prefix, dump_query_stats_path);
             else if (data_type == std::string("int8"))
                 return search_disk_index<int8_t>(metric, index_path_prefix, result_path_prefix, query_file, gt_file,
                                                  num_threads, K, W, num_nodes_to_cache, search_io_limit, Lvec,
@@ -904,7 +942,8 @@ int main(int argc, char **argv)
                                                  merit_host_memory_gb, merit_memory_reserve_gb, merit_disk_cache_ratio,
                                                  merit_disk_cache_exclude_memory, merit_memory_runtime_admit,
                                                  merit_evict_memory_gb, merit_evict_disk_ratio, merit_unified_disk_cache,
-                                                 merit_disk_cache_k_hops, merit_disk_cache_layout);
+                                                 merit_disk_cache_k_hops, merit_disk_cache_layout,
+                                                 merit_disk_cache_reuse_prefix, dump_query_stats_path);
             else if (data_type == std::string("uint8"))
                 return search_disk_index<uint8_t>(metric, index_path_prefix, result_path_prefix, query_file, gt_file,
                                                   num_threads, K, W, num_nodes_to_cache, search_io_limit, Lvec,
@@ -914,7 +953,8 @@ int main(int argc, char **argv)
                                                   merit_host_memory_gb, merit_memory_reserve_gb, merit_disk_cache_ratio,
                                                   merit_disk_cache_exclude_memory, merit_memory_runtime_admit,
                                                   merit_evict_memory_gb, merit_evict_disk_ratio, merit_unified_disk_cache,
-                                                  merit_disk_cache_k_hops, merit_disk_cache_layout);
+                                                  merit_disk_cache_k_hops, merit_disk_cache_layout,
+                                                 merit_disk_cache_reuse_prefix, dump_query_stats_path);
             else
             {
                 std::cerr << "Unsupported data type. Use float or int8 or uint8" << std::endl;

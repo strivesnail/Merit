@@ -2723,6 +2723,82 @@ inline int copy_file_binary(const std::string &src, const std::string &dst)
 } // namespace
 
 template <typename T, typename LabelT>
+int PQFlashIndex<T, LabelT>::load_merit_disk_cache_from_prefix(const std::string &output_prefix)
+{
+    if (_merit_disk_reader)
+    {
+        _merit_disk_reader->close();
+        _merit_disk_reader.reset();
+    }
+    _merit_unified_disk = false;
+    _merit_region_byte_offset = 0;
+    _merit_dc_map.clear();
+    _merit_dc_num_nodes = 0;
+    _merit_dc_path.clear();
+
+    const std::string data_path = output_prefix + "_merit_dc.data";
+    const std::string nodes_path = output_prefix + "_merit_dc.nodes";
+    if (!file_exists(data_path) || !file_exists(nodes_path))
+    {
+        diskann::cerr << "MERIT disk-cache reuse: missing " << data_path << " or " << nodes_path << std::endl;
+        return -1;
+    }
+
+    uint32_t *nodes = nullptr;
+    size_t npts = 0, nd = 0;
+    diskann::load_bin<uint32_t>(nodes_path, nodes, npts, nd);
+    std::vector<uint32_t> node_list(nodes, nodes + npts);
+    delete[] nodes;
+
+    if (node_list.empty() || _nnodes_per_sector == 0)
+    {
+        diskann::cerr << "MERIT disk-cache reuse: empty node list or nnodes_per_sector=0." << std::endl;
+        return -1;
+    }
+
+    const uint64_t nps = _nnodes_per_sector;
+    uint64_t slot_in_sector = 0;
+    uint32_t cur_sector = 0;
+    _merit_dc_map.reserve(node_list.size());
+    for (uint32_t id : node_list)
+    {
+        MeritDiskLoc loc;
+        loc.sector = cur_sector;
+        loc.slot = static_cast<uint16_t>(slot_in_sector);
+        loc.nsectors = 1;
+        _merit_dc_map[id] = loc;
+        slot_in_sector++;
+        if (slot_in_sector == nps)
+        {
+            slot_in_sector = 0;
+            cur_sector++;
+        }
+    }
+
+    _merit_dc_path = data_path;
+    _merit_dc_num_nodes = node_list.size();
+
+#ifndef _WINDOWS
+    _merit_disk_reader.reset(new LinuxAlignedFileReader());
+#else
+    _merit_disk_reader.reset(new WindowsAlignedFileReader());
+#endif
+    _merit_disk_reader->open(data_path);
+#pragma omp parallel for num_threads((int)_max_nthreads)
+    for (int64_t thread = 0; thread < (int64_t)_max_nthreads; thread++)
+    {
+#pragma omp critical
+        {
+            _merit_disk_reader->register_thread();
+        }
+    }
+
+    diskann::cout << "MERIT disk-cache loaded (reuse): " << _merit_dc_num_nodes << " nodes -> " << data_path
+                  << " (map size=" << _merit_dc_map.size() << ")" << std::endl;
+    return 0;
+}
+
+template <typename T, typename LabelT>
 int PQFlashIndex<T, LabelT>::build_and_load_merit_disk_cache(const std::string &profile_prefix, uint64_t max_nodes,
                                                              const std::string &output_prefix, uint64_t rank_skip,
                                                              bool unified_single_file, uint32_t k_hops,
