@@ -2381,11 +2381,16 @@ int PQFlashIndex<T, LabelT>::build_merit_memory_node_list(const std::string &pro
 template <typename T, typename LabelT>
 int PQFlashIndex<T, LabelT>::build_merit_disk_node_list(const std::string &profile_prefix, uint64_t max_nodes,
                                                         uint64_t memory_tier_exclude_count, uint32_t k_hops,
+                                                        const std::string &layout_in,
                                                         std::vector<uint32_t> &node_list) const
 {
     node_list.clear();
     if (max_nodes == 0)
         return 0;
+
+    std::string layout = normalize_disk_cache_layout(layout_in);
+    if (layout.empty())
+        layout = (k_hops == 0) ? "flat" : "node";
 
     std::vector<uint64_t> node_expand;
     std::vector<std::tuple<uint32_t, uint32_t, uint64_t>> edges;
@@ -2422,7 +2427,7 @@ int PQFlashIndex<T, LabelT>::build_merit_disk_node_list(const std::string &profi
         exclude_ids.insert(mem_tier.begin(), mem_tier.end());
     }
 
-    if (k_hops == 0)
+    if (layout == "flat" || k_hops == 0)
     {
         std::vector<uint32_t> order(_num_points);
         std::iota(order.begin(), order.end(), 0);
@@ -2461,10 +2466,21 @@ int PQFlashIndex<T, LabelT>::build_merit_disk_node_list(const std::string &profi
         return -1;
     }
 
+    if (layout == "edge" || layout == "jiang")
+    {
+        if (compute_jiang_disk_cache_list(graph, node_expand, edges, nps, k_hops, max_nodes, exclude_ids, node_list) !=
+            0)
+            return -1;
+        diskann::cout << "MERIT disk-cache node list: edge-importance packing (Jiang relayout), k_hops=" << k_hops
+                      << ", selected " << node_list.size() << " nodes (exclude memory-tier=" << exclude_ids.size()
+                      << ")." << std::endl;
+        return 0;
+    }
+
     if (compute_hot_node_disk_cache_list(graph, node_expand, nps, k_hops, max_nodes, exclude_ids, node_list) != 0)
         return -1;
 
-    diskann::cout << "MERIT disk-cache node list: hot-node k-hop packing, k_hops=" << k_hops << ", selected "
+    diskann::cout << "MERIT disk-cache node list: hot-node path packing (avg node_expand), k_hops=" << k_hops << ", selected "
                   << node_list.size() << " nodes (exclude memory-tier=" << exclude_ids.size() << ")." << std::endl;
     return 0;
 }
@@ -2660,7 +2676,8 @@ template <typename T, typename LabelT>
 int PQFlashIndex<T, LabelT>::reload_merit_disk_cache(const std::string &profile_prefix, double base_ratio,
                                                      const std::string &output_prefix, uint64_t rank_skip,
                                                      uint64_t &evicted_nodes, std::string &report,
-                                                     bool unified_single_file, uint32_t k_hops)
+                                                     bool unified_single_file, uint32_t k_hops,
+                                                     const std::string &layout)
 {
     evicted_nodes = 0;
     report.clear();
@@ -2671,7 +2688,7 @@ int PQFlashIndex<T, LabelT>::reload_merit_disk_cache(const std::string &profile_
         return -1;
 
     if (build_and_load_merit_disk_cache(profile_prefix, max_nodes, output_prefix, rank_skip, unified_single_file,
-                                        k_hops) != 0)
+                                        k_hops, layout) != 0)
         return -1;
 
     const uint64_t after = _merit_dc_map.size();
@@ -2708,7 +2725,8 @@ inline int copy_file_binary(const std::string &src, const std::string &dst)
 template <typename T, typename LabelT>
 int PQFlashIndex<T, LabelT>::build_and_load_merit_disk_cache(const std::string &profile_prefix, uint64_t max_nodes,
                                                              const std::string &output_prefix, uint64_t rank_skip,
-                                                             bool unified_single_file, uint32_t k_hops)
+                                                             bool unified_single_file, uint32_t k_hops,
+                                                             const std::string &layout)
 {
     if (_merit_disk_reader)
     {
@@ -2725,7 +2743,7 @@ int PQFlashIndex<T, LabelT>::build_and_load_merit_disk_cache(const std::string &
         return 0;
 
     std::vector<uint32_t> node_list;
-    if (build_merit_disk_node_list(profile_prefix, max_nodes, rank_skip, k_hops, node_list) != 0)
+    if (build_merit_disk_node_list(profile_prefix, max_nodes, rank_skip, k_hops, layout, node_list) != 0)
         return -1;
 
     const std::string data_path =

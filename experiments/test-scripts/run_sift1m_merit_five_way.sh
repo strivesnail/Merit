@@ -19,6 +19,7 @@ N_NODES="${N_NODES:-12843}"
 MEM_GB="${MEM_GB:-0.01}"
 DISK_RATIO="${DISK_RATIO:-0.1}"
 DISK_K_HOPS="${DISK_K_HOPS:-2}"
+DISK_LAYOUT="${DISK_LAYOUT:-node}"
 OUT_DIR="${OUT_DIR:-${DATA_DIR}/five_way_runs}"
 LOG="${LOG:-${DATA_DIR}/run_merit_five_way.log}"
 
@@ -46,7 +47,7 @@ mkdir -p "${OUT_DIR}"
 {
   echo "Five-way MERIT compare $(date -Is)"
   echo "query=${QUERY_FILE} profile=${PROFILE}"
-  echo "BFS N_NODES=${N_NODES} MEM_GB=${MEM_GB} DISK_RATIO=${DISK_RATIO} DISK_K_HOPS=${DISK_K_HOPS} L=${L} W=${W} threads=${THREADS}"
+  echo "BFS N_NODES=${N_NODES} MEM_GB=${MEM_GB} DISK_RATIO=${DISK_RATIO} DISK_K_HOPS=${DISK_K_HOPS} DISK_LAYOUT=${DISK_LAYOUT} L=${L} W=${W} threads=${THREADS}"
   echo ""
 
   run_case() {
@@ -73,13 +74,13 @@ mkdir -p "${OUT_DIR}"
   run_case disk01 \
     "${COMMON[@]}" --result_path "${OUT_DIR}/disk01" --num_nodes_to_cache 0 \
     --merit_disk_cache_ratio "${DISK_RATIO}" --merit_profile_prefix "${PROFILE}" \
-    --merit_disk_cache_k_hops "${DISK_K_HOPS}"
+    --merit_disk_cache_k_hops "${DISK_K_HOPS}" --merit_disk_cache_layout "${DISK_LAYOUT}"
 
   run_case mem001_disk01 \
     "${COMMON[@]}" --result_path "${OUT_DIR}/mem001_disk01" --num_nodes_to_cache 0 \
     --merit_memory_gb "${MEM_GB}" --merit_disk_cache_ratio "${DISK_RATIO}" \
     --merit_profile_prefix "${PROFILE}" --merit_disk_cache_exclude_memory true \
-    --merit_disk_cache_k_hops "${DISK_K_HOPS}"
+    --merit_disk_cache_k_hops "${DISK_K_HOPS}" --merit_disk_cache_layout "${DISK_LAYOUT}"
 
   echo "===== TABLE (L=${L} W=${W}) ====="
   printf "%-22s %10s %12s %10s %12s %8s %8s\n" "Case" "QPS" "Latency_us" "MeanIOs" "MeanIO_us" "Recall" "MeritDC"

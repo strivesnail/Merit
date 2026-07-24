@@ -133,7 +133,7 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
     // Hot-node + k-hop page order (relayout semantics); sidecar only, max_nodes cap, exclude memory-tier ids.
     DISKANN_DLLEXPORT int build_merit_disk_node_list(const std::string &profile_prefix, uint64_t max_nodes,
                                                      uint64_t memory_tier_exclude_count, uint32_t k_hops,
-                                                     std::vector<uint32_t> &node_list) const;
+                                                     const std::string &layout, std::vector<uint32_t> &node_list) const;
 
     DISKANN_DLLEXPORT uint64_t merit_memory_cached_count() const;
     DISKANN_DLLEXPORT void clear_merit_memory_cache();
@@ -151,12 +151,14 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
     // Build side file from ranked expand nodes; rank_skip excludes hottest (memory tier).
     DISKANN_DLLEXPORT int build_and_load_merit_disk_cache(const std::string &profile_prefix, uint64_t max_nodes,
                                                           const std::string &output_prefix, uint64_t rank_skip = 0,
-                                                          bool unified_single_file = false, uint32_t k_hops = 2);
+                                                          bool unified_single_file = false, uint32_t k_hops = 2,
+                                                          const std::string &layout = "node");
     // Rebuild disk cache (batch eviction); evicted = nodes dropped vs previous map.
     DISKANN_DLLEXPORT int reload_merit_disk_cache(const std::string &profile_prefix, double base_ratio,
                                                   const std::string &output_prefix, uint64_t rank_skip,
                                                   uint64_t &evicted_nodes, std::string &report,
-                                                  bool unified_single_file = false, uint32_t k_hops = 2);
+                                                  bool unified_single_file = false, uint32_t k_hops = 2,
+                                                  const std::string &layout = "node");
 
   protected:
     DISKANN_DLLEXPORT void use_medoids_data_as_centroids();

@@ -21,18 +21,27 @@ struct VamanaGraph
 
 DISKANN_DLLEXPORT int load_vamana_graph(const std::string &mem_index_file, VamanaGraph &graph);
 
+DISKANN_DLLEXPORT std::string normalize_disk_cache_layout(std::string layout);
+
 // order[new_id] = old_id. Jiang edge-importance + k-hop paths per page.
 DISKANN_DLLEXPORT int compute_jiang_relayout_order(
     const VamanaGraph &graph, const std::vector<uint64_t> &node_expand,
     const std::vector<std::tuple<uint32_t, uint32_t, uint64_t>> &directed_edges, uint64_t nnodes_per_sector,
     uint32_t k_hops, std::vector<uint32_t> &order);
 
-// order[new_id] = old_id. Hot-node seed + k-hop BFS on graph; page fill by node expand count H(v).
+// order[new_id] = old_id. Hot-node seed + k-hop node neighborhood; page fill via highest avg node_expand path.
 DISKANN_DLLEXPORT int compute_hot_node_relayout_order(const VamanaGraph &graph, const std::vector<uint64_t> &node_expand,
                                                       uint64_t nnodes_per_sector, uint32_t k_hops,
                                                       std::vector<uint32_t> &order);
 
-// MERIT disk sidecar: same hot-node + k-hop page packing as relayout, but only first max_nodes (after exclude_ids).
+// MERIT disk sidecar: Jiang edge-importance page packing; capped at max_nodes after exclude_ids.
+DISKANN_DLLEXPORT int compute_jiang_disk_cache_list(
+    const VamanaGraph &graph, const std::vector<uint64_t> &node_expand,
+    const std::vector<std::tuple<uint32_t, uint32_t, uint64_t>> &directed_edges, uint64_t nnodes_per_sector,
+    uint32_t k_hops, uint64_t max_nodes, const std::unordered_set<uint32_t> &exclude_ids,
+    std::vector<uint32_t> &node_list);
+
+// MERIT disk sidecar: hot-node seed + k-hop paths ranked by avg node_expand; capped at max_nodes after exclude_ids.
 DISKANN_DLLEXPORT int compute_hot_node_disk_cache_list(const VamanaGraph &graph,
                                                        const std::vector<uint64_t> &node_expand,
                                                        uint64_t nnodes_per_sector, uint32_t k_hops, uint64_t max_nodes,

@@ -6,7 +6,8 @@
 2. **MERIT memory pool** (`--merit_memory_gb`) — dynamic DRAM cache sized by budget, filled from profile hotness (not DiskANN static BFS `_nhood_cache` alone).
 3. **MERIT disk sidecar** (`--merit_disk_cache_ratio`, `--merit_disk_cache_k_hops`) — extra on-disk layout for hot nodes:
    - **Layout A**: `k_hops=0`, flat top-N by `node_expand`.
-   - **Layout B**: `k_hops>0`, hot-seed k-hop page packing.
+   - **Layout B** (`node`): same (a)–(e) page packing as full relayout, but seed = hottest **node** and path avg uses **node_expand**; capped at disk-cache ratio (~10%).
+   - **Layout C** (`edge`): same Jiang edge (a)–(e) flow as offline relayout; capped at ~10% in the sidecar.
 4. **Per-query sector cache** (`--enable_query_sector_cache`) — avoids re-reading the same sector within a query (used with disk sidecar).
 
 Offline **k-hop relayout** tools (`relayout_disk_index`, `apply_disk_permutation`) are included for index rewrite experiments; runtime MERIT disk cache uses a sidecar file without rewriting the base index.
