@@ -29,10 +29,11 @@ DISKANN_DLLEXPORT int compute_jiang_relayout_order(
     const std::vector<std::tuple<uint32_t, uint32_t, uint64_t>> &directed_edges, uint64_t nnodes_per_sector,
     uint32_t k_hops, std::vector<uint32_t> &order);
 
-// order[new_id] = old_id. Hot-node seed + k-hop node neighborhood; page fill via highest avg node_expand path.
-DISKANN_DLLEXPORT int compute_hot_node_relayout_order(const VamanaGraph &graph, const std::vector<uint64_t> &node_expand,
-                                                      uint64_t nnodes_per_sector, uint32_t k_hops,
-                                                      std::vector<uint32_t> &order);
+// order[new_id] = old_id. Hot-node seed + k-hop neighborhood; page fill via highest avg edge-weight path.
+DISKANN_DLLEXPORT int compute_hot_node_relayout_order(
+    const VamanaGraph &graph, const std::vector<uint64_t> &node_expand,
+    const std::vector<std::tuple<uint32_t, uint32_t, uint64_t>> &directed_edges, uint64_t nnodes_per_sector,
+    uint32_t k_hops, std::vector<uint32_t> &order);
 
 // MERIT disk sidecar: Jiang edge-importance page packing; capped at max_nodes after exclude_ids.
 DISKANN_DLLEXPORT int compute_jiang_disk_cache_list(
@@ -41,12 +42,17 @@ DISKANN_DLLEXPORT int compute_jiang_disk_cache_list(
     uint32_t k_hops, uint64_t max_nodes, const std::unordered_set<uint32_t> &exclude_ids,
     std::vector<uint32_t> &node_list);
 
-// MERIT disk sidecar: hot-node seed + k-hop paths ranked by avg node_expand; capped at max_nodes after exclude_ids.
-DISKANN_DLLEXPORT int compute_hot_node_disk_cache_list(const VamanaGraph &graph,
-                                                       const std::vector<uint64_t> &node_expand,
-                                                       uint64_t nnodes_per_sector, uint32_t k_hops, uint64_t max_nodes,
-                                                       const std::unordered_set<uint32_t> &exclude_ids,
-                                                       std::vector<uint32_t> &node_list);
+// MERIT disk sidecar: hot-node seed + k-hop paths ranked by avg edge weight; capped at max_nodes after exclude_ids.
+DISKANN_DLLEXPORT int compute_hot_node_disk_cache_list(
+    const VamanaGraph &graph, const std::vector<uint64_t> &node_expand,
+    const std::vector<std::tuple<uint32_t, uint32_t, uint64_t>> &directed_edges, uint64_t nnodes_per_sector,
+    uint32_t k_hops, uint64_t max_nodes, const std::unordered_set<uint32_t> &exclude_ids,
+    std::vector<uint32_t> &node_list);
+
+// After hot/edge/flat packing: append any nodes not yet in the list (ascending id) until max_nodes.
+DISKANN_DLLEXPORT void append_uncounted_nodes_to_disk_list(const std::vector<uint64_t> &node_expand, uint64_t max_nodes,
+                                                          const std::unordered_set<uint32_t> &exclude_ids,
+                                                          std::vector<uint32_t> &node_list);
 
 DISKANN_DLLEXPORT int save_relayout_order(const std::string &path, const std::vector<uint32_t> &order,
                                           uint64_t nnodes_per_sector);

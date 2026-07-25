@@ -101,7 +101,8 @@ int main(int argc, char **argv)
             return -1;
         }
     }
-    else if (diskann::compute_hot_node_relayout_order(graph, node_expand, nnodes_per_sector, k_hops, order) != 0)
+    else if (diskann::compute_hot_node_relayout_order(graph, node_expand, unused_edges, nnodes_per_sector, k_hops,
+                                                    order) != 0)
     {
         std::cerr << "Failed to compute hot-node relayout order." << std::endl;
         return -1;

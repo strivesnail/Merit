@@ -59,6 +59,18 @@ struct QueryStats
     float sum_batch_us_size_other = 0.f;
     std::array<unsigned, DISK_SECTOR_BUCKETS> disk_sector_bucket{};
     unsigned n_disk_sector_bucket_samples = 0;
+
+    // Populated when base-frontier recording is enabled (diagnostics).
+    std::vector<uint32_t> base_frontier_nodes;
+
+    struct HopFrontierRecord
+    {
+        unsigned hop = 0;
+        std::vector<uint32_t> merit_nodes;
+        std::vector<uint32_t> base_nodes;
+    };
+    // Populated when hop-frontier recording is enabled (diagnostics).
+    std::vector<HopFrontierRecord> hop_frontier_trace;
 };
 
 template <typename T>

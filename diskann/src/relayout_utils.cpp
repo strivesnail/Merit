@@ -476,25 +476,6 @@ static void find_best_path_to_edge(uint32_t start, uint32_t ta, uint32_t tb, con
     }
 }
 
-static double path_average_node_heat(const std::vector<uint32_t> &path, const std::vector<uint64_t> &node_expand)
-{
-    if (path.empty())
-        return 0.0;
-    uint64_t sum = 0;
-    size_t counted_nodes = 0;
-    for (uint32_t n : path)
-    {
-        const uint64_t h = node_heat(node_expand, n);
-        if (h == 0)
-            continue;
-        sum += h;
-        counted_nodes++;
-    }
-    if (counted_nodes == 0)
-        return 0.0;
-    return static_cast<double>(sum) / static_cast<double>(counted_nodes);
-}
-
 static bool path_has_target_node(const std::vector<uint32_t> &path, uint32_t target)
 {
     for (uint32_t n : path)
@@ -507,7 +488,7 @@ static bool path_has_target_node(const std::vector<uint32_t> &path, uint32_t tar
 
 static void try_candidate_path_to_node(const std::vector<uint32_t> &path, uint32_t target,
                                        const std::unordered_set<uint64_t> &used_page_edges,
-                                       const std::vector<uint64_t> &node_expand, double &best_avg,
+                                       const std::unordered_map<uint64_t, uint64_t> &weights, double &best_avg,
                                        std::vector<uint32_t> &best_path)
 {
     if (path.empty())
@@ -516,7 +497,7 @@ static void try_candidate_path_to_node(const std::vector<uint32_t> &path, uint32
         return;
     if (path.size() >= 2 && !path_edges_disjoint(path, used_page_edges))
         return;
-    const double avg = path_average_node_heat(path, node_expand);
+    const double avg = path_average_weight(path, weights);
     if (avg <= 0.0)
         return;
     if (avg > best_avg)
@@ -527,7 +508,7 @@ static void try_candidate_path_to_node(const std::vector<uint32_t> &path, uint32
 }
 
 static void find_best_path_to_node_k2(uint32_t start, uint32_t target, const std::vector<std::vector<uint32_t>> &adj,
-                                      const std::vector<uint64_t> &node_expand,
+                                      const std::unordered_map<uint64_t, uint64_t> &weights,
                                       const std::unordered_set<uint64_t> &used_page_edges, double &best_avg,
                                       std::vector<uint32_t> &best_path)
 {
@@ -539,10 +520,10 @@ static void find_best_path_to_node_k2(uint32_t start, uint32_t target, const std
     };
 
     if (start == target)
-        try_candidate_path_to_node({target}, target, used_page_edges, node_expand, best_avg, best_path);
+        try_candidate_path_to_node({target}, target, used_page_edges, weights, best_avg, best_path);
 
     if (edge_ok(start, target))
-        try_candidate_path_to_node({start, target}, target, used_page_edges, node_expand, best_avg, best_path);
+        try_candidate_path_to_node({start, target}, target, used_page_edges, weights, best_avg, best_path);
 
     for (uint32_t n1 : adj[start])
     {
@@ -551,12 +532,12 @@ static void find_best_path_to_node_k2(uint32_t start, uint32_t target, const std
         if (n1 == target)
             continue;
         if (edge_ok(n1, target))
-            try_candidate_path_to_node({start, n1, target}, target, used_page_edges, node_expand, best_avg, best_path);
+            try_candidate_path_to_node({start, n1, target}, target, used_page_edges, weights, best_avg, best_path);
     }
 }
 
 static void find_best_path_from_seed_limited(uint32_t seed, const std::vector<std::vector<uint32_t>> &adj,
-                                             const std::vector<uint64_t> &node_expand,
+                                             const std::unordered_map<uint64_t, uint64_t> &weights,
                                              const std::unordered_set<uint64_t> &used_page_edges, uint32_t max_hops,
                                              const std::function<bool(uint32_t)> &target_eligible, double &best_avg,
                                              std::vector<uint32_t> &best_path, uint32_t &best_target)
@@ -582,7 +563,7 @@ static void find_best_path_from_seed_limited(uint32_t seed, const std::vector<st
                 std::vector<uint32_t> candidate = {seed, n1};
                 double candidate_avg = -1.0;
                 std::vector<uint32_t> trial;
-                try_candidate_path_to_node(candidate, n1, used_page_edges, node_expand, candidate_avg, trial);
+                try_candidate_path_to_node(candidate, n1, used_page_edges, weights, candidate_avg, trial);
                 if (!trial.empty() && candidate_avg > best_avg)
                 {
                     best_avg = candidate_avg;
@@ -603,7 +584,7 @@ static void find_best_path_from_seed_limited(uint32_t seed, const std::vector<st
                 std::vector<uint32_t> candidate = {seed, n1, n2};
                 double candidate_avg = -1.0;
                 std::vector<uint32_t> trial;
-                try_candidate_path_to_node(candidate, n2, used_page_edges, node_expand, candidate_avg, trial);
+                try_candidate_path_to_node(candidate, n2, used_page_edges, weights, candidate_avg, trial);
                 if (!trial.empty() && candidate_avg > best_avg)
                 {
                     best_avg = candidate_avg;
@@ -626,7 +607,7 @@ static void find_best_path_from_seed_limited(uint32_t seed, const std::vector<st
             {
                 double candidate_avg = -1.0;
                 std::vector<uint32_t> trial;
-                try_candidate_path_to_node(path, end, used_page_edges, node_expand, candidate_avg, trial);
+                try_candidate_path_to_node(path, end, used_page_edges, weights, candidate_avg, trial);
                 if (!trial.empty() && candidate_avg > best_avg)
                 {
                     best_avg = candidate_avg;
@@ -750,7 +731,7 @@ static void find_best_path_from_seeds_edge_limited(
 }
 
 static void find_best_path_to_node(uint32_t start, uint32_t target, const std::vector<std::vector<uint32_t>> &adj,
-                                   const std::vector<uint64_t> &node_expand,
+                                   const std::unordered_map<uint64_t, uint64_t> &weights,
                                    const std::unordered_set<uint64_t> &used_page_edges, uint32_t max_hops,
                                    double &best_avg, std::vector<uint32_t> &best_path)
 {
@@ -759,7 +740,7 @@ static void find_best_path_to_node(uint32_t start, uint32_t target, const std::v
 
     if (max_hops <= 2)
     {
-        find_best_path_to_node_k2(start, target, adj, node_expand, used_page_edges, best_avg, best_path);
+        find_best_path_to_node_k2(start, target, adj, weights, used_page_edges, best_avg, best_path);
         return;
     }
 
@@ -779,7 +760,7 @@ static void find_best_path_to_node(uint32_t start, uint32_t target, const std::v
         if (cur.num_edges >= max_hops)
             continue;
 
-        try_candidate_path_to_node(cur.nodes, target, used_page_edges, node_expand, best_avg, best_path);
+        try_candidate_path_to_node(cur.nodes, target, used_page_edges, weights, best_avg, best_path);
 
         if (cur.node >= adj.size())
             continue;
@@ -806,7 +787,7 @@ static void find_best_path_to_node(uint32_t start, uint32_t target, const std::v
             next.nodes = cur.nodes;
             next.nodes.push_back(nbr);
             next.num_edges = cur.num_edges + 1;
-            try_candidate_path_to_node(next.nodes, target, used_page_edges, node_expand, best_avg, best_path);
+            try_candidate_path_to_node(next.nodes, target, used_page_edges, weights, best_avg, best_path);
             q.push_back(std::move(next));
         }
     }
@@ -1139,7 +1120,8 @@ static int jiang_pack_pages(const VamanaGraph &graph, const std::unordered_map<u
     return 0;
 }
 
-static int hot_node_pack_pages(const VamanaGraph &graph, const std::vector<uint64_t> &node_expand, uint32_t k_hops,
+static int hot_node_pack_pages(const VamanaGraph &graph, const std::vector<uint64_t> &node_expand,
+                               const std::unordered_map<uint64_t, uint64_t> &weights, uint32_t k_hops,
                                const JiangPackConfig &cfg_in, std::vector<std::vector<uint32_t>> &pages,
                                std::vector<bool> &assigned)
 {
@@ -1235,7 +1217,7 @@ static int hot_node_pack_pages(const VamanaGraph &graph, const std::vector<uint6
             uint32_t best_target = invalid;
             double best_avg = -1.0;
 
-            find_best_path_from_seed_limited(seed, adj, node_expand, used_page_edges, k_hops, target_eligible, best_avg,
+            find_best_path_from_seed_limited(seed, adj, weights, used_page_edges, k_hops, target_eligible, best_avg,
                                              best_path, best_target);
 
             if (best_path.empty() || best_target == invalid)
@@ -1376,10 +1358,13 @@ int compute_jiang_disk_cache_list(const VamanaGraph &graph, const std::vector<ui
 }
 
 int compute_hot_node_relayout_order(const VamanaGraph &graph, const std::vector<uint64_t> &node_expand,
+                                    const std::vector<std::tuple<uint32_t, uint32_t, uint64_t>> &directed_edges,
                                     uint64_t nnodes_per_sector, uint32_t k_hops, std::vector<uint32_t> &order)
 {
     if (graph.num_points == 0 || nnodes_per_sector == 0)
         return -1;
+
+    const auto weights = build_undirected_weights(directed_edges);
 
     JiangPackConfig cfg;
     cfg.page_cap = nnodes_per_sector;
@@ -1388,7 +1373,7 @@ int compute_hot_node_relayout_order(const VamanaGraph &graph, const std::vector<
 
     std::vector<std::vector<uint32_t>> pages;
     std::vector<bool> assigned;
-    if (hot_node_pack_pages(graph, node_expand, k_hops, cfg, pages, assigned) != 0)
+    if (hot_node_pack_pages(graph, node_expand, weights, k_hops, cfg, pages, assigned) != 0)
         return -1;
 
     jiang_append_unassigned_nodes(graph, node_expand, nnodes_per_sector, pages, assigned);
@@ -1404,12 +1389,15 @@ int compute_hot_node_relayout_order(const VamanaGraph &graph, const std::vector<
 }
 
 int compute_hot_node_disk_cache_list(const VamanaGraph &graph, const std::vector<uint64_t> &node_expand,
+                                     const std::vector<std::tuple<uint32_t, uint32_t, uint64_t>> &directed_edges,
                                      uint64_t nnodes_per_sector, uint32_t k_hops, uint64_t max_nodes,
                                      const std::unordered_set<uint32_t> &exclude_ids, std::vector<uint32_t> &node_list)
 {
     node_list.clear();
     if (max_nodes == 0 || graph.num_points == 0 || nnodes_per_sector == 0)
         return 0;
+
+    const auto weights = build_undirected_weights(directed_edges);
 
     JiangPackConfig cfg;
     cfg.page_cap = nnodes_per_sector;
@@ -1420,7 +1408,7 @@ int compute_hot_node_disk_cache_list(const VamanaGraph &graph, const std::vector
 
     std::vector<std::vector<uint32_t>> pages;
     std::vector<bool> assigned;
-    if (hot_node_pack_pages(graph, node_expand, k_hops, cfg, pages, assigned) != 0)
+    if (hot_node_pack_pages(graph, node_expand, weights, k_hops, cfg, pages, assigned) != 0)
         return -1;
 
     if (node_list.empty())
@@ -1430,6 +1418,35 @@ int compute_hot_node_disk_cache_list(const VamanaGraph &graph, const std::vector
         return -1;
     }
     return 0;
+}
+
+void append_uncounted_nodes_to_disk_list(const std::vector<uint64_t> &node_expand, uint64_t max_nodes,
+                                         const std::unordered_set<uint32_t> &exclude_ids,
+                                         std::vector<uint32_t> &node_list)
+{
+    if (node_list.size() >= max_nodes || node_expand.empty())
+        return;
+
+    std::unordered_set<uint32_t> in_list(node_list.begin(), node_list.end());
+    const size_t before = node_list.size();
+    const uint32_t num_points = static_cast<uint32_t>(node_expand.size());
+
+    for (uint32_t id = 0; id < num_points && node_list.size() < max_nodes; ++id)
+    {
+        if (exclude_ids.find(id) != exclude_ids.end())
+            continue;
+        if (in_list.find(id) != in_list.end())
+            continue;
+        node_list.push_back(id);
+        in_list.insert(id);
+    }
+
+    if (node_list.size() > before)
+    {
+        diskann::cout << "MERIT disk-cache: appended " << (node_list.size() - before)
+                      << " remaining nodes (ascending id order; total=" << node_list.size() << ")."
+                      << std::endl;
+    }
 }
 
 int save_relayout_order(const std::string &path, const std::vector<uint32_t> &order, uint64_t nnodes_per_sector)

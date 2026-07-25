@@ -1584,6 +1584,8 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
                     else
                     {
                         frontier.push_back(nbr.id);
+                        if (_record_base_frontier && stats != nullptr)
+                            stats->base_frontier_nodes.push_back(nbr.id);
                     }
                 }
                 profile_on_expand(nbr.id);
@@ -1594,6 +1596,15 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
             }
 
             const size_t read_len = num_sectors_per_node * defaults::SECTOR_LEN;
+
+            if (_record_hop_frontier && stats != nullptr && (!merit_frontier.empty() || !frontier.empty()))
+            {
+                QueryStats::HopFrontierRecord rec;
+                rec.hop = stats->n_hops;
+                rec.merit_nodes = merit_frontier;
+                rec.base_nodes = frontier;
+                stats->hop_frontier_trace.push_back(std::move(rec));
+            }
 
             if (_merit_unified_disk && (!merit_frontier.empty() || !frontier.empty()))
             {
@@ -1623,9 +1634,6 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
                     const auto id = frontier[i];
                     std::pair<uint32_t, char *> fnhood;
                     fnhood.first = id;
-                    fnhood.second = sector_scratch + num_sectors_per_node * sector_scratch_idx * defaults::SECTOR_LEN;
-                    sector_scratch_idx++;
-                    frontier_nhoods.push_back(fnhood);
                     const uint64_t sec = get_node_sector((size_t)id);
                     query_scratch->read_sectors.insert(sec);
 
@@ -1635,7 +1643,7 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
                         const auto cache_it = query_scratch->sector_cache.find(sec);
                         if (cache_it != query_scratch->sector_cache.end())
                         {
-                            memcpy(fnhood.second, cache_it->second.data(), read_len);
+                            fnhood.second = const_cast<char *>(cache_it->second.data());
                             if (stats != nullptr)
                             {
                                 stats->n_sector_cache_hits++;
@@ -1648,6 +1656,9 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
                     }
                     if (!served_from_cache)
                     {
+                        fnhood.second =
+                            sector_scratch + num_sectors_per_node * sector_scratch_idx * defaults::SECTOR_LEN;
+                        sector_scratch_idx++;
                         combined_reqs.emplace_back(sec * defaults::SECTOR_LEN, read_len, fnhood.second);
                         miss_sector_ids.push_back(sec);
                         base_miss_bufs.emplace_back(sec, fnhood.second);
@@ -1660,6 +1671,7 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
                         }
                         num_ios++;
                     }
+                    frontier_nhoods.push_back(fnhood);
                 }
 
                 if (!combined_reqs.empty())
@@ -1712,12 +1724,18 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
                         {
                             std::array<char, defaults::SECTOR_LEN> &slot = query_scratch->sector_cache[bm.first];
                             memcpy(slot.data(), bm.second, read_len);
+                            for (auto &fn : frontier_nhoods)
+                            {
+                                if (fn.second == bm.second)
+                                    fn.second = slot.data();
+                            }
                         }
                     }
                 }
 
                 complete_merit_sidecar_io(query_scratch, merit_pending, merit_disk_fanout);
-                finalize_merit_pending_nodes(merit_pending, query_scratch, frontier_nhoods);
+                finalize_merit_pending_nodes(merit_pending, query_scratch, sector_scratch, sector_scratch_idx,
+                                               frontier_nhoods);
             }
             else
             {
@@ -1747,16 +1765,13 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
                     auto id = frontier[i];
                     std::pair<uint32_t, char *> fnhood;
                     fnhood.first = id;
-                    fnhood.second = sector_scratch + num_sectors_per_node * sector_scratch_idx * defaults::SECTOR_LEN;
-                    sector_scratch_idx++;
-                    frontier_nhoods.push_back(fnhood);
                     const uint64_t sec = get_node_sector((size_t)id);
                     query_scratch->read_sectors.insert(sec);
 
                     const auto cache_it = query_scratch->sector_cache.find(sec);
                     if (cache_it != query_scratch->sector_cache.end())
                     {
-                        memcpy(fnhood.second, cache_it->second.data(), read_len);
+                        fnhood.second = const_cast<char *>(cache_it->second.data());
                         if (stats != nullptr)
                         {
                             stats->n_sector_cache_hits++;
@@ -1767,6 +1782,9 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
                     }
                     else
                     {
+                        fnhood.second =
+                            sector_scratch + num_sectors_per_node * sector_scratch_idx * defaults::SECTOR_LEN;
+                        sector_scratch_idx++;
                         frontier_read_reqs.emplace_back(sec * defaults::SECTOR_LEN, read_len, fnhood.second);
                         miss_sector_ids.push_back(sec);
                         if (stats != nullptr)
@@ -1778,6 +1796,7 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
                         }
                         num_ios++;
                     }
+                    frontier_nhoods.push_back(fnhood);
                 }
                 if (!merit_io.empty() || !frontier_read_reqs.empty())
                 {
@@ -1809,6 +1828,11 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
                     {
                         std::array<char, defaults::SECTOR_LEN> &slot = query_scratch->sector_cache[miss_sector_ids[ri]];
                         memcpy(slot.data(), frontier_read_reqs[ri].buf, read_len);
+                        for (auto &fn : frontier_nhoods)
+                        {
+                            if (fn.second == frontier_read_reqs[ri].buf)
+                                fn.second = slot.data();
+                        }
                     }
                     complete_merit_sidecar_io(query_scratch, merit_pending, merit_disk_fanout);
                 }
@@ -1854,7 +1878,8 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
             }
 
             if (!merit_pending.empty())
-                finalize_merit_pending_nodes(merit_pending, query_scratch, frontier_nhoods);
+                finalize_merit_pending_nodes(merit_pending, query_scratch, sector_scratch, sector_scratch_idx,
+                                             frontier_nhoods);
 
             }
         // process cached nhoods
@@ -2456,6 +2481,7 @@ int PQFlashIndex<T, LabelT>::build_merit_disk_node_list(const std::string &profi
         diskann::cout << "MERIT disk-cache node list: flat Top-" << node_list.size()
                       << " by node_expand (k_hops=0, exclude memory-tier=" << exclude_ids.size() << ")."
                       << std::endl;
+        append_uncounted_nodes_to_disk_list(node_expand, max_nodes, exclude_ids, node_list);
         return 0;
     }
 
@@ -2474,14 +2500,18 @@ int PQFlashIndex<T, LabelT>::build_merit_disk_node_list(const std::string &profi
         diskann::cout << "MERIT disk-cache node list: edge-importance packing (Jiang relayout), k_hops=" << k_hops
                       << ", selected " << node_list.size() << " nodes (exclude memory-tier=" << exclude_ids.size()
                       << ")." << std::endl;
+        append_uncounted_nodes_to_disk_list(node_expand, max_nodes, exclude_ids, node_list);
         return 0;
     }
 
-    if (compute_hot_node_disk_cache_list(graph, node_expand, nps, k_hops, max_nodes, exclude_ids, node_list) != 0)
+    if (compute_hot_node_disk_cache_list(graph, node_expand, edges, nps, k_hops, max_nodes, exclude_ids, node_list) !=
+        0)
         return -1;
 
-    diskann::cout << "MERIT disk-cache node list: hot-node path packing (avg node_expand), k_hops=" << k_hops << ", selected "
-                  << node_list.size() << " nodes (exclude memory-tier=" << exclude_ids.size() << ")." << std::endl;
+    diskann::cout << "MERIT disk-cache node list: hot-node path packing (avg edge weight), k_hops=" << k_hops
+                  << ", selected " << node_list.size() << " nodes (exclude memory-tier=" << exclude_ids.size()
+                  << ")." << std::endl;
+    append_uncounted_nodes_to_disk_list(node_expand, max_nodes, exclude_ids, node_list);
     return 0;
 }
 
@@ -2490,6 +2520,16 @@ template <typename T, typename LabelT> uint64_t PQFlashIndex<T, LabelT>::merit_m
     if (_merit_mem_pool && _merit_mem_pool->active())
         return _merit_mem_pool->size();
     return _nhood_cache.size();
+}
+
+template <typename T, typename LabelT> bool PQFlashIndex<T, LabelT>::merit_mem_pool_contains(uint32_t node_id) const
+{
+    return _merit_mem_pool && _merit_mem_pool->active() && _merit_mem_pool->contains(node_id);
+}
+
+template <typename T, typename LabelT> bool PQFlashIndex<T, LabelT>::merit_dc_map_contains(uint32_t node_id) const
+{
+    return !_merit_dc_map.empty() && _merit_dc_map.find(node_id) != _merit_dc_map.end();
 }
 
 template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::clear_merit_memory_cache()
@@ -3013,9 +3053,8 @@ void PQFlashIndex<T, LabelT>::prepare_merit_sidecar_io(
             continue;
         const MeritDiskLoc loc = it->second;
         query_scratch->read_merit_sidecar_sectors.insert(loc.sector);
-        char *sec_buf = sector_scratch + num_sectors_per_node * sector_scratch_idx * defaults::SECTOR_LEN;
-        sector_scratch_idx++;
-        pending.push_back({id, sec_buf, loc});
+        pending.push_back({id, nullptr, loc});
+        const size_t pidx = pending.size() - 1;
 
         if (stats != nullptr)
         {
@@ -3031,30 +3070,31 @@ void PQFlashIndex<T, LabelT>::prepare_merit_sidecar_io(
             const auto cit = query_scratch->merit_sector_cache.find(loc.sector);
             if (cit != query_scratch->merit_sector_cache.end())
             {
-                memcpy(sec_buf, cit->second.data(), defaults::SECTOR_LEN);
+                pending[pidx].sec_buf = const_cast<char *>(cit->second.data());
                 if (stats != nullptr)
                     stats->n_sector_cache_hits++;
                 served = true;
             }
         }
-        if (served)
-            continue;
-
-        disk_fanout_groups[loc.sector].push_back(pending.size() - 1);
+        if (!served)
+            disk_fanout_groups[loc.sector].push_back(pidx);
     }
 
     for (auto &kv : disk_fanout_groups)
     {
         const uint32_t sidecar_sec = kv.first;
-        const std::vector<size_t> &indices = kv.second;
+        std::vector<size_t> &indices = kv.second;
         if (indices.empty())
             continue;
+        char *read_buf = sector_scratch + num_sectors_per_node * sector_scratch_idx * defaults::SECTOR_LEN;
+        sector_scratch_idx++;
+        pending[indices[0]].sec_buf = read_buf;
         const MeritReadPending &first = pending[indices[0]];
         const uint64_t byte_len = static_cast<uint64_t>(first.loc.nsectors) * defaults::SECTOR_LEN;
         const uint64_t off =
             (_merit_unified_disk ? _merit_region_byte_offset : 0) +
             static_cast<uint64_t>(sidecar_sec) * defaults::SECTOR_LEN;
-        merit_io.emplace_back(off, byte_len, first.sec_buf);
+        merit_io.emplace_back(off, byte_len, read_buf);
         if (stats != nullptr)
             stats->n_disk_reads++;
     }
@@ -3062,7 +3102,7 @@ void PQFlashIndex<T, LabelT>::prepare_merit_sidecar_io(
 
 template <typename T, typename LabelT>
 void PQFlashIndex<T, LabelT>::complete_merit_sidecar_io(
-    SSDQueryScratch<T> *query_scratch, const std::vector<MeritReadPending> &pending,
+    SSDQueryScratch<T> *query_scratch, std::vector<MeritReadPending> &pending,
     const std::unordered_map<uint32_t, std::vector<size_t>> &disk_fanout_groups)
 {
     for (const auto &kv : disk_fanout_groups)
@@ -3071,37 +3111,45 @@ void PQFlashIndex<T, LabelT>::complete_merit_sidecar_io(
         if (indices.empty())
             continue;
         const char *primary = pending[indices[0]].sec_buf;
+        char *shared_buf = const_cast<char *>(primary);
         if (_query_sector_cache_enabled)
         {
             std::array<char, defaults::SECTOR_LEN> &slot = query_scratch->merit_sector_cache[kv.first];
             memcpy(slot.data(), primary, defaults::SECTOR_LEN);
+            shared_buf = slot.data();
         }
-        for (size_t k = 1; k < indices.size(); k++)
-            memcpy(pending[indices[k]].sec_buf, primary, defaults::SECTOR_LEN);
+        for (size_t idx : indices)
+            pending[idx].sec_buf = shared_buf;
     }
 }
 
 template <typename T, typename LabelT>
 void PQFlashIndex<T, LabelT>::finalize_merit_pending_nodes(const std::vector<MeritReadPending> &pending,
-                                                           SSDQueryScratch<T> *query_scratch,
+                                                           SSDQueryScratch<T> *query_scratch, char *sector_scratch,
+                                                           uint64_t &sector_scratch_idx,
                                                            std::vector<std::pair<uint32_t, char *>> &frontier_nhoods)
 {
+    (void)query_scratch;
     for (const auto &mp : pending)
     {
         char *sec_buf = mp.sec_buf;
-        char *packed = sec_buf + static_cast<uint64_t>(mp.loc.slot) * _max_node_len;
+        char *out_buf = sec_buf;
         if (_nnodes_per_sector > 0)
         {
             const uint64_t base_slot = mp.id % _nnodes_per_sector;
             if (base_slot != mp.loc.slot)
             {
+                out_buf = sector_scratch + sector_scratch_idx * defaults::SECTOR_LEN;
+                sector_scratch_idx++;
+                memcpy(out_buf, sec_buf, defaults::SECTOR_LEN);
+                char *packed = sec_buf + static_cast<uint64_t>(mp.loc.slot) * _max_node_len;
                 std::vector<char> tmp(_max_node_len);
                 memcpy(tmp.data(), packed, _max_node_len);
-                memset(sec_buf, 0, defaults::SECTOR_LEN);
-                memcpy(sec_buf + base_slot * _max_node_len, tmp.data(), _max_node_len);
+                memset(out_buf, 0, defaults::SECTOR_LEN);
+                memcpy(out_buf + base_slot * _max_node_len, tmp.data(), _max_node_len);
             }
         }
-        frontier_nhoods.emplace_back(mp.id, sec_buf);
+        frontier_nhoods.emplace_back(mp.id, out_buf);
     }
 }
 
@@ -3113,6 +3161,16 @@ template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::enable_acce
 template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::enable_query_sector_cache(bool enable)
 {
     _query_sector_cache_enabled = enable;
+}
+
+template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::enable_base_frontier_recording(bool enable)
+{
+    _record_base_frontier = enable;
+}
+
+template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::enable_hop_frontier_recording(bool enable)
+{
+    _record_hop_frontier = enable;
 }
 
 template <typename T, typename LabelT> int PQFlashIndex<T, LabelT>::save_access_profile(const std::string &output_prefix) const

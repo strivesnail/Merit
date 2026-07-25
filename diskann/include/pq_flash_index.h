@@ -113,6 +113,8 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
 
     DISKANN_DLLEXPORT void enable_access_profile(bool enable);
     DISKANN_DLLEXPORT void enable_query_sector_cache(bool enable);
+    DISKANN_DLLEXPORT void enable_base_frontier_recording(bool enable);
+    DISKANN_DLLEXPORT void enable_hop_frontier_recording(bool enable);
     DISKANN_DLLEXPORT int save_access_profile(const std::string &output_prefix) const;
     DISKANN_DLLEXPORT void print_access_profile_cdf() const;
 
@@ -136,6 +138,8 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
                                                      const std::string &layout, std::vector<uint32_t> &node_list) const;
 
     DISKANN_DLLEXPORT uint64_t merit_memory_cached_count() const;
+    DISKANN_DLLEXPORT bool merit_mem_pool_contains(uint32_t node_id) const;
+    DISKANN_DLLEXPORT bool merit_dc_map_contains(uint32_t node_id) const;
     DISKANN_DLLEXPORT void clear_merit_memory_cache();
     // Load MERIT dynamic pool (Top-N from profile); does not use DiskANN _nhood_cache.
     DISKANN_DLLEXPORT int load_merit_memory_pool(const std::string &profile_prefix,
@@ -210,10 +214,11 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
                                   std::unordered_map<uint32_t, std::vector<size_t>> &disk_fanout_groups,
                                   QueryStats *stats, uint32_t &num_ios);
 
-    void complete_merit_sidecar_io(SSDQueryScratch<T> *query_scratch, const std::vector<MeritReadPending> &pending,
+    void complete_merit_sidecar_io(SSDQueryScratch<T> *query_scratch, std::vector<MeritReadPending> &pending,
                                    const std::unordered_map<uint32_t, std::vector<size_t>> &disk_fanout_groups);
 
     void finalize_merit_pending_nodes(const std::vector<MeritReadPending> &pending, SSDQueryScratch<T> *query_scratch,
+                                      char *sector_scratch, uint64_t &sector_scratch_idx,
                                       std::vector<std::pair<uint32_t, char *>> &frontier_nhoods);
 
     // index info for multi-node sectors
@@ -313,6 +318,8 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
     bool _count_visited_nodes = false;
     HotnessProfiler _hotness_profiler;
     bool _query_sector_cache_enabled = false;
+    bool _record_base_frontier = false;
+    bool _record_hop_frontier = false;
     bool _reorder_data_exists = false;
     uint64_t _reoreder_data_offset = 0;
 
