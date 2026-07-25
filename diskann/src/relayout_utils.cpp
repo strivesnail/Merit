@@ -421,7 +421,29 @@ static void find_best_path_to_edge(uint32_t start, uint32_t ta, uint32_t tb, con
     if (start >= adj.size() || max_hops == 0)
         return;
 
-    if (max_hops <= 2)
+    if (max_hops == 1)
+    {
+        const auto edge_used = [&](uint32_t u, uint32_t v) -> bool {
+            return used_page_edges.count(undirected_edge_key(u, v)) > 0;
+        };
+        if (start == ta && graph_has_edge(adj, ta, tb) && !edge_used(ta, tb))
+            try_candidate_path({ta, tb}, ta, tb, used_page_edges, weights, best_avg, best_path);
+        if (start == tb && graph_has_edge(adj, tb, ta) && !edge_used(ta, tb))
+            try_candidate_path({tb, ta}, ta, tb, used_page_edges, weights, best_avg, best_path);
+
+        for (uint32_t n1 : adj[start])
+        {
+            if (edge_used(start, n1))
+                continue;
+            if (n1 == ta && graph_has_edge(adj, ta, tb) && !edge_used(ta, tb))
+                try_candidate_path({start, ta, tb}, ta, tb, used_page_edges, weights, best_avg, best_path);
+            if (n1 == tb && graph_has_edge(adj, ta, tb) && !edge_used(ta, tb))
+                try_candidate_path({start, tb, ta}, ta, tb, used_page_edges, weights, best_avg, best_path);
+        }
+        return;
+    }
+
+    if (max_hops == 2)
     {
         find_best_path_to_edge_k2(start, ta, tb, adj, weights, used_page_edges, best_avg, best_path);
         return;
@@ -552,7 +574,29 @@ static void find_best_path_from_seed_limited(uint32_t seed, const std::vector<st
         return graph_has_edge(adj, u, v) && used_page_edges.count(undirected_edge_key(u, v)) == 0;
     };
 
-    if (max_hops <= 2)
+    if (max_hops == 1)
+    {
+        for (uint32_t n1 : adj[seed])
+        {
+            if (used_page_edges.count(undirected_edge_key(seed, n1)) > 0)
+                continue;
+            if (!target_eligible(n1))
+                continue;
+            const std::vector<uint32_t> candidate = {seed, n1};
+            double candidate_avg = -1.0;
+            std::vector<uint32_t> trial;
+            try_candidate_path_to_node(candidate, n1, used_page_edges, weights, candidate_avg, trial);
+            if (!trial.empty() && candidate_avg > best_avg)
+            {
+                best_avg = candidate_avg;
+                best_path = std::move(trial);
+                best_target = n1;
+            }
+        }
+        return;
+    }
+
+    if (max_hops == 2)
     {
         for (uint32_t n1 : adj[seed])
         {
@@ -738,7 +782,20 @@ static void find_best_path_to_node(uint32_t start, uint32_t target, const std::v
     if (start >= adj.size() || target >= adj.size() || max_hops == 0)
         return;
 
-    if (max_hops <= 2)
+    const auto edge_ok = [&](uint32_t u, uint32_t v) -> bool {
+        return graph_has_edge(adj, u, v) && used_page_edges.count(undirected_edge_key(u, v)) == 0;
+    };
+
+    if (max_hops == 1)
+    {
+        if (start == target)
+            try_candidate_path_to_node({target}, target, used_page_edges, weights, best_avg, best_path);
+        if (edge_ok(start, target))
+            try_candidate_path_to_node({start, target}, target, used_page_edges, weights, best_avg, best_path);
+        return;
+    }
+
+    if (max_hops == 2)
     {
         find_best_path_to_node_k2(start, target, adj, weights, used_page_edges, best_avg, best_path);
         return;
