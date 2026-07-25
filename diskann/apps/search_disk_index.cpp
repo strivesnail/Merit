@@ -871,7 +871,7 @@ int main(int argc, char **argv)
             "MERIT disk sidecar node order: 0 = flat Top-N by node_expand; >0 = k-hop page packing (with node/edge layout).");
         optional_configs.add_options()(
             "merit_disk_cache_layout", po::value<std::string>(&merit_disk_cache_layout)->default_value("node"),
-            "MERIT disk sidecar packing: flat | node (hot-node k-hop) | edge (Jiang edge-importance packing).");
+            "MERIT disk sidecar packing: flat | node (hot-node k-hop) | edge (edge-importance packing).");
         optional_configs.add_options()(
             "merit_disk_cache_reuse_prefix", po::value<std::string>(&merit_disk_cache_reuse_prefix)->default_value(""),
             "Load existing sidecar from prefix_merit_dc.{data,nodes} instead of repacking.");

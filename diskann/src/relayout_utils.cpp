@@ -302,7 +302,7 @@ static bool edge_in_khop_neighborhood(uint32_t a, uint32_t b, const std::unorder
     return std::min(endpoint_dist(a), endpoint_dist(b)) <= k_hops;
 }
 
-static std::unordered_set<uint64_t> jiang_collect_graph_edge_neighborhood(
+static std::unordered_set<uint64_t> collect_khop_graph_edges(
     uint32_t k_hops, const std::vector<int32_t> &dist_u, const std::vector<int32_t> &dist_v,
     const std::vector<std::vector<uint32_t>> &adj)
 {
@@ -330,7 +330,7 @@ static std::unordered_set<uint64_t> jiang_collect_graph_edge_neighborhood(
     return neighborhood;
 }
 
-static std::unordered_set<uint64_t> jiang_collect_edge_neighborhood(
+static std::unordered_set<uint64_t> collect_khop_profile_edges(
     uint32_t seed_u, uint32_t seed_v, uint32_t k_hops, const std::unordered_set<uint64_t> &edge_in_list,
     const std::unordered_map<uint32_t, uint32_t> &dist_u, const std::unordered_map<uint32_t, uint32_t> &dist_v,
     const std::vector<std::vector<std::pair<uint32_t, uint64_t>>> &profile_edges_by_node)
@@ -811,7 +811,7 @@ static std::unordered_set<uint32_t> collect_node_khop_neighborhood(uint32_t seed
     return neighborhood;
 }
 
-static bool jiang_node_in_list(const std::vector<bool> &node_in_list, uint32_t node)
+static bool is_node_pending_pack(const std::vector<bool> &node_in_list, uint32_t node)
 {
     return node < node_in_list.size() && node_in_list[node];
 }
@@ -832,7 +832,7 @@ static void remove_path_from_lists(const std::vector<uint32_t> &path, std::unord
     }
 }
 
-struct JiangPackConfig
+struct PagePackConfig
 {
     uint64_t page_cap = 0;
     uint64_t max_output_nodes = 0; // 0 = full relayout; >0 = disk sidecar cap (e.g. 10%)
@@ -841,7 +841,7 @@ struct JiangPackConfig
     std::vector<uint32_t> *output_nodes = nullptr; // disk sidecar: collect nodes here directly
 };
 
-static bool jiang_output_node_eligible(uint32_t node, const JiangPackConfig &cfg)
+static bool disk_cache_node_eligible(uint32_t node, const PagePackConfig &cfg)
 {
     if (cfg.skip_output != nullptr && cfg.skip_output->count(node) > 0)
         return false;
@@ -850,32 +850,47 @@ static bool jiang_output_node_eligible(uint32_t node, const JiangPackConfig &cfg
     return true;
 }
 
-static void jiang_collect_page_output(const std::vector<uint32_t> &page_nodes, const JiangPackConfig &cfg,
-                                      uint64_t &output_count)
+static bool try_append_unique_disk_cache_node(uint32_t node, const PagePackConfig &cfg, uint64_t &output_count,
+                                    std::unordered_set<uint32_t> &output_seen)
+{
+    if (cfg.output_nodes == nullptr)
+        return false;
+    if (!disk_cache_node_eligible(node, cfg))
+        return false;
+    if (output_count >= cfg.max_output_nodes)
+        return false;
+    if (output_seen.count(node) > 0)
+        return false;
+    cfg.output_nodes->push_back(node);
+    output_seen.insert(node);
+    output_count++;
+    return true;
+}
+
+static void append_page_nodes_to_disk_cache_list(const std::vector<uint32_t> &page_nodes, const PagePackConfig &cfg,
+                                      uint64_t &output_count, std::unordered_set<uint32_t> &output_seen)
 {
     if (cfg.output_nodes == nullptr)
         return;
     for (uint32_t node : page_nodes)
     {
-        if (!jiang_output_node_eligible(node, cfg))
-            continue;
         if (output_count >= cfg.max_output_nodes)
             break;
-        cfg.output_nodes->push_back(node);
-        output_count++;
+        try_append_unique_disk_cache_node(node, cfg, output_count, output_seen);
     }
 }
 
-static bool jiang_can_add_to_output(uint32_t node, const JiangPackConfig &cfg, uint64_t output_count)
+static void log_disk_cache_node_list_stats(const std::vector<uint32_t> &node_list, const char *layout_name)
 {
-    if (cfg.max_output_nodes == 0 || cfg.output_nodes == nullptr)
-        return true;
-    if (output_count >= cfg.max_output_nodes)
-        return false;
-    return jiang_output_node_eligible(node, cfg);
+    const std::unordered_set<uint32_t> uniq(node_list.begin(), node_list.end());
+    diskann::cout << "MERIT disk-cache node list stats (" << layout_name << "): entries=" << node_list.size()
+                  << " unique=" << uniq.size();
+    if (uniq.size() != node_list.size())
+        diskann::cout << " duplicates=" << (node_list.size() - uniq.size());
+    diskann::cout << std::endl;
 }
 
-static void init_jiang_node_in_list(uint32_t num_points, const JiangPackConfig &cfg, std::vector<bool> &node_in_list)
+static void init_pending_pack_nodes(uint32_t num_points, const PagePackConfig &cfg, std::vector<bool> &node_in_list)
 {
     node_in_list.assign(num_points, false);
     for (uint32_t i = 0; i < num_points; i++)
@@ -888,7 +903,7 @@ static void init_jiang_node_in_list(uint32_t num_points, const JiangPackConfig &
     }
 }
 
-static void init_jiang_profile_edge_in_list(const std::unordered_map<uint64_t, uint64_t> &weights,
+static void init_pending_profile_edges(const std::unordered_map<uint64_t, uint64_t> &weights,
                                             std::unordered_set<uint64_t> &profile_edge_in_list)
 {
     profile_edge_in_list.clear();
@@ -901,10 +916,13 @@ static void init_jiang_profile_edge_in_list(const std::unordered_map<uint64_t, u
     }
 }
 
-static void jiang_place_on_page(std::vector<uint32_t> &page_nodes, std::unordered_set<uint32_t> &on_page,
-                                uint64_t page_cap, uint32_t node, const JiangPackConfig *cfg = nullptr)
+static void place_node_on_page(std::vector<uint32_t> &page_nodes, std::unordered_set<uint32_t> &on_page,
+                                uint64_t page_cap, uint32_t node, const PagePackConfig *cfg = nullptr,
+                                const std::unordered_set<uint32_t> *output_seen = nullptr)
 {
-    if (cfg != nullptr && !jiang_output_node_eligible(node, *cfg))
+    if (cfg != nullptr && !disk_cache_node_eligible(node, *cfg))
+        return;
+    if (output_seen != nullptr && output_seen->count(node) > 0)
         return;
     if (page_nodes.size() >= page_cap || on_page.count(node) > 0)
         return;
@@ -912,18 +930,19 @@ static void jiang_place_on_page(std::vector<uint32_t> &page_nodes, std::unordere
     on_page.insert(node);
 }
 
-static void jiang_place_path_on_page(std::vector<uint32_t> &page_nodes, std::unordered_set<uint32_t> &on_page,
-                                     uint64_t page_cap, const std::vector<uint32_t> &path, const JiangPackConfig *cfg)
+static void place_path_on_page(std::vector<uint32_t> &page_nodes, std::unordered_set<uint32_t> &on_page,
+                                     uint64_t page_cap, const std::vector<uint32_t> &path, const PagePackConfig *cfg,
+                                     const std::unordered_set<uint32_t> *output_seen = nullptr)
 {
     for (uint32_t node : path)
     {
         if (page_nodes.size() >= page_cap)
             break;
-        jiang_place_on_page(page_nodes, on_page, page_cap, node, cfg);
+        place_node_on_page(page_nodes, on_page, page_cap, node, cfg, output_seen);
     }
 }
 
-static bool jiang_any_node_in_list(const std::vector<bool> &node_in_list)
+static bool has_pending_pack_nodes(const std::vector<bool> &node_in_list)
 {
     for (bool in : node_in_list)
     {
@@ -933,7 +952,7 @@ static bool jiang_any_node_in_list(const std::vector<bool> &node_in_list)
     return false;
 }
 
-static bool jiang_pick_seed_edge(const std::vector<std::pair<uint32_t, uint32_t>> &sorted_edges,
+static bool pick_highest_weight_seed_edge(const std::vector<std::pair<uint32_t, uint32_t>> &sorted_edges,
                                  const std::unordered_set<uint64_t> &edge_in_list, size_t &edge_cursor,
                                  uint32_t &seed_u, uint32_t &seed_v, uint64_t &seed_key,
                                  const std::vector<bool> *node_in_list = nullptr)
@@ -946,8 +965,8 @@ static bool jiang_pick_seed_edge(const std::vector<std::pair<uint32_t, uint32_t>
             continue;
         if (node_in_list != nullptr)
         {
-            const bool u_ok = jiang_node_in_list(*node_in_list, edge.first);
-            const bool v_ok = jiang_node_in_list(*node_in_list, edge.second);
+            const bool u_ok = is_node_pending_pack(*node_in_list, edge.first);
+            const bool v_ok = is_node_pending_pack(*node_in_list, edge.second);
             if (!u_ok && !v_ok)
                 continue;
         }
@@ -975,16 +994,16 @@ static std::vector<std::vector<std::pair<uint32_t, uint64_t>>> build_profile_edg
     return by_node;
 }
 
-static void jiang_remove_path_from_neighborhood(const std::vector<uint32_t> &path,
+static void remove_path_edges_from_set(const std::vector<uint32_t> &path,
                                                 std::unordered_set<uint64_t> &neighborhood)
 {
     for (size_t i = 1; i < path.size(); i++)
         neighborhood.erase(undirected_edge_key(path[i - 1], path[i]));
 }
 
-static int jiang_pack_pages(const VamanaGraph &graph, const std::unordered_map<uint64_t, uint64_t> &weights,
+static int pack_pages_by_edge_importance(const VamanaGraph &graph, const std::unordered_map<uint64_t, uint64_t> &weights,
                             const std::vector<std::pair<uint32_t, uint32_t>> &sorted_edges, uint32_t k_hops,
-                            const JiangPackConfig &cfg, std::vector<std::vector<uint32_t>> &pages,
+                            const PagePackConfig &cfg, std::vector<std::vector<uint32_t>> &pages,
                             std::vector<bool> &assigned)
 {
     if (graph.num_points == 0 || cfg.page_cap == 0)
@@ -995,8 +1014,8 @@ static int jiang_pack_pages(const VamanaGraph &graph, const std::unordered_map<u
     std::unordered_set<uint64_t> profile_edge_in_list;
     std::vector<bool> node_in_list;
     const bool disk_sidecar = (cfg.max_output_nodes > 0);
-    init_jiang_profile_edge_in_list(weights, profile_edge_in_list);
-    init_jiang_node_in_list(static_cast<uint32_t>(graph.num_points), cfg, node_in_list);
+    init_pending_profile_edges(weights, profile_edge_in_list);
+    init_pending_pack_nodes(static_cast<uint32_t>(graph.num_points), cfg, node_in_list);
     assigned.assign(graph.num_points, false);
 
     std::vector<uint32_t> nodes_by_expand(static_cast<size_t>(graph.num_points));
@@ -1020,30 +1039,35 @@ static int jiang_pack_pages(const VamanaGraph &graph, const std::unordered_map<u
             assigned[node] = true;
     };
 
+    uint64_t output_count = 0;
+    std::unordered_set<uint32_t> output_seen;
+    if (disk_sidecar)
+        output_seen.reserve(static_cast<size_t>(cfg.max_output_nodes));
+    const std::unordered_set<uint32_t> *seen_ptr = disk_sidecar ? &output_seen : nullptr;
+
     auto fill_page_from_node_list = [&](std::vector<uint32_t> &page_nodes, std::unordered_set<uint32_t> &on_page) {
         for (uint32_t node : nodes_by_expand)
         {
             if (page_nodes.size() >= cfg.page_cap)
                 break;
-            if (!jiang_node_in_list(node_in_list, node))
+            if (!is_node_pending_pack(node_in_list, node))
                 continue;
-            jiang_place_on_page(page_nodes, on_page, cfg.page_cap, node, &cfg);
+            place_node_on_page(page_nodes, on_page, cfg.page_cap, node, &cfg, seen_ptr);
             node_in_list[node] = false;
         }
     };
 
-    uint64_t output_count = 0;
     while (true)
     {
         if (disk_sidecar && output_count >= cfg.max_output_nodes)
             break;
-        if (!disk_sidecar && !jiang_any_node_in_list(node_in_list))
+        if (!disk_sidecar && !has_pending_pack_nodes(node_in_list))
             break;
 
         uint32_t seed_u = 0, seed_v = 0;
         uint64_t seed_key = 0;
         const std::vector<bool> *pick_node_list = disk_sidecar ? &node_in_list : nullptr;
-        if (!jiang_pick_seed_edge(sorted_edges, profile_edge_in_list, edge_cursor, seed_u, seed_v, seed_key,
+        if (!pick_highest_weight_seed_edge(sorted_edges, profile_edge_in_list, edge_cursor, seed_u, seed_v, seed_key,
                                   pick_node_list))
         {
             if (disk_sidecar)
@@ -1060,8 +1084,8 @@ static int jiang_pack_pages(const VamanaGraph &graph, const std::unordered_map<u
         page_nodes.reserve(static_cast<size_t>(cfg.page_cap));
 
         // (b) seed edge: place counted endpoints only, remove edge + endpoints from lists.
-        jiang_place_on_page(page_nodes, on_page, cfg.page_cap, seed_u, &cfg);
-        jiang_place_on_page(page_nodes, on_page, cfg.page_cap, seed_v, &cfg);
+        place_node_on_page(page_nodes, on_page, cfg.page_cap, seed_u, &cfg, seen_ptr);
+        place_node_on_page(page_nodes, on_page, cfg.page_cap, seed_v, &cfg, seen_ptr);
         profile_edge_in_list.erase(seed_key);
         if (seed_u < node_in_list.size())
             node_in_list[seed_u] = false;
@@ -1090,8 +1114,8 @@ static int jiang_pack_pages(const VamanaGraph &graph, const std::unordered_map<u
             {
                 if (page_nodes.size() >= cfg.page_cap)
                     break;
-                if (jiang_node_in_list(node_in_list, node))
-                    jiang_place_on_page(page_nodes, on_page, cfg.page_cap, node, &cfg);
+                if (is_node_pending_pack(node_in_list, node))
+                    place_node_on_page(page_nodes, on_page, cfg.page_cap, node, &cfg, seen_ptr);
             }
 
             remove_path_from_lists(best_path, profile_edge_in_list, node_in_list);
@@ -1100,7 +1124,7 @@ static int jiang_pack_pages(const VamanaGraph &graph, const std::unordered_map<u
         }
 
         append_page(page_nodes);
-        jiang_collect_page_output(page_nodes, cfg, output_count);
+        append_page_nodes_to_disk_cache_list(page_nodes, cfg, output_count, output_seen);
     }
 
     if (disk_sidecar && output_count < cfg.max_output_nodes)
@@ -1109,11 +1133,10 @@ static int jiang_pack_pages(const VamanaGraph &graph, const std::unordered_map<u
         {
             if (output_count >= cfg.max_output_nodes)
                 break;
-            if (!jiang_node_in_list(node_in_list, node))
+            if (!is_node_pending_pack(node_in_list, node))
                 continue;
-            cfg.output_nodes->push_back(node);
+            try_append_unique_disk_cache_node(node, cfg, output_count, output_seen);
             node_in_list[node] = false;
-            output_count++;
         }
     }
 
@@ -1122,20 +1145,20 @@ static int jiang_pack_pages(const VamanaGraph &graph, const std::unordered_map<u
 
 static int hot_node_pack_pages(const VamanaGraph &graph, const std::vector<uint64_t> &node_expand,
                                const std::unordered_map<uint64_t, uint64_t> &weights, uint32_t k_hops,
-                               const JiangPackConfig &cfg_in, std::vector<std::vector<uint32_t>> &pages,
+                               const PagePackConfig &cfg_in, std::vector<std::vector<uint32_t>> &pages,
                                std::vector<bool> &assigned)
 {
     if (graph.num_points == 0 || cfg_in.page_cap == 0)
         return -1;
 
-    JiangPackConfig cfg = cfg_in;
+    PagePackConfig cfg = cfg_in;
     cfg.node_expand = &node_expand;
 
     const auto adj = build_undirected_adjacency(graph);
 
     std::vector<bool> node_in_list;
     const bool disk_sidecar = (cfg.max_output_nodes > 0);
-    init_jiang_node_in_list(static_cast<uint32_t>(graph.num_points), cfg, node_in_list);
+    init_pending_pack_nodes(static_cast<uint32_t>(graph.num_points), cfg, node_in_list);
     assigned.assign(graph.num_points, false);
 
     std::vector<uint32_t> nodes_by_expand(static_cast<size_t>(graph.num_points));
@@ -1156,31 +1179,36 @@ static int hot_node_pack_pages(const VamanaGraph &graph, const std::vector<uint6
             assigned[node] = true;
     };
 
+    const uint32_t invalid = static_cast<uint32_t>(graph.num_points);
+    uint64_t output_count = 0;
+    std::unordered_set<uint32_t> output_seen;
+    if (disk_sidecar)
+        output_seen.reserve(static_cast<size_t>(cfg.max_output_nodes));
+    const std::unordered_set<uint32_t> *seen_ptr = disk_sidecar ? &output_seen : nullptr;
+
     auto fill_page_from_node_list = [&](std::vector<uint32_t> &page_nodes, std::unordered_set<uint32_t> &on_page) {
         for (uint32_t node : nodes_by_expand)
         {
             if (page_nodes.size() >= cfg.page_cap)
                 break;
-            if (!jiang_node_in_list(node_in_list, node))
+            if (!is_node_pending_pack(node_in_list, node))
                 continue;
-            jiang_place_on_page(page_nodes, on_page, cfg.page_cap, node, &cfg);
+            place_node_on_page(page_nodes, on_page, cfg.page_cap, node, &cfg, seen_ptr);
             node_in_list[node] = false;
         }
     };
 
-    const uint32_t invalid = static_cast<uint32_t>(graph.num_points);
-    uint64_t output_count = 0;
     while (true)
     {
         if (disk_sidecar && output_count >= cfg.max_output_nodes)
             break;
-        if (!disk_sidecar && !jiang_any_node_in_list(node_in_list))
+        if (!disk_sidecar && !has_pending_pack_nodes(node_in_list))
             break;
 
         uint32_t seed = invalid;
         for (uint32_t node : nodes_by_expand)
         {
-            if (jiang_node_in_list(node_in_list, node))
+            if (is_node_pending_pack(node_in_list, node))
             {
                 seed = node;
                 break;
@@ -1202,13 +1230,13 @@ static int hot_node_pack_pages(const VamanaGraph &graph, const std::vector<uint6
         std::unordered_set<uint32_t> on_page;
         page_nodes.reserve(static_cast<size_t>(cfg.page_cap));
 
-        jiang_place_on_page(page_nodes, on_page, cfg.page_cap, seed, &cfg);
+        place_node_on_page(page_nodes, on_page, cfg.page_cap, seed, &cfg, seen_ptr);
         node_in_list[seed] = false;
 
         std::unordered_set<uint64_t> used_page_edges;
-        const auto target_eligible = [&](uint32_t id) -> bool { return jiang_node_in_list(node_in_list, id); };
+        const auto target_eligible = [&](uint32_t id) -> bool { return is_node_pending_pack(node_in_list, id); };
 
-        while (page_nodes.size() < cfg.page_cap && jiang_any_node_in_list(node_in_list))
+        while (page_nodes.size() < cfg.page_cap && has_pending_pack_nodes(node_in_list))
         {
             if (disk_sidecar && output_count >= cfg.max_output_nodes)
                 break;
@@ -1227,8 +1255,8 @@ static int hot_node_pack_pages(const VamanaGraph &graph, const std::vector<uint6
             {
                 if (page_nodes.size() >= cfg.page_cap)
                     break;
-                if (jiang_node_in_list(node_in_list, node))
-                    jiang_place_on_page(page_nodes, on_page, cfg.page_cap, node, &cfg);
+                if (is_node_pending_pack(node_in_list, node))
+                    place_node_on_page(page_nodes, on_page, cfg.page_cap, node, &cfg, seen_ptr);
             }
 
             for (uint32_t node : best_path)
@@ -1241,7 +1269,7 @@ static int hot_node_pack_pages(const VamanaGraph &graph, const std::vector<uint6
         }
 
         append_page(page_nodes);
-        jiang_collect_page_output(page_nodes, cfg, output_count);
+        append_page_nodes_to_disk_cache_list(page_nodes, cfg, output_count, output_seen);
     }
 
     if (disk_sidecar && output_count < cfg.max_output_nodes)
@@ -1250,9 +1278,9 @@ static int hot_node_pack_pages(const VamanaGraph &graph, const std::vector<uint6
         {
             if (output_count >= cfg.max_output_nodes)
                 break;
-            if (!jiang_node_in_list(node_in_list, node))
+            if (!is_node_pending_pack(node_in_list, node))
                 continue;
-            cfg.output_nodes->push_back(node);
+            try_append_unique_disk_cache_node(node, cfg, output_count, output_seen);
             node_in_list[node] = false;
             output_count++;
         }
@@ -1261,7 +1289,7 @@ static int hot_node_pack_pages(const VamanaGraph &graph, const std::vector<uint6
     return 0;
 }
 
-static void jiang_append_unassigned_nodes(const VamanaGraph &graph, const std::vector<uint64_t> &node_expand,
+static void append_unassigned_nodes_to_pages(const VamanaGraph &graph, const std::vector<uint64_t> &node_expand,
                                           uint64_t page_cap, std::vector<std::vector<uint32_t>> &pages,
                                           std::vector<bool> &assigned)
 {
@@ -1293,7 +1321,7 @@ static void jiang_append_unassigned_nodes(const VamanaGraph &graph, const std::v
         pages.push_back(tail);
 }
 
-int compute_jiang_relayout_order(const VamanaGraph &graph, const std::vector<uint64_t> &node_expand,
+int compute_edge_relayout_order(const VamanaGraph &graph, const std::vector<uint64_t> &node_expand,
                                  const std::vector<std::tuple<uint32_t, uint32_t, uint64_t>> &directed_edges,
                                  uint64_t nnodes_per_sector, uint32_t k_hops, std::vector<uint32_t> &order)
 {
@@ -1303,16 +1331,16 @@ int compute_jiang_relayout_order(const VamanaGraph &graph, const std::vector<uin
     const auto weights = build_undirected_weights(directed_edges);
     const auto sorted_edges = sorted_undirected_edges(weights);
 
-    JiangPackConfig cfg;
+    PagePackConfig cfg;
     cfg.page_cap = nnodes_per_sector;
     cfg.node_expand = &node_expand;
 
     std::vector<std::vector<uint32_t>> pages;
     std::vector<bool> assigned;
-    if (jiang_pack_pages(graph, weights, sorted_edges, k_hops, cfg, pages, assigned) != 0)
+    if (pack_pages_by_edge_importance(graph, weights, sorted_edges, k_hops, cfg, pages, assigned) != 0)
         return -1;
 
-    jiang_append_unassigned_nodes(graph, node_expand, nnodes_per_sector, pages, assigned);
+    append_unassigned_nodes_to_pages(graph, node_expand, nnodes_per_sector, pages, assigned);
 
     order.clear();
     order.reserve(graph.num_points);
@@ -1324,7 +1352,7 @@ int compute_jiang_relayout_order(const VamanaGraph &graph, const std::vector<uin
     return 0;
 }
 
-int compute_jiang_disk_cache_list(const VamanaGraph &graph, const std::vector<uint64_t> &node_expand,
+int compute_edge_disk_cache_list(const VamanaGraph &graph, const std::vector<uint64_t> &node_expand,
                                   const std::vector<std::tuple<uint32_t, uint32_t, uint64_t>> &directed_edges,
                                   uint64_t nnodes_per_sector, uint32_t k_hops, uint64_t max_nodes,
                                   const std::unordered_set<uint32_t> &exclude_ids, std::vector<uint32_t> &node_list)
@@ -1336,7 +1364,7 @@ int compute_jiang_disk_cache_list(const VamanaGraph &graph, const std::vector<ui
     const auto weights = build_undirected_weights(directed_edges);
     const auto sorted_edges = sorted_undirected_edges(weights);
 
-    JiangPackConfig cfg;
+    PagePackConfig cfg;
     cfg.page_cap = nnodes_per_sector;
     cfg.max_output_nodes = max_nodes;
     cfg.skip_output = &exclude_ids;
@@ -1345,7 +1373,7 @@ int compute_jiang_disk_cache_list(const VamanaGraph &graph, const std::vector<ui
 
     std::vector<std::vector<uint32_t>> pages;
     std::vector<bool> assigned;
-    if (jiang_pack_pages(graph, weights, sorted_edges, k_hops, cfg, pages, assigned) != 0)
+    if (pack_pages_by_edge_importance(graph, weights, sorted_edges, k_hops, cfg, pages, assigned) != 0)
         return -1;
 
     if (node_list.empty())
@@ -1354,6 +1382,7 @@ int compute_jiang_disk_cache_list(const VamanaGraph &graph, const std::vector<ui
                       << ")." << std::endl;
         return -1;
     }
+    log_disk_cache_node_list_stats(node_list, "edge");
     return 0;
 }
 
@@ -1366,7 +1395,7 @@ int compute_hot_node_relayout_order(const VamanaGraph &graph, const std::vector<
 
     const auto weights = build_undirected_weights(directed_edges);
 
-    JiangPackConfig cfg;
+    PagePackConfig cfg;
     cfg.page_cap = nnodes_per_sector;
     cfg.max_output_nodes = 0;
     cfg.node_expand = &node_expand;
@@ -1376,7 +1405,7 @@ int compute_hot_node_relayout_order(const VamanaGraph &graph, const std::vector<
     if (hot_node_pack_pages(graph, node_expand, weights, k_hops, cfg, pages, assigned) != 0)
         return -1;
 
-    jiang_append_unassigned_nodes(graph, node_expand, nnodes_per_sector, pages, assigned);
+    append_unassigned_nodes_to_pages(graph, node_expand, nnodes_per_sector, pages, assigned);
 
     order.clear();
     order.reserve(graph.num_points);
@@ -1399,7 +1428,7 @@ int compute_hot_node_disk_cache_list(const VamanaGraph &graph, const std::vector
 
     const auto weights = build_undirected_weights(directed_edges);
 
-    JiangPackConfig cfg;
+    PagePackConfig cfg;
     cfg.page_cap = nnodes_per_sector;
     cfg.max_output_nodes = max_nodes;
     cfg.skip_output = &exclude_ids;
@@ -1417,6 +1446,7 @@ int compute_hot_node_disk_cache_list(const VamanaGraph &graph, const std::vector
                       << ")." << std::endl;
         return -1;
     }
+    log_disk_cache_node_list_stats(node_list, "node");
     return 0;
 }
 

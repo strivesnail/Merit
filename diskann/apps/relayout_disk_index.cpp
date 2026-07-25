@@ -24,7 +24,7 @@ int main(int argc, char **argv)
         "Prefix for access profile files from Run2")("output_order", po::value<std::string>(&output_order)->required(),
                                                      "Output order file prefix")(
         "layout", po::value<std::string>(&layout_mode)->default_value("hotnode"),
-        "Layout algorithm: hotnode (node expand) or edge (Jiang edge importance)")(
+        "Layout algorithm: hotnode (node expand) or edge (edge-importance packing)")(
         "disk_index", po::value<std::string>(&disk_index)->default_value(std::string("")),
         "Path to _disk.index (used to read nnodes_per_sector when auto-detecting)")(
         "k_hops", po::value<uint32_t>(&k_hops)->default_value(2), "Undirected k-hop neighborhood radius")(
@@ -91,13 +91,13 @@ int main(int argc, char **argv)
     }
 
     std::vector<uint32_t> order;
-    const bool use_jiang = (layout_mode == "edge" || layout_mode == "jiang");
-    if (use_jiang)
+    const bool use_edge_layout = (layout_mode == "edge" || layout_mode == "jiang");
+    if (use_edge_layout)
     {
-        if (diskann::compute_jiang_relayout_order(graph, node_expand, unused_edges, nnodes_per_sector, k_hops,
+        if (diskann::compute_edge_relayout_order(graph, node_expand, unused_edges, nnodes_per_sector, k_hops,
                                                   order) != 0)
         {
-            std::cerr << "Failed to compute Jiang edge relayout order." << std::endl;
+            std::cerr << "Failed to compute edge-importance relayout order." << std::endl;
             return -1;
         }
     }

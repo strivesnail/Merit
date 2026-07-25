@@ -2494,10 +2494,10 @@ int PQFlashIndex<T, LabelT>::build_merit_disk_node_list(const std::string &profi
 
     if (layout == "edge" || layout == "jiang")
     {
-        if (compute_jiang_disk_cache_list(graph, node_expand, edges, nps, k_hops, max_nodes, exclude_ids, node_list) !=
+        if (compute_edge_disk_cache_list(graph, node_expand, edges, nps, k_hops, max_nodes, exclude_ids, node_list) !=
             0)
             return -1;
-        diskann::cout << "MERIT disk-cache node list: edge-importance packing (Jiang relayout), k_hops=" << k_hops
+        diskann::cout << "MERIT disk-cache node list: edge-importance packing, k_hops=" << k_hops
                       << ", selected " << node_list.size() << " nodes (exclude memory-tier=" << exclude_ids.size()
                       << ")." << std::endl;
         append_uncounted_nodes_to_disk_list(node_expand, max_nodes, exclude_ids, node_list);

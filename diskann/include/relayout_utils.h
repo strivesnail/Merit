@@ -23,8 +23,8 @@ DISKANN_DLLEXPORT int load_vamana_graph(const std::string &mem_index_file, Vaman
 
 DISKANN_DLLEXPORT std::string normalize_disk_cache_layout(std::string layout);
 
-// order[new_id] = old_id. Jiang edge-importance + k-hop paths per page.
-DISKANN_DLLEXPORT int compute_jiang_relayout_order(
+// order[new_id] = old_id. Edge-importance seed + k-hop paths per page.
+DISKANN_DLLEXPORT int compute_edge_relayout_order(
     const VamanaGraph &graph, const std::vector<uint64_t> &node_expand,
     const std::vector<std::tuple<uint32_t, uint32_t, uint64_t>> &directed_edges, uint64_t nnodes_per_sector,
     uint32_t k_hops, std::vector<uint32_t> &order);
@@ -35,8 +35,8 @@ DISKANN_DLLEXPORT int compute_hot_node_relayout_order(
     const std::vector<std::tuple<uint32_t, uint32_t, uint64_t>> &directed_edges, uint64_t nnodes_per_sector,
     uint32_t k_hops, std::vector<uint32_t> &order);
 
-// MERIT disk sidecar: Jiang edge-importance page packing; capped at max_nodes after exclude_ids.
-DISKANN_DLLEXPORT int compute_jiang_disk_cache_list(
+// MERIT disk sidecar: edge-importance page packing; capped at max_nodes after exclude_ids.
+DISKANN_DLLEXPORT int compute_edge_disk_cache_list(
     const VamanaGraph &graph, const std::vector<uint64_t> &node_expand,
     const std::vector<std::tuple<uint32_t, uint32_t, uint64_t>> &directed_edges, uint64_t nnodes_per_sector,
     uint32_t k_hops, uint64_t max_nodes, const std::unordered_set<uint32_t> &exclude_ids,
