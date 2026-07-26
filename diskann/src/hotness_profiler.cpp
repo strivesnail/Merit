@@ -20,6 +20,8 @@ void HotnessProfiler::init(uint64_t num_points)
         _node_expand[i].store(0, std::memory_order_relaxed);
     std::lock_guard<std::mutex> lock(_edge_mutex);
     _directed_edges.clear();
+    std::lock_guard<std::mutex> flock(_frontier_mutex);
+    _frontier_templates.clear();
 }
 
 void HotnessProfiler::set_enabled(bool enabled)
@@ -46,6 +48,19 @@ void HotnessProfiler::on_directed_edge(uint32_t parent, uint32_t child)
     const uint64_t key = directed_edge_key(parent, child);
     std::lock_guard<std::mutex> lock(_edge_mutex);
     _directed_edges[key]++;
+}
+
+void HotnessProfiler::on_merit_hop_frontier(const std::vector<uint32_t> &merit_nodes)
+{
+    if (!_enabled || merit_nodes.empty())
+        return;
+    std::vector<uint32_t> key = merit_nodes;
+    std::sort(key.begin(), key.end());
+    key.erase(std::unique(key.begin(), key.end()), key.end());
+    if (key.empty())
+        return;
+    std::lock_guard<std::mutex> lock(_frontier_mutex);
+    _frontier_templates[key]++;
 }
 
 static void print_count_cdf(const std::string &name, std::vector<uint64_t> counts)
@@ -120,6 +135,33 @@ int HotnessProfiler::save(const std::string &output_prefix) const
     diskann::save_bin<uint32_t>(output_prefix + "_edge_v.bin", edge_v.data(), nedges, 1);
     diskann::save_bin<uint64_t>(output_prefix + "_edge_count.bin", edge_c.data(), nedges, 1);
 
+    {
+        std::lock_guard<std::mutex> lock(_frontier_mutex);
+        const std::string frontier_path = output_prefix + "_frontier_templates.bin";
+        std::ofstream frontier_out(frontier_path, std::ios::binary);
+        if (!frontier_out)
+        {
+            diskann::cerr << "Failed to open " << frontier_path << " for writing" << std::endl;
+            return -1;
+        }
+        const uint64_t n_frontier = _frontier_templates.size();
+        frontier_out.write(reinterpret_cast<const char *>(&n_frontier), sizeof(uint64_t));
+        for (const auto &kv : _frontier_templates)
+        {
+            const uint64_t weight = kv.second;
+            const uint64_t n_nodes = kv.first.size();
+            frontier_out.write(reinterpret_cast<const char *>(&weight), sizeof(uint64_t));
+            frontier_out.write(reinterpret_cast<const char *>(&n_nodes), sizeof(uint64_t));
+            if (n_nodes > 0)
+            {
+                frontier_out.write(reinterpret_cast<const char *>(kv.first.data()),
+                                   static_cast<std::streamsize>(n_nodes * sizeof(uint32_t)));
+            }
+        }
+        diskann::cout << "Saved frontier templates to " << frontier_path << " (" << n_frontier << " templates)"
+                      << std::endl;
+    }
+
     diskann::cout << "Saved access profile to prefix " << output_prefix << " (" << nedges << " directed edges)"
                   << std::endl;
     return 0;
@@ -162,6 +204,45 @@ int HotnessProfiler::load(const std::string &profile_prefix, std::vector<uint64_
     delete[] u_buf;
     delete[] v_buf;
     delete[] c_buf;
+    return 0;
+}
+
+int HotnessProfiler::load_frontier_templates(const std::string &profile_prefix,
+                                             std::vector<std::pair<uint64_t, std::vector<uint32_t>>> &templates)
+{
+    templates.clear();
+    const std::string path = profile_prefix + "_frontier_templates.bin";
+    if (!file_exists(path))
+        return -1;
+
+    std::ifstream in(path, std::ios::binary);
+    if (!in)
+        return -1;
+
+    uint64_t n_frontier = 0;
+    in.read(reinterpret_cast<char *>(&n_frontier), sizeof(uint64_t));
+    if (!in)
+        return -1;
+
+    templates.reserve(static_cast<size_t>(n_frontier));
+    for (uint64_t i = 0; i < n_frontier; ++i)
+    {
+        uint64_t weight = 0;
+        uint64_t n_nodes = 0;
+        in.read(reinterpret_cast<char *>(&weight), sizeof(uint64_t));
+        in.read(reinterpret_cast<char *>(&n_nodes), sizeof(uint64_t));
+        if (!in)
+            return -1;
+        std::vector<uint32_t> nodes(static_cast<size_t>(n_nodes));
+        if (n_nodes > 0)
+        {
+            in.read(reinterpret_cast<char *>(nodes.data()),
+                    static_cast<std::streamsize>(n_nodes * sizeof(uint32_t)));
+            if (!in)
+                return -1;
+        }
+        templates.emplace_back(weight, std::move(nodes));
+    }
     return 0;
 }
 

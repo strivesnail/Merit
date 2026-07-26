@@ -868,10 +868,10 @@ int main(int argc, char **argv)
             "Append MERIT disk tier to a copy of _disk.index; one fd + merged io_uring batch per hop.");
         optional_configs.add_options()(
             "merit_disk_cache_k_hops", po::value<uint32_t>(&merit_disk_cache_k_hops)->default_value(2),
-            "MERIT disk sidecar node order: 0 = flat Top-N by node_expand; >0 = k-hop page packing (with node/edge layout).");
+            "MERIT disk sidecar node order: 0 = flat Top-N by node_expand; >0 = k-hop page packing (node/edge) or beam width (frontier layout D).");
         optional_configs.add_options()(
             "merit_disk_cache_layout", po::value<std::string>(&merit_disk_cache_layout)->default_value("node"),
-            "MERIT disk sidecar packing: flat | node (hot-node k-hop) | edge (edge-importance packing).");
+            "MERIT disk sidecar packing: flat | node (hot-node k-hop) | edge (edge-importance) | d/frontier (beam frontier co-location).");
         optional_configs.add_options()(
             "merit_disk_cache_reuse_prefix", po::value<std::string>(&merit_disk_cache_reuse_prefix)->default_value(""),
             "Load existing sidecar from prefix_merit_dc.{data,nodes} instead of repacking.");

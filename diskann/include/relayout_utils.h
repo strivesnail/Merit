@@ -49,7 +49,14 @@ DISKANN_DLLEXPORT int compute_hot_node_disk_cache_list(
     uint32_t k_hops, uint64_t max_nodes, const std::unordered_set<uint32_t> &exclude_ids,
     std::vector<uint32_t> &node_list);
 
-// After hot/edge/flat packing: append any nodes not yet in the list (ascending id) until max_nodes.
+// MERIT disk sidecar: beam frontier co-location (Layout D); beam_width caps template size.
+DISKANN_DLLEXPORT int compute_frontier_disk_cache_list(
+    const VamanaGraph &graph, const std::vector<uint64_t> &node_expand,
+    const std::vector<std::tuple<uint32_t, uint32_t, uint64_t>> &directed_edges, const std::string &profile_prefix,
+    uint64_t nnodes_per_sector, uint32_t beam_width, uint64_t max_nodes,
+    const std::unordered_set<uint32_t> &exclude_ids, std::vector<uint32_t> &node_list);
+
+// After hot/edge/flat/frontier packing: append remaining profile-hot nodes (expand>0) until max_nodes.
 DISKANN_DLLEXPORT void append_uncounted_nodes_to_disk_list(const std::vector<uint64_t> &node_expand, uint64_t max_nodes,
                                                           const std::unordered_set<uint32_t> &exclude_ids,
                                                           std::vector<uint32_t> &node_list);

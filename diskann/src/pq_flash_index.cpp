@@ -1606,6 +1606,20 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
                 stats->hop_frontier_trace.push_back(std::move(rec));
             }
 
+            if (_hotness_profiler.enabled())
+            {
+                // Sidecar active: record merit-sidecar IO groups; otherwise base frontier (pre-sidecar profile).
+                if (!_merit_dc_map.empty())
+                {
+                    if (!merit_frontier.empty())
+                        _hotness_profiler.on_merit_hop_frontier(merit_frontier);
+                }
+                else if (!frontier.empty())
+                {
+                    _hotness_profiler.on_merit_hop_frontier(frontier);
+                }
+            }
+
             if (_merit_unified_disk && (!merit_frontier.empty() || !frontier.empty()))
             {
                 if (stats != nullptr)
@@ -2498,6 +2512,19 @@ int PQFlashIndex<T, LabelT>::build_merit_disk_node_list(const std::string &profi
             0)
             return -1;
         diskann::cout << "MERIT disk-cache node list: edge-importance packing, k_hops=" << k_hops
+                      << ", selected " << node_list.size() << " nodes (exclude memory-tier=" << exclude_ids.size()
+                      << ")." << std::endl;
+        append_uncounted_nodes_to_disk_list(node_expand, max_nodes, exclude_ids, node_list);
+        return 0;
+    }
+
+    if (layout == "frontier")
+    {
+        const uint32_t beam_width = (k_hops > 0) ? k_hops : 4;
+        if (compute_frontier_disk_cache_list(graph, node_expand, edges, profile_prefix, nps, beam_width, max_nodes,
+                                             exclude_ids, node_list) != 0)
+            return -1;
+        diskann::cout << "MERIT disk-cache node list: frontier co-location packing, beam_width=" << beam_width
                       << ", selected " << node_list.size() << " nodes (exclude memory-tier=" << exclude_ids.size()
                       << ")." << std::endl;
         append_uncounted_nodes_to_disk_list(node_expand, max_nodes, exclude_ids, node_list);
