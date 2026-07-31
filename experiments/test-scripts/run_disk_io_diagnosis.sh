@@ -1,14 +1,19 @@
 #!/usr/bin/env bash
-# Systematic checks for Mean IO (us) vs Disk Reads: sidecar vs unified, sector cache, run order, reps.
+# Systematic checks for Mean IO (us) vs Disk Reads: disk cache file vs unified, sector cache, run order, reps.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 DISKANN_BUILD="${DISKANN_BUILD:-$(cd "${SCRIPT_DIR}/../../diskann/build" && pwd)}"
 DATA_DIR="${DATA_DIR:-${REPO_ROOT}/data/sift1m}"
+# shellcheck source=merit_ramfs_env.sh disable=SC1091
+source "${SCRIPT_DIR}/merit_ramfs_env.sh"
+PERSIST_DATA_DIR="${DATA_DIR}"
+merit_ramfs_activate "${PERSIST_DATA_DIR}"
+DATA_DIR="${MERIT_RAMFS_ACTIVE_DATA_DIR}"
 QUERY_FILE="${QUERY_FILE:-${DATA_DIR}/sift_query.fbin}"
 PROFILE="${PROFILE:-${DATA_DIR}/run2_profile_same_trace}"
-OUT_DIR="${OUT_DIR:-${DATA_DIR}/disk_io_diagnosis_$(date +%Y%m%d_%H%M%S)}"
+OUT_DIR="${OUT_DIR:-${PERSIST_DATA_DIR}/disk_io_diagnosis_$(date +%Y%m%d_%H%M%S)}"
 SEARCH="${DISKANN_BUILD}/apps/search_disk_index"
 THREADS="${THREADS:-16}"
 L="${L:-100}"
@@ -21,7 +26,7 @@ DISK_K_HOPS="${DISK_K_HOPS:-2}"
 mkdir -p "${OUT_DIR}"
 SUMMARY="${OUT_DIR}/summary.tsv"
 : > "${SUMMARY}"
-echo -e "case\trep\tQPS\tMeanLat_us\tMeanIOs\tBasePages\tSidecarPg\tDiskReads\tSectCacheHit\tIoUsPerRead\tMeanIO_us\tMeritDcHit\tRecall" >> "${SUMMARY}"
+echo -e "case\trep\tQPS\tMeanLat_us\tMeanIOs\tBasePages\tDiskCachePg\tDiskReads\tSectCacheHit\tIoUsPerRead\tMeanIO_us\tMeritDcHit\tRecall" >> "${SUMMARY}"
 
 COMMON=(
   --data_type float --dist_fn l2
@@ -69,8 +74,8 @@ while i < len(hdr):
         cols.append(("IoUsPerRead", i)); i += 1; continue
     if hdr[i] == "BasePages":
         cols.append(("BasePages", i)); i += 1; continue
-    if hdr[i] == "SidecarPg":
-        cols.append(("SidecarPg", i)); i += 1; continue
+    if hdr[i] == "DiskCachePg":
+        cols.append(("DiskCachePg", i)); i += 1; continue
     if hdr[i] == "SectCacheHit":
         cols.append(("SectCacheHit", i)); i += 1; continue
     if hdr[i] == "MeritDcHit":
@@ -109,8 +114,8 @@ while hi < len(hdr) and di < len(row):
         out["MeanIOs"] = row[di]; hi += 2; di += 1; continue
     if tok == "BasePages":
         out["BasePages"] = row[di]; hi += 1; di += 1; continue
-    if tok == "SidecarPg":
-        out["SidecarPg"] = row[di]; hi += 1; di += 1; continue
+    if tok == "DiskCachePg":
+        out["DiskCachePg"] = row[di]; hi += 1; di += 1; continue
     if tok == "Dup":
         hi += 2; di += 1; continue
     if tok == "Disk" and hi + 1 < len(hdr) and hdr[hi + 1] == "Reads":
@@ -137,7 +142,7 @@ while hi < len(hdr) and di < len(row):
         out["QPS"] = row[di]; hi += 1; di += 1; continue
     hi += 1; di += 1
 
-for k in ("QPS", "MeanLat", "MeanIOs", "BasePages", "SidecarPg", "DiskReads", "SectCacheHit", "IoUsPerRead", "MeanIO_us", "MeritDcHit", "Recall"):
+for k in ("QPS", "MeanLat", "MeanIOs", "BasePages", "DiskCachePg", "DiskReads", "SectCacheHit", "IoUsPerRead", "MeanIO_us", "MeritDcHit", "Recall"):
     print(out.get(k, ""))
 PY
 }
@@ -171,20 +176,20 @@ for r in $(seq 1 "${REPS}"); do
     "${COMMON[@]}" --enable_query_sector_cache \
     --result_path "${OUT_DIR}/baseline_r${r}"
 
-  run_one sidecar_qsc "${r}" \
+  run_one disk_cache_qsc "${r}" \
     "${DISK_COMMON[@]}" --enable_query_sector_cache \
     --merit_unified_disk_cache false \
-    --result_path "${OUT_DIR}/sidecar_qsc_r${r}"
+    --result_path "${OUT_DIR}/disk_cache_qsc_r${r}"
 
   run_one unified_qsc "${r}" \
     "${DISK_COMMON[@]}" --enable_query_sector_cache \
     --merit_unified_disk_cache true \
     --result_path "${OUT_DIR}/unified_qsc_r${r}"
 
-  run_one sidecar_no_qsc "${r}" \
+  run_one disk_cache_no_qsc "${r}" \
     "${DISK_COMMON[@]}" \
     --merit_unified_disk_cache false \
-    --result_path "${OUT_DIR}/sidecar_no_qsc_r${r}"
+    --result_path "${OUT_DIR}/disk_cache_no_qsc_r${r}"
 done
 
 # H4: cold page cache (optional — may need sudo)
@@ -192,8 +197,8 @@ if [[ "${DROP_CACHES:-0}" == "1" ]]; then
   echo 3 | sudo tee /proc/sys/vm/drop_caches >/dev/null || true
   run_one baseline_cold 1 "${COMMON[@]}" --enable_query_sector_cache --result_path "${OUT_DIR}/baseline_cold"
   echo 3 | sudo tee /proc/sys/vm/drop_caches >/dev/null || true
-  run_one sidecar_cold 1 "${DISK_COMMON[@]}" --enable_query_sector_cache \
-    --merit_unified_disk_cache false --result_path "${OUT_DIR}/sidecar_cold"
+  run_one disk_cache_cold 1 "${DISK_COMMON[@]}" --enable_query_sector_cache \
+    --merit_unified_disk_cache false --result_path "${OUT_DIR}/disk_cache_cold"
   echo 3 | sudo tee /proc/sys/vm/drop_caches >/dev/null || true
   run_one unified_cold 1 "${DISK_COMMON[@]}" --enable_query_sector_cache \
     --merit_unified_disk_cache true --result_path "${OUT_DIR}/unified_cold"
@@ -217,7 +222,7 @@ with open(path) as f:
             try: return float(x)
             except: return None
         rows.append((case, int(rep), {k: ffloat(v) for k, v in zip(
-            ["QPS","MeanLat","MeanIOs","BasePages","SidecarPg","DiskReads","SectCacheHit","IoUsPerRead","MeanIO_us","MeritDcHit","Recall"],
+            ["QPS","MeanLat","MeanIOs","BasePages","DiskCachePg","DiskReads","SectCacheHit","IoUsPerRead","MeanIO_us","MeritDcHit","Recall"],
             p[2:])}))
 
 by = defaultdict(list)
@@ -235,7 +240,7 @@ for case in sorted(by.keys()):
         return statistics.pstdev(xs) if len(xs) > 1 else 0.0
     print(f"{case:20s}  MeanIO_us={avg('MeanIO_us'):7.1f}±{std('MeanIO_us'):5.1f}  "
           f"DiskRd={avg('DiskReads'):6.2f}  IoUs/Rd={avg('IoUsPerRead'):5.2f}  "
-          f"BasePg={avg('BasePages'):6.2f}  SidePg={avg('SidecarPg') if avg('SidecarPg')==avg('SidecarPg') else '-':>6}  "
+          f"BasePg={avg('BasePages'):6.2f}  SidePg={avg('DiskCachePg') if avg('DiskCachePg')==avg('DiskCachePg') else '-':>6}  "
           f"QPS={avg('QPS'):7.1f}")
 PY
 

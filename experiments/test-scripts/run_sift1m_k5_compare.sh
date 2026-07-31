@@ -3,12 +3,18 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DISKANN_BUILD="${DISKANN_BUILD:-${REPO_ROOT}/diskann/build}"
 DATA_DIR="${DATA_DIR:-${REPO_ROOT}/data/sift1m}"
+# shellcheck source=merit_ramfs_env.sh disable=SC1091
+source "${SCRIPT_DIR}/merit_ramfs_env.sh"
+PERSIST_DATA_DIR="${DATA_DIR}"
+merit_ramfs_activate "${PERSIST_DATA_DIR}"
+DATA_DIR="${MERIT_RAMFS_ACTIVE_DATA_DIR}"
 INDEX_PREFIX="${INDEX_PREFIX:-${DATA_DIR}/sift1m_index}"
 PROFILE_PREFIX="${PROFILE_PREFIX:-${DATA_DIR}/run2_profile}"
 K_HOPS="${K_HOPS:-5}"
-LOG="${LOG:-${DATA_DIR}/run_1m_k${K_HOPS}_compare.log}"
+LOG="${LOG:-${PERSIST_DATA_DIR}/run_1m_k${K_HOPS}_compare.log}"
 
 RELAYOUT="${DISKANN_BUILD}/apps/relayout_disk_index"
 APPLY="${DISKANN_BUILD}/apps/apply_disk_permutation"

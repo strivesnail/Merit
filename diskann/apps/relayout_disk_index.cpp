@@ -24,10 +24,11 @@ int main(int argc, char **argv)
         "Prefix for access profile files from Run2")("output_order", po::value<std::string>(&output_order)->required(),
                                                      "Output order file prefix")(
         "layout", po::value<std::string>(&layout_mode)->default_value("hotnode"),
-        "Layout algorithm: hotnode (node expand) or edge (edge-importance packing)")(
+        "Layout: hotnode(B) | edge(C) | edge_star | frontier(D) | directed_beam(E) (k_hops = beam_width for E)")(
         "disk_index", po::value<std::string>(&disk_index)->default_value(std::string("")),
         "Path to _disk.index (used to read nnodes_per_sector when auto-detecting)")(
-        "k_hops", po::value<uint32_t>(&k_hops)->default_value(2), "Undirected k-hop neighborhood radius")(
+        "k_hops", po::value<uint32_t>(&k_hops)->default_value(2),
+        "k-hop radius (edge/hotnode) or beam_width (directed_beam)")(
         "nnodes_per_sector", po::value<uint64_t>(&nnodes_per_sector)->default_value(0),
         "Nodes per 4KB sector (0 = read from disk_index, else auto from graph width)");
 
@@ -56,8 +57,8 @@ int main(int argc, char **argv)
     }
 
     std::vector<uint64_t> node_expand;
-    std::vector<std::tuple<uint32_t, uint32_t, uint64_t>> unused_edges;
-    if (diskann::HotnessProfiler::load(profile_prefix, node_expand, unused_edges) != 0)
+    std::vector<std::tuple<uint32_t, uint32_t, uint64_t>> directed_edges;
+    if (diskann::HotnessProfiler::load(profile_prefix, node_expand, directed_edges) != 0)
     {
         std::cerr << "Failed to load access profile from prefix " << profile_prefix << std::endl;
         return -1;
@@ -90,21 +91,37 @@ int main(int argc, char **argv)
         }
     }
 
+    const std::string layout = diskann::normalize_disk_cache_layout(layout_mode);
     std::vector<uint32_t> order;
-    const bool use_edge_layout = (layout_mode == "edge" || layout_mode == "jiang");
-    if (use_edge_layout)
+    int rc = -1;
+    if (layout == "edge" || layout == "jiang")
     {
-        if (diskann::compute_edge_relayout_order(graph, node_expand, unused_edges, nnodes_per_sector, k_hops,
-                                                  order) != 0)
-        {
-            std::cerr << "Failed to compute edge-importance relayout order." << std::endl;
-            return -1;
-        }
+        rc = diskann::compute_edge_relayout_order(graph, node_expand, directed_edges, nnodes_per_sector, k_hops, order);
     }
-    else if (diskann::compute_hot_node_relayout_order(graph, node_expand, unused_edges, nnodes_per_sector, k_hops,
-                                                    order) != 0)
+    else if (layout == "edge_star")
     {
-        std::cerr << "Failed to compute hot-node relayout order." << std::endl;
+        rc = diskann::compute_edge_star_relayout_order(graph, node_expand, directed_edges, nnodes_per_sector, order);
+    }
+    else if (layout == "directed_beam")
+    {
+        const uint32_t beam_width = (k_hops > 0) ? k_hops : 1;
+        rc = diskann::compute_directed_beam_relayout_order(graph, node_expand, directed_edges, nnodes_per_sector,
+                                                           beam_width, order);
+    }
+    else if (layout == "node")
+    {
+        rc = diskann::compute_hot_node_relayout_order(graph, node_expand, directed_edges, nnodes_per_sector, k_hops,
+                                                      order);
+    }
+    else
+    {
+        std::cerr << "Unsupported relayout layout: " << layout_mode << " (normalized: " << layout << ")" << std::endl;
+        return -1;
+    }
+
+    if (rc != 0)
+    {
+        std::cerr << "Failed to compute relayout order (layout=" << layout << ")." << std::endl;
         return -1;
     }
 
@@ -116,6 +133,6 @@ int main(int argc, char **argv)
 
     diskann::cout << "Relayout order written to " << output_order << " (" << order.size()
                   << " nodes, nnodes_per_sector=" << nnodes_per_sector << ", k_hops=" << k_hops
-                  << ", layout=" << layout_mode << ")" << std::endl;
+                  << ", layout=" << layout << ")" << std::endl;
     return 0;
 }

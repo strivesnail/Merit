@@ -1,10 +1,16 @@
 #!/usr/bin/env bash
 # SIFT100K re-layout experiment: Run1 (baseline) -> Run2 (profile) -> offline relayout -> Run3 (relayout)
 set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DISKANN_BUILD="${DISKANN_BUILD:-${REPO_ROOT}/diskann/build}"
 DATA_DIR="${DATA_DIR:-${REPO_ROOT}/data/sift100k}"
+# shellcheck source=merit_ramfs_env.sh disable=SC1091
+source "${SCRIPT_DIR}/../test-scripts/merit_ramfs_env.sh"
+PERSIST_DATA_DIR="${DATA_DIR}"
+merit_ramfs_activate "${PERSIST_DATA_DIR}"
+DATA_DIR="${MERIT_RAMFS_ACTIVE_DATA_DIR}"
 INDEX_PREFIX="${INDEX_PREFIX:-${DATA_DIR}/sift100k_index}"
 RELAYOUT_PREFIX="${RELAYOUT_PREFIX:-${DATA_DIR}/sift100k_relayout_index}"
 PROFILE_PREFIX="${PROFILE_PREFIX:-${DATA_DIR}/run2_profile}"

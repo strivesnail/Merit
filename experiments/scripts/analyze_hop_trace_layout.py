@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Analyze hop trace vs MERIT sidecar page layout for one query."""
+"""Analyze hop trace vs MERIT disk cache page layout for one query."""
 
 from __future__ import annotations
 
@@ -87,7 +87,7 @@ def main() -> None:
             mates = page_nodes[sec]
             same_hop_mates = [m for m in mates if m in merit]
             print(
-                f"  - node {nid}: sidecar sector {sec} slot {slot}; "
+                f"  - node {nid}: disk cache sector {sec} slot {slot}; "
                 f"page mates {mates}; co-accessed this hop {same_hop_mates}"
             )
             if sec not in shown_pages and len(mates) >= 2:
@@ -97,7 +97,7 @@ def main() -> None:
                 print(f"    [layout page] packed chain: {chain}")
 
         if len(hop_secs) > 1:
-            print(f"  => this hop touches {len(hop_secs)} distinct sidecar sectors (ideally 1 if layout matched beam)")
+            print(f"  => this hop touches {len(hop_secs)} distinct disk cache sectors (ideally 1 if layout matched beam)")
 
         # Compare with profile parent expansion for first merit node
         if merit:
@@ -106,7 +106,7 @@ def main() -> None:
             prof_on_page = [n for n in prof_nbrs if n in loc and loc[n][0] == loc[p][0]]
             print(
                 f"  profile parent {p} top neighbors (sample): {prof_nbrs[:6]}; "
-                f"on same sidecar page: {prof_on_page}"
+                f"on same disk cache page: {prof_on_page}"
             )
         print()
 

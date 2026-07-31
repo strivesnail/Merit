@@ -132,7 +132,7 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
     DISKANN_DLLEXPORT int build_merit_memory_node_list(const std::string &profile_prefix, uint64_t max_nodes,
                                                       std::vector<uint32_t> &node_list,
                                                       uint64_t rank_skip = 0) const;
-    // Hot-node + k-hop page order (relayout semantics); sidecar only, max_nodes cap, exclude memory-tier ids.
+    // Hot-node + k-hop page order (relayout semantics); disk cache only, max_nodes cap, exclude memory-tier ids.
     DISKANN_DLLEXPORT int build_merit_disk_node_list(const std::string &profile_prefix, uint64_t max_nodes,
                                                      uint64_t memory_tier_exclude_count, uint32_t k_hops,
                                                      const std::string &layout, std::vector<uint32_t> &node_list) const;
@@ -151,13 +151,14 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
                                                     uint64_t &evicted_nodes, std::string &report);
 
     // MERIT Disk Cache: ratio of base _disk.index size (e.g. 0.1 => 10% of base bytes).
-    DISKANN_DLLEXPORT int plan_merit_disk_cache(double base_ratio, uint64_t &out_max_nodes, std::string &report) const;
+    DISKANN_DLLEXPORT int plan_merit_disk_cache(double base_ratio, uint64_t &out_max_nodes, std::string &report,
+                                                bool allow_replica_slots = false) const;
     // Build side file from ranked expand nodes; rank_skip excludes hottest (memory tier).
     DISKANN_DLLEXPORT int build_and_load_merit_disk_cache(const std::string &profile_prefix, uint64_t max_nodes,
                                                           const std::string &output_prefix, uint64_t rank_skip = 0,
                                                           bool unified_single_file = false, uint32_t k_hops = 2,
                                                           const std::string &layout = "node");
-    // Load existing sidecar from prefix_merit_dc.{data,nodes} without repacking.
+    // Load existing disk cache from prefix_merit_dc.{data,nodes} without repacking.
     DISKANN_DLLEXPORT int load_merit_disk_cache_from_prefix(const std::string &output_prefix);
     // Rebuild disk cache (batch eviction); evicted = nodes dropped vs previous map.
     DISKANN_DLLEXPORT int reload_merit_disk_cache(const std::string &profile_prefix, double base_ratio,
@@ -208,13 +209,13 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
         MeritDiskLoc loc;
     };
 
-    void prepare_merit_sidecar_io(const std::vector<uint32_t> &merit_ids, SSDQueryScratch<T> *query_scratch,
+    void prepare_merit_disk_cache_io(const std::vector<uint32_t> &merit_ids, SSDQueryScratch<T> *query_scratch,
                                   char *sector_scratch, uint64_t &sector_scratch_idx, size_t num_sectors_per_node,
                                   std::vector<MeritReadPending> &pending, std::vector<AlignedRead> &merit_io,
                                   std::unordered_map<uint32_t, std::vector<size_t>> &disk_fanout_groups,
                                   QueryStats *stats, uint32_t &num_ios);
 
-    void complete_merit_sidecar_io(SSDQueryScratch<T> *query_scratch, std::vector<MeritReadPending> &pending,
+    void complete_merit_disk_cache_io(SSDQueryScratch<T> *query_scratch, std::vector<MeritReadPending> &pending,
                                    const std::unordered_map<uint32_t, std::vector<size_t>> &disk_fanout_groups);
 
     void finalize_merit_pending_nodes(const std::vector<MeritReadPending> &pending, SSDQueryScratch<T> *query_scratch,
@@ -305,7 +306,7 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
 
     // MERIT disk-cache: packed side file; location = (sector_id, slot_in_sector)
     std::shared_ptr<AlignedFileReader> _merit_disk_reader;
-    tsl::robin_map<uint32_t, MeritDiskLoc> _merit_dc_map;
+    tsl::robin_map<uint32_t, std::vector<MeritDiskLoc>> _merit_dc_map;
     std::string _merit_dc_path;
     uint64_t _merit_dc_num_nodes = 0;
     bool _merit_unified_disk = false;

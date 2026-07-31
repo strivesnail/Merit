@@ -63,8 +63,8 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
                       const double merit_disk_cache_ratio = 0.0, const bool merit_disk_cache_exclude_memory = true,
                       const bool merit_memory_runtime_admit = false,
                       const double merit_evict_memory_gb = 0.0, const double merit_evict_disk_ratio = 0.0,
-                      const bool merit_unified_disk_cache = false, uint32_t merit_disk_cache_k_hops = 2,
-                      const std::string &merit_disk_cache_layout = "node",
+                      const bool merit_unified_disk_cache = false, uint32_t merit_disk_cache_k_hops = 1,
+                      const std::string &merit_disk_cache_layout = "directed_beam",
                       const std::string &merit_disk_cache_reuse_prefix = "",
                       const std::string &dump_query_stats_path = "",
                       const std::string &dump_base_nodes_path = "",
@@ -243,7 +243,9 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
         }
         uint64_t dc_nodes = 0;
         std::string dc_report;
-        if (_pFlashIndex->plan_merit_disk_cache(merit_disk_cache_ratio, dc_nodes, dc_report) != 0)
+        if (_pFlashIndex->plan_merit_disk_cache(merit_disk_cache_ratio, dc_nodes, dc_report,
+                                                diskann::disk_cache_layout_allows_replicas(merit_disk_cache_layout)) !=
+            0)
         {
             diskann::cerr << dc_report << std::endl;
             return -1;
@@ -261,7 +263,7 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
         }
         if (!merit_disk_cache_reuse_prefix.empty())
         {
-            diskann::cout << "MERIT disk-cache: reusing sidecar at prefix " << merit_disk_cache_reuse_prefix << std::endl;
+            diskann::cout << "MERIT disk-cache: reusing disk cache at prefix " << merit_disk_cache_reuse_prefix << std::endl;
             if (_pFlashIndex->load_merit_disk_cache_from_prefix(merit_disk_cache_reuse_prefix) != 0)
             {
                 diskann::cerr << "Failed to load MERIT disk cache from " << merit_disk_cache_reuse_prefix << std::endl;
@@ -276,7 +278,7 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
             return -1;
         }
         _pFlashIndex->enable_query_sector_cache(true);
-        diskann::cout << "MERIT disk-cache: query-local sector cache enabled (base + sidecar sectors)." << std::endl;
+        diskann::cout << "MERIT disk-cache: query-local sector cache enabled (base + disk cache sectors)." << std::endl;
     }
 
     omp_set_num_threads(num_threads);
@@ -369,7 +371,7 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
                   << "Mean Latency" << std::setw(16) << "99 Latency" << std::setw(16) << "Mean IOs" << std::setw(16)
                   << "BasePages";
     if (merit_disk_cache_ratio > 0.0)
-        diskann::cout << std::setw(16) << "SidecarPg";
+        diskann::cout << std::setw(16) << "DiskCachePg";
     diskann::cout << std::setw(16) << "Dup IOs";
     if (enable_query_sector_cache)
     {
@@ -471,7 +473,7 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
         auto mean_pages = diskann::get_mean_stats<uint32_t>(
             stats, query_num, [](const diskann::QueryStats &stats) { return stats.n_unique_sectors; });
 
-        auto mean_sidecar_pages = diskann::get_mean_stats<uint32_t>(
+        auto mean_disk_cache_pages = diskann::get_mean_stats<uint32_t>(
             stats, query_num, [](const diskann::QueryStats &stats) { return stats.n_unique_merit_sectors; });
 
         auto mean_dup_ios = diskann::get_mean_stats<uint32_t>(stats, query_num, [](const diskann::QueryStats &stats) {
@@ -518,7 +520,7 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
                       << std::setw(16) << mean_latency << std::setw(16) << latency_99 << std::setw(16) << mean_ios
                       << std::setw(16) << mean_pages;
         if (merit_disk_cache_ratio > 0.0)
-            diskann::cout << std::setw(16) << mean_sidecar_pages;
+            diskann::cout << std::setw(16) << mean_disk_cache_pages;
         diskann::cout << std::setw(16) << mean_dup_ios;
         if (enable_query_sector_cache)
         {
@@ -631,7 +633,7 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
             std::ofstream qout(dump_query_stats_path);
             if (qout.is_open())
             {
-                qout << "query_id,total_us,io_us,cpu_us,n_ios,n_base_pages,n_sidecar_pages,n_merit_hits,"
+                qout << "query_id,total_us,io_us,cpu_us,n_ios,n_base_pages,n_disk_cache_pages,n_merit_hits,"
                         "n_mem_hits,n_disk_reads,n_sector_cache_hits,n_hops,max_sector_jump\n";
                 for (size_t qi = 0; qi < query_num; qi++)
                 {
@@ -662,7 +664,7 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
             std::ofstream bout(dump_base_nodes_path);
             if (bout.is_open())
             {
-                bout << "query_id,node_id,node_expand,in_mem_pool,in_sidecar_map\n";
+                bout << "query_id,node_id,node_expand,in_mem_pool,in_disk_cache_map\n";
                 for (size_t qi = 0; qi < query_num; qi++)
                 {
                     for (const uint32_t nid : stats[qi].base_frontier_nodes)
@@ -764,8 +766,8 @@ int main(int argc, char **argv)
     double merit_evict_memory_gb = 0.0;
     double merit_evict_disk_ratio = 0.0;
     bool merit_unified_disk_cache = false;
-    uint32_t merit_disk_cache_k_hops = 2;
-    std::string merit_disk_cache_layout = "node";
+    uint32_t merit_disk_cache_k_hops = 1;
+    std::string merit_disk_cache_layout = "directed_beam";
     std::string merit_disk_cache_reuse_prefix;
     std::string dump_query_stats_path;
     std::string dump_base_nodes_path;
@@ -850,7 +852,8 @@ int main(int argc, char **argv)
             "GB reserved for OS/other (not available to MERIT cache). Default: 8.");
         optional_configs.add_options()(
             "merit_disk_cache_ratio", po::value<double>(&merit_disk_cache_ratio)->default_value(0.0),
-            "MERIT Disk Cache size as a fraction of base _disk.index bytes (e.g. 0.1 => 10%). 0=disabled.");
+            "MERIT Disk Cache size as a fraction of base _disk.index bytes (e.g. 0.1 => 10%). "
+            "0=disabled. For edge_replica, values >1.0 are allowed (space-for-time replicas).");
         optional_configs.add_options()(
             "merit_disk_cache_exclude_memory", po::value<bool>(&merit_disk_cache_exclude_memory)->default_value(true),
             "If true, disk-cache uses expand ranks after memory tier (no duplicate nodes).");
@@ -867,20 +870,20 @@ int main(int argc, char **argv)
             "merit_unified_disk_cache", po::value<bool>(&merit_unified_disk_cache)->default_value(false),
             "Append MERIT disk tier to a copy of _disk.index; one fd + merged io_uring batch per hop.");
         optional_configs.add_options()(
-            "merit_disk_cache_k_hops", po::value<uint32_t>(&merit_disk_cache_k_hops)->default_value(2),
-            "MERIT disk sidecar node order: 0 = flat Top-N by node_expand; >0 = k-hop page packing (node/edge) or beam width (frontier layout D).");
+            "merit_disk_cache_k_hops", po::value<uint32_t>(&merit_disk_cache_k_hops)->default_value(1),
+            "MERIT disk cache node order: 0 = flat Top-N by node_expand; >0 = k-hop page packing (node/edge) or beam width (frontier/directed_beam).");
         optional_configs.add_options()(
-            "merit_disk_cache_layout", po::value<std::string>(&merit_disk_cache_layout)->default_value("node"),
-            "MERIT disk sidecar packing: flat | node (hot-node k-hop) | edge (edge-importance) | d/frontier (beam frontier co-location).");
+            "merit_disk_cache_layout", po::value<std::string>(&merit_disk_cache_layout)->default_value("directed_beam"),
+            "MERIT disk cache packing: flat(A) | node(B) | edge(C) | frontier(D) | directed_beam(E) | parent(P) | edge_dir | edge_star | dir_edge_star | directed_beam_hybrid | directed_star | d | e.");
         optional_configs.add_options()(
             "merit_disk_cache_reuse_prefix", po::value<std::string>(&merit_disk_cache_reuse_prefix)->default_value(""),
-            "Load existing sidecar from prefix_merit_dc.{data,nodes} instead of repacking.");
+            "Load existing disk cache from prefix_merit_dc.{data,nodes} instead of repacking.");
         optional_configs.add_options()(
             "dump_query_stats", po::value<std::string>(&dump_query_stats_path)->default_value(""),
             "Write per-query QueryStats CSV after search (for tail-latency analysis).");
         optional_configs.add_options()(
             "dump_base_nodes_path", po::value<std::string>(&dump_base_nodes_path)->default_value(""),
-            "Write base-frontier node ids per query (query_id,node_id,node_expand,in_mem_pool,in_sidecar_map).");
+            "Write base-frontier node ids per query (query_id,node_id,node_expand,in_mem_pool,in_disk_cache_map).");
         optional_configs.add_options()(
             "dump_hop_trace_path", po::value<std::string>(&dump_hop_trace_path)->default_value(""),
             "Write per-hop merit/base frontier nodes (query_id,hop,source,node_id).");

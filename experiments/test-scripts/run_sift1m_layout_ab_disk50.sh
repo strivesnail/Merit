@@ -5,6 +5,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 DISKANN_BUILD="${DISKANN_BUILD:-$(cd "${SCRIPT_DIR}/../../diskann/build" && pwd)}"
 DATA_DIR="${DATA_DIR:-${REPO_ROOT}/data/sift1m}"
+# shellcheck source=merit_ramfs_env.sh disable=SC1091
+source "${SCRIPT_DIR}/merit_ramfs_env.sh"
+PERSIST_DATA_DIR="${DATA_DIR}"
+merit_ramfs_activate "${PERSIST_DATA_DIR}"
+DATA_DIR="${MERIT_RAMFS_ACTIVE_DATA_DIR}"
 INDEX_PREFIX="${DATA_DIR}/sift1m_index"
 QUERY_FILE="${DATA_DIR}/sift_query.fbin"
 GT_FILE="${DATA_DIR}/sift_groundtruth.bin"
@@ -15,7 +20,7 @@ THREADS=16
 L=100 K=10 W=2
 SEARCH="${DISKANN_BUILD}/apps/search_disk_index"
 STAMP="$(date +%Y%m%d_%H%M%S)"
-OUT_DIR="${DATA_DIR}/layout_ab_disk50_${STAMP}"
+OUT_DIR="${PERSIST_DATA_DIR}/layout_ab_disk50_${STAMP}"
 LOG="${OUT_DIR}/run.log"
 mkdir -p "${OUT_DIR}"
 
@@ -54,7 +59,7 @@ run_case() {
       --merit_disk_cache_k_hops "${kh}"
   done
   echo "===== summary L=${L} W=${W} ====="
-  printf "%-12s %-6s %10s %10s %10s %10s %8s\n" "case" "kh" "MeanIOs" "BasePages" "DiskReads" "SidecarPg" "Recall"
+  printf "%-12s %-6s %10s %10s %10s %10s %8s\n" "case" "kh" "MeanIOs" "BasePages" "DiskReads" "DiskCachePg" "Recall"
   for tag in disk mem_disk; do
     for kh in 0 2; do
       row=$(extract_row "${OUT_DIR}/${tag}_kh${kh}.out")

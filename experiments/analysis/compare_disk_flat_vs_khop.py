@@ -182,7 +182,7 @@ def main():
 
     if khop_saved is not None:
         same = khop_saved == khop
-        print(f"Recomputed k-hop list matches saved sidecar: {same} (len {len(khop_saved)} vs {len(khop)})")
+        print(f"Recomputed k-hop list matches saved disk cache: {same} (len {len(khop_saved)} vs {len(khop)})")
 
     total_expand = int(node_expand.sum())
     active = int((node_expand > 0).sum())

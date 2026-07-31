@@ -6,8 +6,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 DISKANN_BUILD="${DISKANN_BUILD:-$(cd "${SCRIPT_DIR}/../../diskann/build" && pwd)}"
 DATA_DIR="${DATA_DIR:-${REPO_ROOT}/data/sift1m}"
-DROP_SCRIPT="${DROP_SCRIPT:-$(cd "${SCRIPT_DIR}/../.." && pwd)/scripts/drop_system_caches.sh}"
-LOG="${LOG:-${DATA_DIR}/run_1m_sector_cache_compare.log}"
+# shellcheck source=merit_ramfs_env.sh disable=SC1091
+source "${SCRIPT_DIR}/merit_ramfs_env.sh"
+PERSIST_DATA_DIR="${DATA_DIR}"
+merit_ramfs_activate "${PERSIST_DATA_DIR}"
+DATA_DIR="${MERIT_RAMFS_ACTIVE_DATA_DIR}"
+DROP_SCRIPT="${DROP_SCRIPT:-${REPO_ROOT}/scripts/drop_system_caches.sh}"
+LOG="${LOG:-${PERSIST_DATA_DIR}/run_1m_sector_cache_compare.log}"
 
 SEARCH="${DISKANN_BUILD}/apps/search_disk_index"
 THREADS="${THREADS:-16}"
@@ -73,14 +78,14 @@ run_search() {
   echo "SIFT1M sector-cache + cold comparison, L=${L} W=${W} K=${K} threads=${THREADS}"
   run_search "Run1 baseline (original layout)" \
     "${DATA_DIR}/sift1m_index" \
-    "${DATA_DIR}/scache_baseline_results"
+    "${PERSIST_DATA_DIR}/scache_baseline_results"
   run_search "Run3 edge-count relayout (k_hops=2)" \
     "${DATA_DIR}/sift1m_relayout_index" \
-    "${DATA_DIR}/scache_edge_results" \
+    "${PERSIST_DATA_DIR}/scache_edge_results" \
     "${DATA_DIR}/relayout_order_k2"
   run_search "Run3 node-count relayout (hot-node, k_hops=2)" \
     "${DATA_DIR}/sift1m_hotnode_relayout_index" \
-    "${DATA_DIR}/scache_node_results" \
+    "${PERSIST_DATA_DIR}/scache_node_results" \
     "${DATA_DIR}/relayout_order_hotnode"
   echo "=== $(date -Is) all searches done ==="
 } 2>&1 | tee "${LOG}"

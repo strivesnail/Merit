@@ -1,15 +1,20 @@
 #!/usr/bin/env bash
-# Compare MERIT disk cache: sidecar (_merit_dc.data) vs unified single-file + merged IO batch.
+# Compare MERIT disk cache: separate disk cache file (_merit_dc.data) vs unified single-file + merged IO batch.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 DISKANN_BUILD="${DISKANN_BUILD:-$(cd "${SCRIPT_DIR}/../../diskann/build" && pwd)}"
 DATA_DIR="${DATA_DIR:-${REPO_ROOT}/data/sift1m}"
+# shellcheck source=merit_ramfs_env.sh disable=SC1091
+source "${SCRIPT_DIR}/merit_ramfs_env.sh"
+PERSIST_DATA_DIR="${DATA_DIR}"
+merit_ramfs_activate "${PERSIST_DATA_DIR}"
+DATA_DIR="${MERIT_RAMFS_ACTIVE_DATA_DIR}"
 QUERY_FILE="${QUERY_FILE:-${DATA_DIR}/sift_query.fbin}"
 PROFILE="${PROFILE:-${DATA_DIR}/run2_profile_same_trace}"
 DISK_K_HOPS="${DISK_K_HOPS:-2}"
-OUT_DIR="${OUT_DIR:-${DATA_DIR}/unified_disk_bench}"
+OUT_DIR="${OUT_DIR:-${PERSIST_DATA_DIR}/unified_disk_bench}"
 SEARCH="${DISKANN_BUILD}/apps/search_disk_index"
 THREADS="${THREADS:-16}"
 L="${L:-100}"
@@ -40,19 +45,19 @@ run() {
   extract_row "${out}"
 }
 
-echo "Unified vs sidecar disk cache bench $(date -Is)"
+echo "Unified vs disk cache disk cache bench $(date -Is)"
 echo "profile=${PROFILE} query=${QUERY_FILE}"
 
-run sidecar_disk_only \
-  "${COMMON[@]}" --result_path "${OUT_DIR}/sidecar_disk" \
+run disk_cache_file_only \
+  "${COMMON[@]}" --result_path "${OUT_DIR}/disk_cache_file" \
   --merit_unified_disk_cache false
 
 run unified_disk_only \
   "${COMMON[@]}" --result_path "${OUT_DIR}/unified_disk" \
   --merit_unified_disk_cache true
 
-run sidecar_mem001_disk \
-  "${COMMON[@]}" --result_path "${OUT_DIR}/sidecar_both" \
+run disk_cache_mem001_disk \
+  "${COMMON[@]}" --result_path "${OUT_DIR}/disk_cache_both" \
   --merit_memory_gb 0.01 --merit_unified_disk_cache false
 
 run unified_mem001_disk \
@@ -62,7 +67,7 @@ run unified_mem001_disk \
 echo ""
 echo "===== TABLE ====="
 printf "%-28s %10s %12s %10s %12s %8s %8s\n" "Case" "QPS" "Latency_us" "MeanIOs" "MeanIO_us" "Recall" "MeritDC"
-for tag in sidecar_disk_only unified_disk_only sidecar_mem001_disk unified_mem001_disk; do
+for tag in disk_cache_file_only unified_disk_only disk_cache_mem001_disk unified_mem001_disk; do
   row=$(extract_row "${OUT_DIR}/${tag}.out")
   qps=$(echo "$row" | awk '{print $3}')
   lat=$(echo "$row" | awk '{print $4}')

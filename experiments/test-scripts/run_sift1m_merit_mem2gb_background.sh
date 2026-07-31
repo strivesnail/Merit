@@ -4,14 +4,19 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 DATA_DIR="${DATA_DIR:-${REPO_ROOT}/data/sift1m}"
+# shellcheck source=merit_ramfs_env.sh disable=SC1091
+source "${SCRIPT_DIR}/../test-scripts/merit_ramfs_env.sh"
+PERSIST_DATA_DIR="${DATA_DIR}"
+merit_ramfs_activate "${PERSIST_DATA_DIR}"
+DATA_DIR="${MERIT_RAMFS_ACTIVE_DATA_DIR}"
 STAMP="$(date +%Y%m%d_%H%M%S)"
-MASTER_LOG="${DATA_DIR}/merit1m_mem2gb_bg_${STAMP}.log"
+MASTER_LOG="${PERSIST_DATA_DIR}/merit1m_mem2gb_bg_${STAMP}.log"
 # 2GB pool caps at 1M points on this index; BFS uses full point count for ~fair RAM tier
 N_NODES="${N_NODES:-1000000}"
 
 run_one() {
   local kh="$1"
-  local out="${DATA_DIR}/five_way_mem2gb_kh${kh}_${STAMP}"
+  local out="${PERSIST_DATA_DIR}/five_way_mem2gb_kh${kh}_${STAMP}"
   env DATA_DIR="${DATA_DIR}" INDEX_PREFIX="${DATA_DIR}/sift1m_index" \
     PROFILE="${DATA_DIR}/run2_profile_same_trace" \
     QUERY_FILE="${DATA_DIR}/sift_query.fbin" \

@@ -6,9 +6,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 DISKANN_BUILD="${DISKANN_BUILD:-$(cd "${SCRIPT_DIR}/../../diskann/build" && pwd)}"
 DATA_DIR="${DATA_DIR:-${REPO_ROOT}/data/sift1m}"
+# shellcheck source=merit_ramfs_env.sh disable=SC1091
+source "${SCRIPT_DIR}/merit_ramfs_env.sh"
+PERSIST_DATA_DIR="${DATA_DIR}"
+merit_ramfs_activate "${PERSIST_DATA_DIR}"
+DATA_DIR="${MERIT_RAMFS_ACTIVE_DATA_DIR}"
 WORKLOAD_DIR="${WORKLOAD_DIR:-${DATA_DIR}/workloads}"
 INDEX="${INDEX:-${DATA_DIR}/sift1m_index}"
-OUT_ROOT="${OUT_ROOT:-${DATA_DIR}/workloads_disk01_runs}"
+OUT_ROOT="${OUT_ROOT:-${PERSIST_DATA_DIR}/workloads_disk01_runs}"
 SEARCH="${DISKANN_BUILD}/apps/search_disk_index"
 
 THREADS="${THREADS:-8}"
@@ -44,7 +49,7 @@ COMMON=(
 mkdir -p "${OUT_ROOT}"
 SUMMARY="${OUT_ROOT}/summary.tsv"
 : > "${SUMMARY}"
-echo -e "workload\tphase\tqps\tmean_lat\tp99\tmean_io\tdisk_reads\tbase_pages\tsidecar_pg\tmerit_hits\trecall" >> "${SUMMARY}"
+echo -e "workload\tphase\tqps\tmean_lat\tp99\tmean_io\tdisk_reads\tbase_pages\tdisk_cache_pg\tmerit_hits\trecall" >> "${SUMMARY}"
 
 append_row() {
   local wl="$1" phase="$2" out="$3"
@@ -54,7 +59,7 @@ append_row() {
     echo -e "${wl}\t${phase}\tMISSING\t-\t-\t-\t-\t-\t-\t-\t-" >> "${SUMMARY}"
     return
   fi
-  # baseline: no SidecarPg/MeritDcHit; disk01: has both
+  # baseline: no DiskCachePg/MeritDcHit; disk01: has both
   echo "${row}" | awk -v wl="${wl}" -v phase="${phase}" '{
     rec=$NF
     if (NF >= 17) {
@@ -67,6 +72,7 @@ append_row() {
 
 {
   echo "=== Workload disk0.1 suite $(date -Is) ==="
+  echo "persistent DATA=${PERSIST_DATA_DIR} active DATA=${DATA_DIR} (tmpfs)"
   echo "workloads=${WORKLOAD_DIR} OUT=${OUT_ROOT}"
   echo "L=${L} W=${W} K=${K} threads=${THREADS} disk=${DISK_RATIO} layout=${DISK_LAYOUT} k_hops=${DISK_K_HOPS}"
   echo ""

@@ -4,13 +4,16 @@
 
 1. **Same-trace access profiling** (`--enable_access_profile`) — node expand and directed-edge counts on a fixed query workload.
 2. **MERIT memory pool** (`--merit_memory_gb`) — dynamic DRAM cache sized by budget, filled from profile hotness (not DiskANN static BFS `_nhood_cache` alone).
-3. **MERIT disk sidecar** (`--merit_disk_cache_ratio`, `--merit_disk_cache_k_hops`) — extra on-disk layout for hot nodes:
+3. **MERIT disk cache** (`--merit_disk_cache_ratio`, `--merit_disk_cache_k_hops`) — extra on-disk layout for hot nodes:
    - **Layout A**: `k_hops=0`, flat top-N by `node_expand`.
    - **Layout B** (`node`): same (a)–(e) page packing as full relayout, but seed = hottest **node** and path avg uses **node_expand**; capped at disk-cache ratio (~10%).
-   - **Layout C** (`edge`): same Jiang edge (a)–(e) flow as offline relayout; capped at ~10% in the sidecar.
-4. **Per-query sector cache** (`--enable_query_sector_cache`) — avoids re-reading the same sector within a query (used with disk sidecar).
+   - **Layout C** (`edge`): same Jiang edge (a)–(e) flow as offline relayout; capped at ~10% in the disk cache.
+   - **Layout D** (`frontier`, alias `d`): hop-frontier template co-location from profile.
+   - **Layout E** (`directed_beam`, alias `e`): **parent outgoing-heat** seed (profile parent rank) + optional top directed children (`k_hops` = beam width) + **undirected profile star** page fill; default disk cache layout (`k_hops=1` recommended).
+   - **Layout P** (`parent`): parent seed + all directed profile children per page (no star fill).
+4. **Per-query sector cache** (`--enable_query_sector_cache`) — avoids re-reading the same sector within a query (used with disk cache).
 
-Offline **k-hop relayout** tools (`relayout_disk_index`, `apply_disk_permutation`) are included for index rewrite experiments; runtime MERIT disk cache uses a sidecar file without rewriting the base index.
+Offline **k-hop relayout** tools (`relayout_disk_index`, `apply_disk_permutation`) are included for index rewrite experiments; runtime MERIT disk cache uses a separate disk cache file without rewriting the base index.
 
 This tree is a **DiskANN fork** with MERIT integrated in `diskann/` plus reproducible scripts under `experiments/`.
 
@@ -58,7 +61,7 @@ See `experiments/test-scripts/README.md` for more scripts (eviction, Layout A/B,
 | `--enable_access_profile` / `--access_profile_prefix` | Run2 profiling |
 | `--merit_profile_prefix` | Profile prefix for MERIT planning (required with memory/disk tiers) |
 | `--merit_memory_gb` | MERIT DRAM pool budget |
-| `--merit_disk_cache_ratio` | Fraction of index nodes for disk sidecar |
+| `--merit_disk_cache_ratio` | Fraction of index nodes for disk cache |
 | `--merit_disk_cache_k_hops` | `0` = flat layout; `2` = k-hop packing |
 | `--merit_disk_cache_exclude_memory` | When true, disk tier skips nodes already in memory pool |
 | `--enable_query_sector_cache` | Intra-query sector reuse |

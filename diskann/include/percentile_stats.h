@@ -28,9 +28,9 @@ struct QueryStats
     unsigned n_4k = 0;         // # of 4kB reads
     unsigned n_8k = 0;         // # of 8kB reads
     unsigned n_12k = 0;        // # of 12kB reads
-    unsigned n_ios = 0; // disk-tier node fetches (one per base frontier node or MERIT sidecar node, + reorder)
+    unsigned n_ios = 0; // disk-tier node fetches (one per base frontier node or MERIT disk cache node, + reorder)
     unsigned n_unique_sectors = 0;      // distinct base _disk.index 4KB sectors (frontier path only)
-    unsigned n_unique_merit_sectors = 0; // distinct MERIT sidecar 4KB sectors touched in one query
+    unsigned n_unique_merit_sectors = 0; // distinct MERIT disk cache 4KB sectors touched in one query
     unsigned read_size = 0;    // total # of bytes read
     unsigned n_cmps_saved = 0; // # cmps saved
     unsigned n_cmps = 0;       // # cmps

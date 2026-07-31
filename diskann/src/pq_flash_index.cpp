@@ -1608,7 +1608,7 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
 
             if (_hotness_profiler.enabled())
             {
-                // Sidecar active: record merit-sidecar IO groups; otherwise base frontier (pre-sidecar profile).
+                // Disk cache active: record merit disk cache IO groups; otherwise base frontier (pre-disk-cache profile).
                 if (!_merit_dc_map.empty())
                 {
                     if (!merit_frontier.empty())
@@ -1636,7 +1636,7 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
                 std::vector<AlignedRead> merit_io;
                 std::unordered_map<uint32_t, std::vector<size_t>> merit_disk_fanout;
 
-                prepare_merit_sidecar_io(merit_frontier, query_scratch, sector_scratch, sector_scratch_idx,
+                prepare_merit_disk_cache_io(merit_frontier, query_scratch, sector_scratch, sector_scratch_idx,
                                          num_sectors_per_node, merit_pending, merit_io, merit_disk_fanout, stats,
                                          num_ios);
 
@@ -1747,7 +1747,7 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
                     }
                 }
 
-                complete_merit_sidecar_io(query_scratch, merit_pending, merit_disk_fanout);
+                complete_merit_disk_cache_io(query_scratch, merit_pending, merit_disk_fanout);
                 finalize_merit_pending_nodes(merit_pending, query_scratch, sector_scratch, sector_scratch_idx,
                                                frontier_nhoods);
             }
@@ -1761,7 +1761,7 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
 
             if (!merit_frontier.empty() && _merit_disk_reader)
             {
-                prepare_merit_sidecar_io(merit_frontier, query_scratch, sector_scratch, sector_scratch_idx,
+                prepare_merit_disk_cache_io(merit_frontier, query_scratch, sector_scratch, sector_scratch_idx,
                                          num_sectors_per_node, merit_pending, merit_io, merit_disk_fanout, stats,
                                          num_ios);
             }
@@ -1848,7 +1848,7 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
                                 fn.second = slot.data();
                         }
                     }
-                    complete_merit_sidecar_io(query_scratch, merit_pending, merit_disk_fanout);
+                    complete_merit_disk_cache_io(query_scratch, merit_pending, merit_disk_fanout);
                 }
             }
             else
@@ -1878,7 +1878,7 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
                         stats->n_hops++;
                     issue_merit_and_base_disk_reads(reader, _merit_disk_reader, ctx, merit_io, frontier_read_reqs,
                                                     io_timer, stats);
-                    complete_merit_sidecar_io(query_scratch, merit_pending, merit_disk_fanout);
+                    complete_merit_disk_cache_io(query_scratch, merit_pending, merit_disk_fanout);
                 }
             }
             }
@@ -1888,7 +1888,7 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
                     stats->n_hops++;
                 issue_merit_and_base_disk_reads(reader, _merit_disk_reader, ctx, merit_io, frontier_read_reqs, io_timer,
                                                 stats);
-                complete_merit_sidecar_io(query_scratch, merit_pending, merit_disk_fanout);
+                complete_merit_disk_cache_io(query_scratch, merit_pending, merit_disk_fanout);
             }
 
             if (!merit_pending.empty())
@@ -2130,7 +2130,7 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
     if (stats != nullptr)
     {
         stats->n_unique_sectors = (unsigned)query_scratch->read_sectors.size();
-        stats->n_unique_merit_sectors = (unsigned)query_scratch->read_merit_sidecar_sectors.size();
+        stats->n_unique_merit_sectors = (unsigned)query_scratch->read_merit_disk_cache_sectors.size();
         stats->total_us = (float)query_timer.elapsed();
         if (_query_sector_cache_enabled)
         {
@@ -2466,7 +2466,17 @@ int PQFlashIndex<T, LabelT>::build_merit_disk_node_list(const std::string &profi
         exclude_ids.insert(mem_tier.begin(), mem_tier.end());
     }
 
-    if (layout == "flat" || k_hops == 0)
+    if (layout == "flat" ||
+        (k_hops == 0 && layout != "edge" && layout != "edge_dir" && layout != "edge_star" && layout != "edge_u" &&
+         layout != "edge_pair" && layout != "edge_clique" && layout != "edge_replica" &&
+         layout != "edge_star_dup" && layout != "frontier_page" && layout != "frontier_dup" &&
+         layout != "directed_beam" && layout != "directed_beam_dual" && layout != "directed_beam_inseed" &&
+         layout != "directed_beam_tight" && layout != "directed_beam_starfill" &&
+         layout != "directed_beam_top4first" && layout != "node_top4first" && layout != "cooccur_star" &&
+         layout != "dbeam_cooccur" &&
+         layout != "frontier_topk" &&
+         layout != "parent" && layout != "parent_star" &&
+         layout != "dbeam_estar_split" && layout != "frontier"))
     {
         std::vector<uint32_t> order(_num_points);
         std::iota(order.begin(), order.end(), 0);
@@ -2518,6 +2528,39 @@ int PQFlashIndex<T, LabelT>::build_merit_disk_node_list(const std::string &profi
         return 0;
     }
 
+    if (layout == "edge_dir" || layout == "edge_star" || layout == "edge_u" || layout == "edge_pair" ||
+        layout == "edge_clique" || layout == "dir_edge_star")
+    {
+        if (compute_edge_variant_disk_cache_list(graph, node_expand, edges, nps, k_hops, max_nodes, exclude_ids,
+                                                 layout, node_list) != 0)
+            return -1;
+        diskann::cout << "MERIT disk-cache node list: edge-variant packing layout=" << layout << ", k_hops=" << k_hops
+                      << ", selected " << node_list.size() << " nodes (exclude memory-tier=" << exclude_ids.size()
+                      << ")." << std::endl;
+        append_uncounted_nodes_to_disk_list(node_expand, max_nodes, exclude_ids, node_list);
+        return 0;
+    }
+
+    if (layout == "edge_replica")
+    {
+        if (compute_edge_replica_disk_cache_list(graph, node_expand, edges, nps, max_nodes, exclude_ids, node_list) !=
+            0)
+            return -1;
+        diskann::cout << "MERIT disk-cache node list: edge-replica packing, slots=" << node_list.size()
+                      << " (exclude memory-tier=" << exclude_ids.size() << ")." << std::endl;
+        return 0;
+    }
+
+    if (layout == "edge_star_dup")
+    {
+        if (compute_edge_star_dup_disk_cache_list(graph, node_expand, edges, nps, max_nodes, exclude_ids, node_list) !=
+            0)
+            return -1;
+        diskann::cout << "MERIT disk-cache node list: edge_star_dup packing, slots=" << node_list.size()
+                      << " (exclude memory-tier=" << exclude_ids.size() << ")." << std::endl;
+        return 0;
+    }
+
     if (layout == "frontier")
     {
         const uint32_t beam_width = (k_hops > 0) ? k_hops : 4;
@@ -2527,6 +2570,218 @@ int PQFlashIndex<T, LabelT>::build_merit_disk_node_list(const std::string &profi
         diskann::cout << "MERIT disk-cache node list: frontier co-location packing, beam_width=" << beam_width
                       << ", selected " << node_list.size() << " nodes (exclude memory-tier=" << exclude_ids.size()
                       << ")." << std::endl;
+        append_uncounted_nodes_to_disk_list(node_expand, max_nodes, exclude_ids, node_list);
+        return 0;
+    }
+
+    if (layout == "frontier_page")
+    {
+        const uint32_t beam_width = (k_hops > 0) ? k_hops : 4;
+        if (compute_frontier_page_disk_cache_list(graph, node_expand, edges, profile_prefix, nps, beam_width,
+                                                  max_nodes, exclude_ids, node_list) != 0)
+            return -1;
+        diskann::cout << "MERIT disk-cache node list: frontier_page packing, beam_width=" << beam_width
+                      << ", selected " << node_list.size() << " nodes (exclude memory-tier=" << exclude_ids.size()
+                      << ")." << std::endl;
+        append_uncounted_nodes_to_disk_list(node_expand, max_nodes, exclude_ids, node_list);
+        return 0;
+    }
+
+    if (layout == "frontier_dup")
+    {
+        const uint32_t beam_width = (k_hops > 0) ? k_hops : 4;
+        if (compute_frontier_dup_disk_cache_list(graph, node_expand, edges, profile_prefix, nps, beam_width, max_nodes,
+                                                 exclude_ids, node_list) != 0)
+            return -1;
+        diskann::cout << "MERIT disk-cache node list: frontier_dup packing, slots=" << node_list.size()
+                      << " (exclude memory-tier=" << exclude_ids.size() << ")." << std::endl;
+        return 0;
+    }
+
+    if (layout == "parent")
+    {
+        if (compute_profile_parent_disk_cache_list(graph, node_expand, edges, nps, max_nodes, exclude_ids,
+                                                   node_list) != 0)
+            return -1;
+        diskann::cout << "MERIT disk-cache node list: profile-parent packing, selected " << node_list.size()
+                      << " nodes (exclude memory-tier=" << exclude_ids.size() << ")." << std::endl;
+        append_uncounted_nodes_to_disk_list(node_expand, max_nodes, exclude_ids, node_list);
+        return 0;
+    }
+
+    if (layout == "parent_star")
+    {
+        if (compute_parent_star_disk_cache_list(graph, node_expand, edges, nps, max_nodes, exclude_ids, node_list) != 0)
+            return -1;
+        diskann::cout << "MERIT disk-cache node list: parent_star packing, selected " << node_list.size()
+                      << " nodes (exclude memory-tier=" << exclude_ids.size() << ")." << std::endl;
+        append_uncounted_nodes_to_disk_list(node_expand, max_nodes, exclude_ids, node_list);
+        return 0;
+    }
+
+    if (layout == "dbeam_estar_split")
+    {
+        const uint32_t beam_width = (k_hops > 0) ? k_hops : 1;
+        if (compute_dbeam_estar_split_disk_cache_list(graph, node_expand, edges, nps, beam_width, max_nodes,
+                                                      exclude_ids, node_list) != 0)
+            return -1;
+        diskann::cout << "MERIT disk-cache node list: dbeam_estar_split packing, beam_width=" << beam_width
+                      << ", selected " << node_list.size() << " nodes (exclude memory-tier=" << exclude_ids.size()
+                      << ")." << std::endl;
+        append_uncounted_nodes_to_disk_list(node_expand, max_nodes, exclude_ids, node_list);
+        return 0;
+    }
+
+    if (layout == "directed_beam")
+    {
+        const uint32_t beam_width = (k_hops > 0) ? k_hops : 4;
+        if (compute_directed_beam_disk_cache_list(graph, node_expand, edges, nps, beam_width, max_nodes, exclude_ids,
+                                                  node_list) != 0)
+            return -1;
+        diskann::cout << "MERIT disk-cache node list: Layout E (directed_beam) packing, beam_width=" << beam_width
+                      << ", selected " << node_list.size() << " nodes (exclude memory-tier=" << exclude_ids.size()
+                      << ")." << std::endl;
+        append_uncounted_nodes_to_disk_list(node_expand, max_nodes, exclude_ids, node_list);
+        return 0;
+    }
+
+    if (layout == "directed_beam_starfill")
+    {
+        const uint32_t beam_width = (k_hops > 0) ? k_hops : 4;
+        if (compute_directed_beam_starfill_disk_cache_list(graph, node_expand, edges, nps, beam_width, max_nodes,
+                                                           exclude_ids, node_list) != 0)
+            return -1;
+        diskann::cout << "MERIT disk-cache node list: directed_beam_starfill (legacy E), beam_width=" << beam_width
+                      << ", selected " << node_list.size() << " nodes (exclude memory-tier=" << exclude_ids.size()
+                      << ")." << std::endl;
+        append_uncounted_nodes_to_disk_list(node_expand, max_nodes, exclude_ids, node_list);
+        return 0;
+    }
+
+    if (layout == "directed_beam_top4first")
+    {
+        const uint32_t beam_width = (k_hops > 0) ? k_hops : 4;
+        if (compute_directed_beam_top4first_disk_cache_list(graph, node_expand, edges, nps, beam_width, max_nodes,
+                                                            exclude_ids, node_list) != 0)
+            return -1;
+        diskann::cout << "MERIT disk-cache node list: directed_beam_top4first, beam_width=" << beam_width
+                      << ", selected " << node_list.size() << " nodes (exclude memory-tier=" << exclude_ids.size()
+                      << ")." << std::endl;
+        append_uncounted_nodes_to_disk_list(node_expand, max_nodes, exclude_ids, node_list);
+        return 0;
+    }
+
+    if (layout == "directed_star")
+    {
+        const uint32_t beam_width = (k_hops > 0) ? k_hops : 1;
+        if (compute_directed_star_disk_cache_list(graph, node_expand, edges, nps, beam_width, max_nodes, exclude_ids,
+                                                  node_list) != 0)
+            return -1;
+        diskann::cout << "MERIT disk-cache node list: directed_star packing, beam_width=" << beam_width
+                      << ", selected " << node_list.size() << " nodes (exclude memory-tier=" << exclude_ids.size()
+                      << ")." << std::endl;
+        append_uncounted_nodes_to_disk_list(node_expand, max_nodes, exclude_ids, node_list);
+        return 0;
+    }
+
+    if (layout == "directed_beam_hybrid")
+    {
+        const uint32_t beam_width = (k_hops > 0) ? k_hops : 1;
+        if (compute_directed_beam_hybrid_disk_cache_list(graph, node_expand, edges, nps, beam_width, max_nodes,
+                                                         exclude_ids, node_list) != 0)
+            return -1;
+        diskann::cout << "MERIT disk-cache node list: directed_beam_hybrid packing, beam_width=" << beam_width
+                      << ", selected " << node_list.size() << " nodes (exclude memory-tier=" << exclude_ids.size()
+                      << ")." << std::endl;
+        append_uncounted_nodes_to_disk_list(node_expand, max_nodes, exclude_ids, node_list);
+        return 0;
+    }
+
+    if (layout == "directed_beam_inseed")
+    {
+        const uint32_t beam_width = (k_hops > 0) ? k_hops : 1;
+        if (compute_directed_beam_inseed_disk_cache_list(graph, node_expand, edges, nps, beam_width, max_nodes,
+                                                         exclude_ids, node_list) != 0)
+            return -1;
+        diskann::cout << "MERIT disk-cache node list: directed_beam_inseed packing, beam_width=" << beam_width
+                      << ", selected " << node_list.size() << " nodes (exclude memory-tier=" << exclude_ids.size()
+                      << ")." << std::endl;
+        append_uncounted_nodes_to_disk_list(node_expand, max_nodes, exclude_ids, node_list);
+        return 0;
+    }
+
+    if (layout == "directed_beam_tight")
+    {
+        const uint32_t beam_width = (k_hops > 0) ? k_hops : 4;
+        if (compute_directed_beam_tight_disk_cache_list(graph, node_expand, edges, nps, beam_width, max_nodes,
+                                                        exclude_ids, node_list) != 0)
+            return -1;
+        diskann::cout << "MERIT disk-cache node list: directed_beam_tight packing, beam_width=" << beam_width
+                      << ", selected " << node_list.size() << " nodes (exclude memory-tier=" << exclude_ids.size()
+                      << ")." << std::endl;
+        append_uncounted_nodes_to_disk_list(node_expand, max_nodes, exclude_ids, node_list);
+        return 0;
+    }
+
+    if (layout == "cooccur_star")
+    {
+        const uint32_t beam_width = (k_hops > 0) ? k_hops : 4;
+        if (compute_cooccur_star_disk_cache_list(graph, node_expand, edges, profile_prefix, nps, beam_width, max_nodes,
+                                                 exclude_ids, node_list) != 0)
+            return -1;
+        diskann::cout << "MERIT disk-cache node list: cooccur_star packing, beam_width=" << beam_width
+                      << ", selected " << node_list.size() << " nodes (exclude memory-tier=" << exclude_ids.size()
+                      << ")." << std::endl;
+        append_uncounted_nodes_to_disk_list(node_expand, max_nodes, exclude_ids, node_list);
+        return 0;
+    }
+
+    if (layout == "dbeam_cooccur")
+    {
+        const uint32_t beam_width = (k_hops > 0) ? k_hops : 4;
+        if (compute_dbeam_cooccur_disk_cache_list(graph, node_expand, edges, profile_prefix, nps, beam_width, max_nodes,
+                                                  exclude_ids, node_list) != 0)
+            return -1;
+        diskann::cout << "MERIT disk-cache node list: dbeam_cooccur packing, beam_width=" << beam_width
+                      << ", selected " << node_list.size() << " nodes (exclude memory-tier=" << exclude_ids.size()
+                      << ")." << std::endl;
+        append_uncounted_nodes_to_disk_list(node_expand, max_nodes, exclude_ids, node_list);
+        return 0;
+    }
+
+    if (layout == "frontier_topk")
+    {
+        const uint32_t beam_width = (k_hops > 0) ? k_hops : 4;
+        if (compute_frontier_topk_disk_cache_list(graph, node_expand, edges, profile_prefix, nps, beam_width, max_nodes,
+                                                  exclude_ids, node_list) != 0)
+            return -1;
+        diskann::cout << "MERIT disk-cache node list: frontier_topk packing, beam_width=" << beam_width
+                      << ", selected " << node_list.size() << " nodes (exclude memory-tier=" << exclude_ids.size()
+                      << ")." << std::endl;
+        append_uncounted_nodes_to_disk_list(node_expand, max_nodes, exclude_ids, node_list);
+        return 0;
+    }
+
+    if (layout == "directed_beam_dual")
+    {
+        const uint32_t beam_width = (k_hops > 0) ? k_hops : 1;
+        if (compute_directed_beam_dual_disk_cache_list(graph, node_expand, edges, nps, beam_width, max_nodes,
+                                                       exclude_ids, node_list) != 0)
+            return -1;
+        diskann::cout << "MERIT disk-cache node list: directed_beam_dual packing, beam_width=" << beam_width
+                      << ", selected " << node_list.size() << " nodes (exclude memory-tier=" << exclude_ids.size()
+                      << ")." << std::endl;
+        append_uncounted_nodes_to_disk_list(node_expand, max_nodes, exclude_ids, node_list);
+        return 0;
+    }
+
+    if (layout == "node_top4first")
+    {
+        if (compute_hot_node_top4first_disk_cache_list(graph, node_expand, edges, nps, k_hops, max_nodes, exclude_ids,
+                                                       node_list) != 0)
+            return -1;
+        diskann::cout << "MERIT disk-cache node list: node_top4first packing, k_hops=" << k_hops << ", selected "
+                      << node_list.size() << " nodes (exclude memory-tier=" << exclude_ids.size() << ")." << std::endl;
         append_uncounted_nodes_to_disk_list(node_expand, max_nodes, exclude_ids, node_list);
         return 0;
     }
@@ -2556,7 +2811,8 @@ template <typename T, typename LabelT> bool PQFlashIndex<T, LabelT>::merit_mem_p
 
 template <typename T, typename LabelT> bool PQFlashIndex<T, LabelT>::merit_dc_map_contains(uint32_t node_id) const
 {
-    return !_merit_dc_map.empty() && _merit_dc_map.find(node_id) != _merit_dc_map.end();
+    return !_merit_dc_map.empty() && _merit_dc_map.find(node_id) != _merit_dc_map.end() &&
+           !_merit_dc_map.at(node_id).empty();
 }
 
 template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::clear_merit_memory_cache()
@@ -2680,7 +2936,7 @@ int PQFlashIndex<T, LabelT>::reload_merit_memory_cache(const std::string &profil
 
 template <typename T, typename LabelT>
 int PQFlashIndex<T, LabelT>::plan_merit_disk_cache(double base_ratio, uint64_t &out_max_nodes,
-                                                   std::string &report) const
+                                                   std::string &report, bool allow_replica_slots) const
 {
     out_max_nodes = 0;
     report.clear();
@@ -2689,9 +2945,10 @@ int PQFlashIndex<T, LabelT>::plan_merit_disk_cache(double base_ratio, uint64_t &
         report = "merit_disk_cache_ratio <= 0; MERIT disk cache disabled.";
         return 0;
     }
-    if (base_ratio > 1.0)
+    const double max_ratio = allow_replica_slots ? 10.0 : 1.0;
+    if (base_ratio > max_ratio)
     {
-        report = "ERROR: merit_disk_cache_ratio must be in (0, 1].";
+        report = "ERROR: merit_disk_cache_ratio exceeds allowed maximum.";
         return -1;
     }
     if (_disk_index_file.empty() || _max_node_len == 0)
@@ -2715,7 +2972,7 @@ int PQFlashIndex<T, LabelT>::plan_merit_disk_cache(double base_ratio, uint64_t &
         const uint64_t bytes_per_node = secs_per_node * defaults::SECTOR_LEN;
         nodes = (bytes_per_node > 0) ? (budget / bytes_per_node) : 0;
     }
-    if (nodes > _num_points)
+    if (!allow_replica_slots && nodes > _num_points)
         nodes = _num_points;
     if (nodes == 0)
     {
@@ -2734,7 +2991,7 @@ int PQFlashIndex<T, LabelT>::plan_merit_disk_cache(double base_ratio, uint64_t &
         << "  budget              = " << (budget / (1024.0 * 1024.0 * 1024.0)) << " GB\n"
         << "  max_node_len        = " << _max_node_len << " B, nnodes_per_sector=" << _nnodes_per_sector << "\n"
         << "  selected_nodes      = " << out_max_nodes
-        << " (disk tier; k_hops=0 flat by node_expand, else k-hop sidecar; exclude memory-tier ids)";
+        << " (disk tier; k_hops=0 flat by node_expand, else k-hop disk cache; exclude memory-tier ids)";
     report = oss.str();
     return 0;
 }
@@ -2833,7 +3090,7 @@ int PQFlashIndex<T, LabelT>::load_merit_disk_cache_from_prefix(const std::string
         loc.sector = cur_sector;
         loc.slot = static_cast<uint16_t>(slot_in_sector);
         loc.nsectors = 1;
-        _merit_dc_map[id] = loc;
+        _merit_dc_map[id].push_back(loc);
         slot_in_sector++;
         if (slot_in_sector == nps)
         {
@@ -2983,7 +3240,7 @@ int PQFlashIndex<T, LabelT>::build_and_load_merit_disk_cache(const std::string &
                 loc.sector = cur_sector;
                 loc.slot = static_cast<uint16_t>(slot_in_sector);
                 loc.nsectors = 1;
-                _merit_dc_map[batch[i]] = loc;
+                _merit_dc_map[batch[i]].push_back(loc);
 
                 slot_in_sector++;
                 if (slot_in_sector == nps)
@@ -3006,7 +3263,7 @@ int PQFlashIndex<T, LabelT>::build_and_load_merit_disk_cache(const std::string &
                 loc.sector = cur_sector;
                 loc.slot = 0;
                 loc.nsectors = static_cast<uint16_t>(secs_per_node);
-                _merit_dc_map[batch[i]] = loc;
+                _merit_dc_map[batch[i]].push_back(loc);
 
                 out.write(node_pack.data(), node_pack.size());
                 cur_sector += static_cast<uint32_t>(secs_per_node);
@@ -3058,7 +3315,7 @@ int PQFlashIndex<T, LabelT>::build_and_load_merit_disk_cache(const std::string &
 }
 
 template <typename T, typename LabelT>
-void PQFlashIndex<T, LabelT>::prepare_merit_sidecar_io(
+void PQFlashIndex<T, LabelT>::prepare_merit_disk_cache_io(
     const std::vector<uint32_t> &merit_ids, SSDQueryScratch<T> *query_scratch, char *sector_scratch,
     uint64_t &sector_scratch_idx, size_t num_sectors_per_node, std::vector<MeritReadPending> &pending,
     std::vector<AlignedRead> &merit_io, std::unordered_map<uint32_t, std::vector<size_t>> &disk_fanout_groups,
@@ -3071,16 +3328,74 @@ void PQFlashIndex<T, LabelT>::prepare_merit_sidecar_io(
         return;
 
     const size_t read_len = num_sectors_per_node * defaults::SECTOR_LEN;
-    pending.reserve(merit_ids.size());
 
-    for (uint32_t id : merit_ids)
+    // Batch replica selection: greedy set-cover on sectors to minimize distinct reads.
+    struct PendingChoice
     {
-        const auto it = _merit_dc_map.find(id);
-        if (it == _merit_dc_map.end())
-            continue;
-        const MeritDiskLoc loc = it->second;
-        query_scratch->read_merit_sidecar_sectors.insert(loc.sector);
-        pending.push_back({id, nullptr, loc});
+        uint32_t id = 0;
+        size_t loc_idx = 0;
+        MeritDiskLoc loc;
+    };
+    std::vector<PendingChoice> choices;
+    choices.reserve(merit_ids.size());
+    std::unordered_set<uint32_t> need_ids(merit_ids.begin(), merit_ids.end());
+
+    while (!need_ids.empty())
+    {
+        std::unordered_map<uint32_t, std::vector<std::pair<uint32_t, size_t>>> sector_hits;
+        for (uint32_t id : need_ids)
+        {
+            const auto it = _merit_dc_map.find(id);
+            if (it == _merit_dc_map.end() || it->second.empty())
+                continue;
+            for (size_t li = 0; li < it->second.size(); ++li)
+                sector_hits[it->second[li].sector].emplace_back(id, li);
+        }
+        if (sector_hits.empty())
+            break;
+
+        uint32_t best_sector = 0;
+        size_t best_cover = 0;
+        int best_cache_bonus = -1;
+        for (const auto &kv : sector_hits)
+        {
+            const int cache_bonus =
+                (_query_sector_cache_enabled &&
+                 query_scratch->merit_sector_cache.find(kv.first) != query_scratch->merit_sector_cache.end())
+                    ? 1
+                    : 0;
+            if (kv.second.size() > best_cover ||
+                (kv.second.size() == best_cover && cache_bonus > best_cache_bonus))
+            {
+                best_cover = kv.second.size();
+                best_cache_bonus = cache_bonus;
+                best_sector = kv.first;
+            }
+        }
+
+        const auto &hit = sector_hits[best_sector];
+        for (const auto &id_loc : hit)
+        {
+            if (need_ids.count(id_loc.first) == 0)
+                continue;
+            const auto it = _merit_dc_map.find(id_loc.first);
+            if (it == _merit_dc_map.end() || id_loc.second >= it->second.size())
+                continue;
+            PendingChoice pc;
+            pc.id = id_loc.first;
+            pc.loc_idx = id_loc.second;
+            pc.loc = it->second[id_loc.second];
+            choices.push_back(pc);
+            need_ids.erase(id_loc.first);
+        }
+    }
+
+    pending.reserve(choices.size());
+    for (const PendingChoice &pc : choices)
+    {
+        const MeritDiskLoc loc = pc.loc;
+        query_scratch->read_merit_disk_cache_sectors.insert(loc.sector);
+        pending.push_back({pc.id, nullptr, loc});
         const size_t pidx = pending.size() - 1;
 
         if (stats != nullptr)
@@ -3109,7 +3424,7 @@ void PQFlashIndex<T, LabelT>::prepare_merit_sidecar_io(
 
     for (auto &kv : disk_fanout_groups)
     {
-        const uint32_t sidecar_sec = kv.first;
+        const uint32_t disk_cache_sec = kv.first;
         std::vector<size_t> &indices = kv.second;
         if (indices.empty())
             continue;
@@ -3120,7 +3435,7 @@ void PQFlashIndex<T, LabelT>::prepare_merit_sidecar_io(
         const uint64_t byte_len = static_cast<uint64_t>(first.loc.nsectors) * defaults::SECTOR_LEN;
         const uint64_t off =
             (_merit_unified_disk ? _merit_region_byte_offset : 0) +
-            static_cast<uint64_t>(sidecar_sec) * defaults::SECTOR_LEN;
+            static_cast<uint64_t>(disk_cache_sec) * defaults::SECTOR_LEN;
         merit_io.emplace_back(off, byte_len, read_buf);
         if (stats != nullptr)
             stats->n_disk_reads++;
@@ -3128,7 +3443,7 @@ void PQFlashIndex<T, LabelT>::prepare_merit_sidecar_io(
 }
 
 template <typename T, typename LabelT>
-void PQFlashIndex<T, LabelT>::complete_merit_sidecar_io(
+void PQFlashIndex<T, LabelT>::complete_merit_disk_cache_io(
     SSDQueryScratch<T> *query_scratch, std::vector<MeritReadPending> &pending,
     const std::unordered_map<uint32_t, std::vector<size_t>> &disk_fanout_groups)
 {

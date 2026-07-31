@@ -21,7 +21,11 @@ const float GRAPH_SLACK_FACTOR = 1.3f;
 
 // SSD Index related limits
 const uint64_t MAX_GRAPH_DEGREE = 512;
+#ifdef DISKANN_SECTOR_LEN
+const uint64_t SECTOR_LEN = DISKANN_SECTOR_LEN;
+#else
 const uint64_t SECTOR_LEN = 4096;
+#endif
 const uint64_t MAX_N_SECTOR_READS = 128;
 
 // following constants should always be specified, but are useful as a

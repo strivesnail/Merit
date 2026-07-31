@@ -206,6 +206,10 @@ endif()
 
 add_definitions(-DMKL_ILP64)
 
+# Disk sector size (bytes). Rebuild index with create_disk_layout after changing this.
+set(DISKANN_SECTOR_LEN 4096 CACHE STRING "Disk sector/page size in bytes (4096, 8192, 16384, ...)")
+add_compile_definitions(DISKANN_SECTOR_LEN=${DISKANN_SECTOR_LEN})
+
 # Section for tcmalloc. The DiskANN tools are always linked to tcmalloc. For Windows, they also need to
 # force-include the _tcmalloc symbol for enabling tcmalloc.
 #

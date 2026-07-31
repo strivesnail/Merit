@@ -22,8 +22,11 @@ target_link_libraries(search_disk_index ${PROJECT_NAME} ${DISKANN_ASYNC_LIB} ${D
 add_executable(relayout_disk_index relayout_disk_index.cpp)
 target_link_libraries(relayout_disk_index ${PROJECT_NAME} ${DISKANN_TOOLS_TCMALLOC_LINK_OPTIONS} Boost::program_options)
 
+add_executable(dump_disk_cache_pages dump_disk_cache_pages.cpp)
+target_link_libraries(dump_disk_cache_pages ${PROJECT_NAME} ${DISKANN_TOOLS_TCMALLOC_LINK_OPTIONS} Boost::program_options)
+
 add_executable(apply_disk_permutation apply_disk_permutation.cpp)
-target_link_libraries(apply_disk_permutation ${PROJECT_NAME} ${DISKANN_TOOLS_TCMALLOC_LINK_OPTIONS} Boost::program_options)
+target_link_libraries(apply_disk_permutation ${PROJECT_NAME} ${DISKANN_ASYNC_LIB} ${DISKANN_TOOLS_TCMALLOC_LINK_OPTIONS} Boost::program_options)
 
 add_executable(range_search_disk_index range_search_disk_index.cpp)
 target_link_libraries(range_search_disk_index ${PROJECT_NAME} ${DISKANN_ASYNC_LIB} ${DISKANN_TOOLS_TCMALLOC_LINK_OPTIONS} Boost::program_options)

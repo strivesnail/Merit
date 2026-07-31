@@ -1,10 +1,16 @@
 #!/usr/bin/env bash
 # SIFT1M re-layout experiment: download → build → Run1/2/3
 set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DISKANN_BUILD="${DISKANN_BUILD:-${REPO_ROOT}/diskann/build}"
 DATA_DIR="${DATA_DIR:-${REPO_ROOT}/data/sift1m}"
+# shellcheck source=merit_ramfs_env.sh disable=SC1091
+source "${SCRIPT_DIR}/merit_ramfs_env.sh"
+PERSIST_DATA_DIR="${DATA_DIR}"
+merit_ramfs_activate "${PERSIST_DATA_DIR}"
+DATA_DIR="${MERIT_RAMFS_ACTIVE_DATA_DIR}"
 INDEX_PREFIX="${INDEX_PREFIX:-${DATA_DIR}/sift1m_index}"
 RELAYOUT_PREFIX="${RELAYOUT_PREFIX:-${DATA_DIR}/sift1m_relayout_index}"
 RELAYOUT_ORDER="${RELAYOUT_ORDER:-${DATA_DIR}/relayout_order_hotnode}"

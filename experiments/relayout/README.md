@@ -82,6 +82,6 @@ Undirected weight for relayout: `I(u,v) = C(u→v) + C(v→u)`.
 
 ## Not in this README
 
-- MERIT is documented in the repo root README (runtime memory + disk sidecar).
+- MERIT is documented in the repo root README (runtime memory + disk cache).
 - EdgeAccessSet / medoid partitioning
 - Search algorithm changes beyond DiskANN baseline beam search

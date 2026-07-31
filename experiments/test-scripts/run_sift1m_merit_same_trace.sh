@@ -6,6 +6,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 DISKANN_BUILD="${DISKANN_BUILD:-$(cd "${SCRIPT_DIR}/../../diskann/build" && pwd)}"
 DATA_DIR="${DATA_DIR:-${REPO_ROOT}/data/sift1m}"
+# shellcheck source=merit_ramfs_env.sh disable=SC1091
+source "${SCRIPT_DIR}/merit_ramfs_env.sh"
+PERSIST_DATA_DIR="${DATA_DIR}"
+merit_ramfs_activate "${PERSIST_DATA_DIR}"
+DATA_DIR="${MERIT_RAMFS_ACTIVE_DATA_DIR}"
 QUERY_FILE="${QUERY_FILE:-${DATA_DIR}/sift_query.fbin}"
 GT_FILE="${GT_FILE:-${DATA_DIR}/sift_groundtruth.bin}"
 INDEX="${INDEX:-${DATA_DIR}/sift1m_index}"
@@ -20,8 +25,8 @@ THREADS="${THREADS:-16}"
 L="${L:-100}"
 K="${K:-10}"
 W="${W:-2}"
-OUT_DIR="${OUT_DIR:-${DATA_DIR}/same_trace_runs}"
-LOG="${LOG:-${DATA_DIR}/run_merit_same_trace.log}"
+OUT_DIR="${OUT_DIR:-${PERSIST_DATA_DIR}/same_trace_runs}"
+LOG="${LOG:-${PERSIST_DATA_DIR}/run_merit_same_trace.log}"
 
 extract_row() { grep -E "^\s+${L}\s+${W}\s+" "$1" | tail -1 || true; }
 

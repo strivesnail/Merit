@@ -174,9 +174,67 @@ std::string normalize_disk_cache_layout(std::string layout)
         layout = "edge";
     if (layout == "d" || layout == "layoutd" || layout == "layout_d")
         layout = "frontier";
+    if (layout == "e" || layout == "layoute" || layout == "layout_e" || layout == "layout-e")
+        layout = "directed_beam";
+    if (layout == "parent" || layout == "outedge" || layout == "layout_p" || layout == "p")
+        layout = "parent";
+    if (layout == "edge_dir" || layout == "edgedir" || layout == "directed_edge")
+        layout = "edge_dir";
+    if (layout == "edge_star" || layout == "edgestar")
+        layout = "edge_star";
+    if (layout == "edge_u" || layout == "edge_parent")
+        layout = "edge_u";
+    if (layout == "edge_pair" || layout == "edgepair")
+        layout = "edge_pair";
+    if (layout == "edge_clique" || layout == "edgeclique")
+        layout = "edge_clique";
+    if (layout == "edge_replica" || layout == "edgereplica" || layout == "replica")
+        layout = "edge_replica";
+    if (layout == "edge_star_dup" || layout == "stardup" || layout == "star_dup")
+        layout = "edge_star_dup";
+    if (layout == "frontier_page" || layout == "frontier_iso" || layout == "fpage")
+        layout = "frontier_page";
+    if (layout == "frontier_dup" || layout == "frontierdup")
+        layout = "frontier_dup";
+    if (layout == "directed_beam" || layout == "dir_beam" || layout == "dbeam")
+        layout = "directed_beam";
+    if (layout == "directed_star" || layout == "dstar")
+        layout = "directed_star";
+    if (layout == "dir_edge_star" || layout == "des")
+        layout = "dir_edge_star";
+    if (layout == "directed_beam_hybrid" || layout == "dbeam_hybrid" || layout == "dbeam_h")
+        layout = "directed_beam_hybrid";
+    if (layout == "parent_star" || layout == "pstar")
+        layout = "parent_star";
+    if (layout == "dbeam_estar_split" || layout == "dbeam_estar" || layout == "desplit")
+        layout = "dbeam_estar_split";
+    if (layout == "directed_beam_dual" || layout == "dbeam_dual" || layout == "dbeam-dual")
+        layout = "directed_beam_dual";
+    if (layout == "directed_beam_inseed" || layout == "dbeam_inseed" || layout == "dbeam-inseed")
+        layout = "directed_beam_inseed";
+    if (layout == "directed_beam_tight" || layout == "dbeam_tight" || layout == "beam_tight")
+        layout = "directed_beam_tight";
+    if (layout == "directed_beam_starfill" || layout == "dbeam_starfill" || layout == "e_starfill")
+        layout = "directed_beam_starfill";
+    if (layout == "directed_beam_top4first" || layout == "dbeam_top4first" || layout == "e_top4first")
+        layout = "directed_beam_top4first";
+    if (layout == "node_top4first" || layout == "b_top4first" || layout == "hotnode_top4first")
+        layout = "node_top4first";
+    if (layout == "cooccur_star" || layout == "cooccur" || layout == "hop_cooccur")
+        layout = "cooccur_star";
+    if (layout == "dbeam_cooccur" || layout == "dbeam_coc" || layout == "beam_cooccur")
+        layout = "dbeam_cooccur";
+    if (layout == "frontier_topk" || layout == "ftopk" || layout == "frontier_top")
+        layout = "frontier_topk";
     if (layout == "node-mp" || layout == "node_multi" || layout == "node-multi" || layout == "b2")
         layout = "node";
     return layout;
+}
+
+bool disk_cache_layout_allows_replicas(const std::string &layout)
+{
+    const std::string n = normalize_disk_cache_layout(layout);
+    return n == "edge_replica" || n == "edge_star_dup" || n == "frontier_dup";
 }
 
 static double path_average_weight(const std::vector<uint32_t> &path,
@@ -469,7 +527,7 @@ static void find_best_path_to_edge(uint32_t start, uint32_t ta, uint32_t tb, con
         PathState cur = std::move(q.front());
         q.pop_front();
         if (cur.num_edges >= max_hops)
-            continue;
+                        continue;
 
         try_candidate_path(cur.nodes, ta, tb, used_page_edges, weights, best_avg, best_path);
 
@@ -479,7 +537,7 @@ static void find_best_path_to_edge(uint32_t start, uint32_t ta, uint32_t tb, con
         {
             const uint64_t ek = undirected_edge_key(cur.node, nbr);
             if (used_page_edges.count(ek) > 0)
-                continue;
+                            continue;
 
             bool on_path = false;
             for (uint32_t n : cur.nodes)
@@ -491,7 +549,7 @@ static void find_best_path_to_edge(uint32_t start, uint32_t ta, uint32_t tb, con
                 }
             }
             if (on_path)
-                continue;
+                            continue;
 
             PathState next;
             next.node = nbr;
@@ -528,12 +586,12 @@ static void try_candidate_path_to_node(const std::vector<uint32_t> &path, uint32
     const double avg = path_average_weight(path, weights);
     if (avg <= 0.0)
         return;
-    if (avg > best_avg)
-    {
-        best_avg = avg;
-        best_path = path;
-    }
-}
+                        if (avg > best_avg)
+                        {
+                            best_avg = avg;
+                            best_path = path;
+                        }
+                    }
 
 static void find_best_path_to_node_k2(uint32_t start, uint32_t target, const std::vector<std::vector<uint32_t>> &adj,
                                       const std::unordered_map<uint64_t, uint64_t> &weights,
@@ -646,6 +704,87 @@ static void find_best_path_from_seed_limited(uint32_t seed, const std::vector<st
         return;
     }
 
+    const auto try_end = [&](const std::vector<uint32_t> &candidate, uint32_t end) {
+        if (!target_eligible(end))
+            return;
+        double candidate_avg = -1.0;
+        std::vector<uint32_t> trial;
+        try_candidate_path_to_node(candidate, end, used_page_edges, weights, candidate_avg, trial);
+        if (!trial.empty() && candidate_avg > best_avg)
+        {
+            best_avg = candidate_avg;
+            best_path = std::move(trial);
+            best_target = end;
+        }
+    };
+
+    if (max_hops == 3)
+    {
+        for (uint32_t n1 : adj[seed])
+        {
+            if (used_page_edges.count(undirected_edge_key(seed, n1)) > 0)
+                continue;
+            try_end({seed, n1}, n1);
+            if (n1 >= adj.size())
+                continue;
+            for (uint32_t n2 : adj[n1])
+            {
+                if (n2 == seed || used_page_edges.count(undirected_edge_key(n1, n2)) > 0)
+                    continue;
+                if (!edge_ok(seed, n1))
+                    continue;
+                try_end({seed, n1, n2}, n2);
+                if (n2 >= adj.size())
+                    continue;
+                for (uint32_t n3 : adj[n2])
+                {
+                    if (n3 == seed || n3 == n1 || used_page_edges.count(undirected_edge_key(n2, n3)) > 0)
+                        continue;
+                    try_end({seed, n1, n2, n3}, n3);
+                }
+            }
+        }
+        return;
+    }
+
+    if (max_hops == 4)
+    {
+        for (uint32_t n1 : adj[seed])
+        {
+            if (used_page_edges.count(undirected_edge_key(seed, n1)) > 0)
+                continue;
+            try_end({seed, n1}, n1);
+            if (n1 >= adj.size())
+                continue;
+            for (uint32_t n2 : adj[n1])
+            {
+                if (n2 == seed || used_page_edges.count(undirected_edge_key(n1, n2)) > 0)
+                    continue;
+                if (!edge_ok(seed, n1))
+                    continue;
+                try_end({seed, n1, n2}, n2);
+                if (n2 >= adj.size())
+                    continue;
+                for (uint32_t n3 : adj[n2])
+                {
+                    if (n3 == seed || n3 == n1 || used_page_edges.count(undirected_edge_key(n2, n3)) > 0)
+                        continue;
+                    try_end({seed, n1, n2, n3}, n3);
+                    if (n3 >= adj.size())
+                        continue;
+                    for (uint32_t n4 : adj[n3])
+                    {
+                        if (n4 == seed || n4 == n1 || n4 == n2 ||
+                            used_page_edges.count(undirected_edge_key(n3, n4)) > 0)
+                            continue;
+                        try_end({seed, n1, n2, n3, n4}, n4);
+                    }
+                }
+            }
+        }
+        return;
+    }
+
     std::function<void(uint32_t, std::vector<uint32_t> &, size_t)> dfs = [&](uint32_t cur, std::vector<uint32_t> &path,
                                                                              size_t depth) {
         if (depth > max_hops)
@@ -706,7 +845,7 @@ static void try_path_profile_edge_targets(const std::vector<uint32_t> &path,
         const uint32_t tb = path[i];
         const uint64_t key = undirected_edge_key(ta, tb);
         if (profile_edge_in_list.count(key) == 0 || used_page_edges.count(key) > 0)
-            continue;
+                        continue;
         std::vector<uint32_t> trial;
         double candidate_avg = -1.0;
         try_candidate_path(path, ta, tb, used_page_edges, weights, candidate_avg, trial);
@@ -746,7 +885,7 @@ static void dfs_edge_paths_from_seed(uint32_t cur, std::vector<uint32_t> &path, 
             if (n == nbr)
             {
                 on_path = true;
-                break;
+                        break;
             }
         }
         if (on_path)
@@ -898,10 +1037,11 @@ static void remove_path_from_lists(const std::vector<uint32_t> &path, std::unord
 struct PagePackConfig
 {
     uint64_t page_cap = 0;
-    uint64_t max_output_nodes = 0; // 0 = full relayout; >0 = disk sidecar cap (e.g. 10%)
+    uint64_t max_output_nodes = 0; // 0 = full relayout; >0 = disk cache cap (e.g. 10%)
+    bool allow_duplicate_output = false;
     const std::unordered_set<uint32_t> *skip_output = nullptr;
     const std::vector<uint64_t> *node_expand = nullptr;
-    std::vector<uint32_t> *output_nodes = nullptr; // disk sidecar: collect nodes here directly
+    std::vector<uint32_t> *output_nodes = nullptr; // disk cache: collect nodes here directly
 };
 
 static bool disk_cache_node_eligible(uint32_t node, const PagePackConfig &cfg)
@@ -922,10 +1062,11 @@ static bool try_append_unique_disk_cache_node(uint32_t node, const PagePackConfi
         return false;
     if (output_count >= cfg.max_output_nodes)
         return false;
-    if (output_seen.count(node) > 0)
+    if (!cfg.allow_duplicate_output && output_seen.count(node) > 0)
         return false;
     cfg.output_nodes->push_back(node);
-    output_seen.insert(node);
+    if (!cfg.allow_duplicate_output)
+        output_seen.insert(node);
     output_count++;
     return true;
 }
@@ -935,7 +1076,7 @@ static void append_page_nodes_to_disk_cache_list(const std::vector<uint32_t> &pa
 {
     if (cfg.output_nodes == nullptr)
         return;
-    for (uint32_t node : page_nodes)
+        for (uint32_t node : page_nodes)
     {
         if (output_count >= cfg.max_output_nodes)
             break;
@@ -986,7 +1127,10 @@ static void place_node_on_page(std::vector<uint32_t> &page_nodes, std::unordered
     if (cfg != nullptr && !disk_cache_node_eligible(node, *cfg))
         return;
     if (output_seen != nullptr && output_seen->count(node) > 0)
-        return;
+    {
+        if (cfg == nullptr || !cfg->allow_duplicate_output)
+            return;
+    }
     if (page_nodes.size() >= page_cap || on_page.count(node) > 0)
         return;
     page_nodes.push_back(node);
@@ -1015,6 +1159,85 @@ static bool has_pending_pack_nodes(const std::vector<bool> &node_in_list)
     return false;
 }
 
+static void star_fill_page_from_nodes(const VamanaGraph &graph,
+                                      const std::unordered_map<uint64_t, uint64_t> &weights,
+                                      const std::vector<std::vector<uint32_t>> &adj,
+                                      std::unordered_set<uint64_t> &profile_edge_in_list, uint64_t page_cap,
+                                      std::vector<uint32_t> &page_nodes, std::unordered_set<uint32_t> &on_page,
+                                      const PagePackConfig &cfg, const std::unordered_set<uint32_t> *output_seen,
+                                      std::vector<bool> &node_in_list);
+
+static void fill_page_after_seed_directed_topk_and_starfill(
+    uint32_t seed, const VamanaGraph &graph, const std::vector<std::vector<uint32_t>> &adj,
+    const std::unordered_map<uint64_t, uint64_t> &weights,
+    const std::unordered_map<uint32_t, std::vector<std::pair<uint32_t, uint64_t>>> &out_edges,
+    std::unordered_set<uint64_t> &profile_edge_in_list, uint32_t beam_width, const PagePackConfig &cfg,
+    const std::unordered_set<uint32_t> *seen_ptr, std::vector<bool> &node_in_list, std::vector<uint32_t> &page_nodes,
+    std::unordered_set<uint32_t> &on_page, uint64_t &output_count);
+
+static std::unordered_map<uint32_t, std::vector<std::pair<uint32_t, uint64_t>>> build_sorted_out_edges(
+    const std::vector<std::tuple<uint32_t, uint32_t, uint64_t>> &directed_edges, uint64_t num_points)
+{
+    std::unordered_map<uint32_t, std::vector<std::pair<uint32_t, uint64_t>>> out_edges;
+    out_edges.reserve(directed_edges.size());
+    for (const auto &edge : directed_edges)
+    {
+        const uint32_t parent = std::get<0>(edge);
+        const uint32_t child = std::get<1>(edge);
+        const uint64_t count = std::get<2>(edge);
+        if (count == 0 || parent >= num_points || child >= num_points)
+            continue;
+        out_edges[parent].emplace_back(child, count);
+    }
+    for (auto &kv : out_edges)
+    {
+        auto &children = kv.second;
+        std::sort(children.begin(), children.end(), [](const auto &a, const auto &b) {
+            return a.second > b.second || (a.second == b.second && a.first < b.first);
+        });
+    }
+    return out_edges;
+}
+
+static bool profile_out_topk_is_full_coverage(
+    const std::unordered_map<uint32_t, std::vector<std::pair<uint32_t, uint64_t>>> &out_edges, uint32_t node,
+    uint32_t k)
+{
+    const auto it = out_edges.find(node);
+    if (it == out_edges.end() || it->second.empty() || k == 0)
+        return false;
+    uint64_t total = 0;
+    for (const auto &child_w : it->second)
+        total += child_w.second;
+    if (total == 0)
+        return false;
+    const size_t take = std::min(static_cast<size_t>(k), it->second.size());
+    uint64_t top_sum = 0;
+    for (size_t i = 0; i < take; i++)
+        top_sum += it->second[i].second;
+    return top_sum >= total;
+}
+
+static void partition_seeds_top4_full_first(
+    const std::unordered_map<uint32_t, std::vector<std::pair<uint32_t, uint64_t>>> &out_edges,
+    std::vector<uint32_t> &seeds, uint32_t k = 4)
+{
+    std::vector<uint32_t> first;
+    std::vector<uint32_t> rest;
+    first.reserve(seeds.size());
+    rest.reserve(seeds.size());
+    for (uint32_t node : seeds)
+    {
+        if (profile_out_topk_is_full_coverage(out_edges, node, k))
+            first.push_back(node);
+        else
+            rest.push_back(node);
+    }
+    seeds.clear();
+    seeds.insert(seeds.end(), first.begin(), first.end());
+    seeds.insert(seeds.end(), rest.begin(), rest.end());
+}
+
 static bool pick_highest_weight_seed_edge(const std::vector<std::pair<uint32_t, uint32_t>> &sorted_edges,
                                  const std::unordered_set<uint64_t> &edge_in_list, size_t &edge_cursor,
                                  uint32_t &seed_u, uint32_t &seed_v, uint64_t &seed_key,
@@ -1041,43 +1264,118 @@ static bool pick_highest_weight_seed_edge(const std::vector<std::pair<uint32_t, 
     return false;
 }
 
-static std::vector<std::vector<std::pair<uint32_t, uint64_t>>> build_profile_edges_by_node(
-    uint64_t num_points, const std::unordered_map<uint64_t, uint64_t> &weights)
+static std::vector<std::tuple<uint32_t, uint32_t, uint64_t>> sorted_directed_profile_edges(
+    const std::vector<std::tuple<uint32_t, uint32_t, uint64_t>> &directed_edges)
 {
-    std::vector<std::vector<std::pair<uint32_t, uint64_t>>> by_node(num_points);
-    for (const auto &kv : weights)
+    std::vector<std::tuple<uint32_t, uint32_t, uint64_t>> sorted = directed_edges;
+    std::sort(sorted.begin(), sorted.end(), [](const auto &a, const auto &b) {
+        const uint64_t ca = std::get<2>(a), cb = std::get<2>(b);
+        if (ca != cb)
+            return ca > cb;
+        if (std::get<0>(a) != std::get<0>(b))
+            return std::get<0>(a) < std::get<0>(b);
+        return std::get<1>(a) < std::get<1>(b);
+    });
+    return sorted;
+}
+
+static void init_pending_directed_edges(const std::vector<std::tuple<uint32_t, uint32_t, uint64_t>> &directed_edges,
+                                      std::unordered_set<uint64_t> &directed_in_list)
+{
+    directed_in_list.clear();
+    directed_in_list.reserve(directed_edges.size());
+    for (const auto &edge : directed_edges)
     {
-        const uint32_t u = static_cast<uint32_t>(kv.first >> 32);
-        const uint32_t v = static_cast<uint32_t>(kv.first & 0xFFFFFFFFu);
-        if (u >= num_points || v >= num_points)
+        if (std::get<2>(edge) == 0)
             continue;
-        by_node[u].emplace_back(v, kv.first);
-        by_node[v].emplace_back(u, kv.first);
+        directed_in_list.insert(directed_edge_key(std::get<0>(edge), std::get<1>(edge)));
     }
-    return by_node;
 }
 
-static void remove_path_edges_from_set(const std::vector<uint32_t> &path,
-                                                std::unordered_set<uint64_t> &neighborhood)
+static bool pick_highest_directed_seed_edge(
+    const std::vector<std::tuple<uint32_t, uint32_t, uint64_t>> &sorted_directed,
+    const std::unordered_set<uint64_t> &directed_in_list, size_t &edge_cursor, uint32_t &seed_u, uint32_t &seed_v,
+    uint64_t &seed_key, const std::vector<bool> *node_in_list = nullptr)
 {
-    for (size_t i = 1; i < path.size(); i++)
-        neighborhood.erase(undirected_edge_key(path[i - 1], path[i]));
+    while (edge_cursor < sorted_directed.size())
+    {
+        const auto &edge = sorted_directed[edge_cursor++];
+        const uint32_t u = std::get<0>(edge);
+        const uint32_t v = std::get<1>(edge);
+        const uint64_t key = directed_edge_key(u, v);
+        if (directed_in_list.count(key) == 0)
+            continue;
+        if (node_in_list != nullptr)
+        {
+            const bool u_ok = is_node_pending_pack(*node_in_list, u);
+            const bool v_ok = is_node_pending_pack(*node_in_list, v);
+            if (!u_ok && !v_ok)
+                continue;
+        }
+        seed_u = u;
+        seed_v = v;
+        seed_key = key;
+        return true;
+    }
+    return false;
 }
 
-static int pack_pages_by_edge_importance(const VamanaGraph &graph, const std::unordered_map<uint64_t, uint64_t> &weights,
-                            const std::vector<std::pair<uint32_t, uint32_t>> &sorted_edges, uint32_t k_hops,
-                            const PagePackConfig &cfg, std::vector<std::vector<uint32_t>> &pages,
-                            std::vector<bool> &assigned)
+static std::unordered_map<uint32_t, std::vector<std::pair<uint32_t, uint64_t>>> build_directed_out_edges(
+    const std::vector<std::tuple<uint32_t, uint32_t, uint64_t>> &directed_edges, uint64_t num_points)
+{
+    std::unordered_map<uint32_t, std::vector<std::pair<uint32_t, uint64_t>>> out_edges;
+    out_edges.reserve(directed_edges.size());
+    for (const auto &edge : directed_edges)
+    {
+        const uint32_t u = std::get<0>(edge);
+        const uint32_t v = std::get<1>(edge);
+        const uint64_t c = std::get<2>(edge);
+        if (c == 0 || u >= num_points || v >= num_points)
+            continue;
+        out_edges[u].emplace_back(v, c);
+    }
+    for (auto &kv : out_edges)
+    {
+        auto &children = kv.second;
+        std::sort(children.begin(), children.end(), [](const auto &a, const auto &b) {
+            return a.second > b.second || (a.second == b.second && a.first < b.first);
+        });
+    }
+    return out_edges;
+}
+
+enum class EdgePackVariant
+{
+    Khop,
+    DirectedChild,
+    Star,
+    ParentOnly,
+    PairOnly,
+    Clique,
+    DirectedSeedStar
+};
+
+static int pack_pages_edge_variant(const VamanaGraph &graph, const std::unordered_map<uint64_t, uint64_t> &weights,
+                                   const std::vector<std::pair<uint32_t, uint32_t>> &sorted_undirected,
+                                   const std::vector<std::tuple<uint32_t, uint32_t, uint64_t>> &directed_edges,
+                                   uint32_t k_hops, EdgePackVariant variant, const PagePackConfig &cfg,
+                                   std::vector<std::vector<uint32_t>> &pages, std::vector<bool> &assigned)
 {
     if (graph.num_points == 0 || cfg.page_cap == 0)
         return -1;
 
     const auto adj = build_undirected_adjacency(graph);
-    size_t edge_cursor = 0;
+    const auto sorted_directed = sorted_directed_profile_edges(directed_edges);
+    const auto directed_out = build_directed_out_edges(directed_edges, graph.num_points);
+
+    size_t undirected_cursor = 0;
+    size_t directed_cursor = 0;
     std::unordered_set<uint64_t> profile_edge_in_list;
+    std::unordered_set<uint64_t> directed_in_list;
     std::vector<bool> node_in_list;
-    const bool disk_sidecar = (cfg.max_output_nodes > 0);
+    const bool disk_cache_capped = (cfg.max_output_nodes > 0);
     init_pending_profile_edges(weights, profile_edge_in_list);
+    init_pending_directed_edges(directed_edges, directed_in_list);
     init_pending_pack_nodes(static_cast<uint32_t>(graph.num_points), cfg, node_in_list);
     assigned.assign(graph.num_points, false);
 
@@ -1104,93 +1402,223 @@ static int pack_pages_by_edge_importance(const VamanaGraph &graph, const std::un
 
     uint64_t output_count = 0;
     std::unordered_set<uint32_t> output_seen;
-    if (disk_sidecar)
+    if (disk_cache_capped)
         output_seen.reserve(static_cast<size_t>(cfg.max_output_nodes));
-    const std::unordered_set<uint32_t> *seen_ptr = disk_sidecar ? &output_seen : nullptr;
+    const std::unordered_set<uint32_t> *seen_ptr = disk_cache_capped ? &output_seen : nullptr;
 
-    auto fill_page_from_node_list = [&](std::vector<uint32_t> &page_nodes, std::unordered_set<uint32_t> &on_page) {
-        for (uint32_t node : nodes_by_expand)
-        {
-            if (page_nodes.size() >= cfg.page_cap)
-                break;
-            if (!is_node_pending_pack(node_in_list, node))
-                continue;
-            place_node_on_page(page_nodes, on_page, cfg.page_cap, node, &cfg, seen_ptr);
-            node_in_list[node] = false;
-        }
-    };
+    const std::vector<bool> *pick_node_list = &node_in_list;
+    const bool use_directed_seed = (variant == EdgePackVariant::DirectedChild ||
+                                   variant == EdgePackVariant::ParentOnly ||
+                                   variant == EdgePackVariant::DirectedSeedStar);
 
     while (true)
     {
-        if (disk_sidecar && output_count >= cfg.max_output_nodes)
+        if (disk_cache_capped && output_count >= cfg.max_output_nodes)
             break;
-        if (!disk_sidecar && !has_pending_pack_nodes(node_in_list))
+        if (!disk_cache_capped && !has_pending_pack_nodes(node_in_list))
             break;
 
         uint32_t seed_u = 0, seed_v = 0;
         uint64_t seed_key = 0;
-        const std::vector<bool> *pick_node_list = disk_sidecar ? &node_in_list : nullptr;
-        if (!pick_highest_weight_seed_edge(sorted_edges, profile_edge_in_list, edge_cursor, seed_u, seed_v, seed_key,
-                                  pick_node_list))
-        {
-            if (disk_sidecar)
-                break;
-            std::vector<uint32_t> page_nodes;
-            std::unordered_set<uint32_t> on_page;
-            fill_page_from_node_list(page_nodes, on_page);
-            append_page(page_nodes);
-            continue;
-        }
+        bool got_seed = false;
+        if (use_directed_seed)
+            got_seed = pick_highest_directed_seed_edge(sorted_directed, directed_in_list, directed_cursor, seed_u,
+                                                       seed_v, seed_key, pick_node_list);
+        else
+            got_seed = pick_highest_weight_seed_edge(sorted_undirected, profile_edge_in_list, undirected_cursor, seed_u,
+                                                     seed_v, seed_key, pick_node_list);
+
+        if (!got_seed)
+            break;
 
         std::vector<uint32_t> page_nodes;
         std::unordered_set<uint32_t> on_page;
         page_nodes.reserve(static_cast<size_t>(cfg.page_cap));
 
-        // (b) seed edge: place counted endpoints only, remove edge + endpoints from lists.
         place_node_on_page(page_nodes, on_page, cfg.page_cap, seed_u, &cfg, seen_ptr);
         place_node_on_page(page_nodes, on_page, cfg.page_cap, seed_v, &cfg, seen_ptr);
-        profile_edge_in_list.erase(seed_key);
+        profile_edge_in_list.erase(undirected_edge_key(seed_u, seed_v));
+        directed_in_list.erase(directed_edge_key(seed_u, seed_v));
+        directed_in_list.erase(directed_edge_key(seed_v, seed_u));
         if (seed_u < node_in_list.size())
             node_in_list[seed_u] = false;
         if (seed_v < node_in_list.size())
             node_in_list[seed_v] = false;
 
         std::unordered_set<uint64_t> used_page_edges;
-        used_page_edges.insert(seed_key);
+        used_page_edges.insert(undirected_edge_key(seed_u, seed_v));
 
-        while (page_nodes.size() < cfg.page_cap)
+        if (variant != EdgePackVariant::PairOnly)
         {
-            if (disk_sidecar && output_count >= cfg.max_output_nodes)
-                break;
-
-            std::vector<uint32_t> best_path;
-            uint64_t best_target_key = 0;
-            double best_avg = -1.0;
-
-            find_best_path_from_seeds_edge_limited(seed_u, seed_v, adj, weights, used_page_edges, k_hops,
-                                                   profile_edge_in_list, best_avg, best_path, best_target_key);
-
-            if (best_path.empty())
-                break;
-
-            for (uint32_t node : best_path)
+            while (page_nodes.size() < cfg.page_cap)
             {
-                if (page_nodes.size() >= cfg.page_cap)
+                if (disk_cache_capped && output_count >= cfg.max_output_nodes)
                     break;
-                if (is_node_pending_pack(node_in_list, node))
-                    place_node_on_page(page_nodes, on_page, cfg.page_cap, node, &cfg, seen_ptr);
-            }
 
-            remove_path_from_lists(best_path, profile_edge_in_list, node_in_list);
-            for (size_t i = 1; i < best_path.size(); i++)
-                used_page_edges.insert(undirected_edge_key(best_path[i - 1], best_path[i]));
+                if (variant == EdgePackVariant::Khop)
+                {
+                    std::vector<uint32_t> best_path;
+                    uint64_t best_target_key = 0;
+                    double best_avg = -1.0;
+                    find_best_path_from_seeds_edge_limited(seed_u, seed_v, adj, weights, used_page_edges, k_hops,
+                                                           profile_edge_in_list, best_avg, best_path, best_target_key);
+                    if (best_path.empty())
+                        break;
+                    for (uint32_t node : best_path)
+                    {
+                        if (page_nodes.size() >= cfg.page_cap)
+                            break;
+                        if (is_node_pending_pack(node_in_list, node))
+                            place_node_on_page(page_nodes, on_page, cfg.page_cap, node, &cfg, seen_ptr);
+                    }
+                    remove_path_from_lists(best_path, profile_edge_in_list, node_in_list);
+                    for (size_t i = 1; i < best_path.size(); i++)
+                        used_page_edges.insert(undirected_edge_key(best_path[i - 1], best_path[i]));
+                    continue;
+                }
+
+                if (variant == EdgePackVariant::DirectedChild || variant == EdgePackVariant::ParentOnly)
+                {
+                    uint32_t best_child = static_cast<uint32_t>(graph.num_points);
+                    uint64_t best_w = 0;
+                    const auto consider_parent = [&](uint32_t parent) {
+                        if (variant == EdgePackVariant::ParentOnly && parent != seed_u)
+                            return;
+                        const auto it = directed_out.find(parent);
+                        if (it == directed_out.end())
+                            return;
+                        for (const auto &child_w : it->second)
+                        {
+                            const uint32_t child = child_w.first;
+                            const uint64_t w = child_w.second;
+                            const uint64_t dk = directed_edge_key(parent, child);
+                            if (!directed_in_list.count(dk))
+                                continue;
+                            if (!is_node_pending_pack(node_in_list, child))
+                                continue;
+                            if (!graph_has_edge(adj, parent, child))
+                                continue;
+                            if (w > best_w || (w == best_w && (best_child == graph.num_points || child < best_child)))
+                            {
+                                best_w = w;
+                                best_child = child;
+                            }
+                        }
+                    };
+                    consider_parent(seed_u);
+                    if (variant == EdgePackVariant::DirectedChild)
+                        consider_parent(seed_v);
+                    if (best_child >= graph.num_points)
+                        break;
+                    place_node_on_page(page_nodes, on_page, cfg.page_cap, best_child, &cfg, seen_ptr);
+                    node_in_list[best_child] = false;
+                    profile_edge_in_list.erase(undirected_edge_key(seed_u, best_child));
+                    profile_edge_in_list.erase(undirected_edge_key(seed_v, best_child));
+                    directed_in_list.erase(directed_edge_key(seed_u, best_child));
+                    directed_in_list.erase(directed_edge_key(best_child, seed_u));
+                    used_page_edges.insert(undirected_edge_key(seed_u, best_child));
+                    continue;
+                }
+
+                if (variant == EdgePackVariant::Star || variant == EdgePackVariant::DirectedSeedStar)
+                {
+                    uint32_t best_node = static_cast<uint32_t>(graph.num_points);
+                    uint64_t best_w = 0;
+                    for (uint32_t on : page_nodes)
+                    {
+                        if (on >= adj.size())
+                            continue;
+                        for (uint32_t nbr : adj[on])
+                        {
+                            const uint64_t ek = undirected_edge_key(on, nbr);
+                            if (used_page_edges.count(ek) > 0)
+                                continue;
+                            if (profile_edge_in_list.count(ek) == 0)
+                                continue;
+                            if (!is_node_pending_pack(node_in_list, nbr))
+                                continue;
+                            const uint64_t w = edge_weight(weights, on, nbr);
+                            if (w == 0)
+                                continue;
+                            if (w > best_w || (w == best_w && (best_node == graph.num_points || nbr < best_node)))
+                            {
+                                best_w = w;
+                                best_node = nbr;
+                            }
+                        }
+                    }
+                    if (best_node >= graph.num_points)
+                        break;
+                    place_node_on_page(page_nodes, on_page, cfg.page_cap, best_node, &cfg, seen_ptr);
+                    node_in_list[best_node] = false;
+                    for (uint32_t on : page_nodes)
+                    {
+                        if (on == best_node)
+                            continue;
+                        profile_edge_in_list.erase(undirected_edge_key(on, best_node));
+                        used_page_edges.insert(undirected_edge_key(on, best_node));
+                    }
+                    continue;
+                }
+
+                if (variant == EdgePackVariant::Clique)
+                {
+                    std::vector<std::pair<uint64_t, uint32_t>> candidates;
+                    candidates.reserve(64);
+                    for (uint32_t on : page_nodes)
+                    {
+                        if (on >= adj.size())
+                            continue;
+                        for (uint32_t nbr : adj[on])
+                        {
+                            const uint64_t ek = undirected_edge_key(on, nbr);
+                            if (used_page_edges.count(ek) > 0 || on_page.count(nbr) > 0)
+                                continue;
+                            if (profile_edge_in_list.count(ek) == 0)
+                                continue;
+                            if (!is_node_pending_pack(node_in_list, nbr))
+                                continue;
+                            const uint64_t w = edge_weight(weights, on, nbr);
+                            if (w == 0)
+                                continue;
+                            candidates.emplace_back(w, nbr);
+                        }
+                    }
+                    std::sort(candidates.begin(), candidates.end(), [](const auto &a, const auto &b) {
+                        return a.first > b.first || (a.first == b.first && a.second < b.second);
+                    });
+                    size_t added = 0;
+                    for (const auto &cw : candidates)
+                    {
+                        if (page_nodes.size() >= cfg.page_cap)
+                            break;
+                        const uint32_t nbr = cw.second;
+                        if (on_page.count(nbr) > 0)
+                            continue;
+                        place_node_on_page(page_nodes, on_page, cfg.page_cap, nbr, &cfg, seen_ptr);
+                        if (!on_page.count(nbr))
+                            continue;
+                        node_in_list[nbr] = false;
+                        for (uint32_t on : page_nodes)
+                        {
+                            if (on == nbr)
+                                continue;
+                            profile_edge_in_list.erase(undirected_edge_key(on, nbr));
+                            used_page_edges.insert(undirected_edge_key(on, nbr));
+                        }
+                        added++;
+                    }
+                    if (added == 0)
+                        break;
+                }
+            }
         }
 
         append_page(page_nodes);
         append_page_nodes_to_disk_cache_list(page_nodes, cfg, output_count, output_seen);
     }
 
-    if (disk_sidecar && output_count < cfg.max_output_nodes)
+    if (disk_cache_capped && output_count < cfg.max_output_nodes)
     {
         for (uint32_t node : nodes_by_expand)
         {
@@ -1206,10 +1634,134 @@ static int pack_pages_by_edge_importance(const VamanaGraph &graph, const std::un
     return 0;
 }
 
+static int pack_pages_edge_replica(const VamanaGraph &graph, const std::unordered_map<uint64_t, uint64_t> &weights,
+                                   const std::vector<std::pair<uint32_t, uint32_t>> &sorted_undirected,
+                                   const PagePackConfig &cfg, std::vector<std::vector<uint32_t>> &pages)
+{
+    if (graph.num_points == 0 || cfg.page_cap == 0 || cfg.output_nodes == nullptr)
+        return -1;
+
+    const auto adj = build_undirected_adjacency(graph);
+    std::unordered_set<uint64_t> profile_edge_in_list;
+    init_pending_profile_edges(weights, profile_edge_in_list);
+
+    size_t undirected_cursor = 0;
+    uint64_t output_count = 0;
+
+    auto append_page_slots = [&](const std::vector<uint32_t> &page_nodes) {
+        for (uint32_t node : page_nodes)
+        {
+            if (output_count >= cfg.max_output_nodes)
+                break;
+            if (!disk_cache_node_eligible(node, cfg))
+                continue;
+            cfg.output_nodes->push_back(node);
+            output_count++;
+        }
+    };
+
+    while (output_count < cfg.max_output_nodes)
+    {
+        uint32_t seed_u = 0, seed_v = 0;
+        uint64_t seed_key = 0;
+        if (!pick_highest_weight_seed_edge(sorted_undirected, profile_edge_in_list, undirected_cursor, seed_u, seed_v,
+                                         seed_key, nullptr))
+            break;
+
+        std::vector<uint32_t> page_nodes;
+        std::unordered_set<uint32_t> on_page;
+        page_nodes.reserve(static_cast<size_t>(cfg.page_cap));
+        place_node_on_page(page_nodes, on_page, cfg.page_cap, seed_u, &cfg, nullptr);
+        place_node_on_page(page_nodes, on_page, cfg.page_cap, seed_v, &cfg, nullptr);
+        profile_edge_in_list.erase(undirected_edge_key(seed_u, seed_v));
+
+        std::unordered_set<uint64_t> used_page_edges;
+        used_page_edges.insert(undirected_edge_key(seed_u, seed_v));
+
+        while (page_nodes.size() < cfg.page_cap && output_count < cfg.max_output_nodes)
+        {
+            uint32_t best_node = static_cast<uint32_t>(graph.num_points);
+            uint64_t best_w = 0;
+            for (uint32_t on : page_nodes)
+            {
+                if (on >= adj.size())
+                    continue;
+                for (uint32_t nbr : adj[on])
+                {
+                    const uint64_t ek = undirected_edge_key(on, nbr);
+                    if (used_page_edges.count(ek) > 0 || on_page.count(nbr) > 0)
+                        continue;
+                    if (profile_edge_in_list.count(ek) == 0)
+                        continue;
+                    if (!disk_cache_node_eligible(nbr, cfg))
+                        continue;
+                    const uint64_t w = edge_weight(weights, on, nbr);
+                    if (w == 0)
+                        continue;
+                    if (w > best_w || (w == best_w && (best_node == graph.num_points || nbr < best_node)))
+                    {
+                        best_w = w;
+                        best_node = nbr;
+                    }
+                }
+            }
+            if (best_node >= graph.num_points)
+                break;
+            place_node_on_page(page_nodes, on_page, cfg.page_cap, best_node, &cfg, nullptr);
+            for (uint32_t on : page_nodes)
+            {
+                if (on == best_node)
+                    continue;
+                used_page_edges.insert(undirected_edge_key(on, best_node));
+            }
+        }
+
+        if (!page_nodes.empty())
+            pages.push_back(page_nodes);
+        append_page_slots(page_nodes);
+    }
+
+    return 0;
+}
+
+static std::vector<std::vector<std::pair<uint32_t, uint64_t>>> build_profile_edges_by_node(
+    uint64_t num_points, const std::unordered_map<uint64_t, uint64_t> &weights)
+{
+    std::vector<std::vector<std::pair<uint32_t, uint64_t>>> by_node(num_points);
+    for (const auto &kv : weights)
+    {
+        const uint32_t u = static_cast<uint32_t>(kv.first >> 32);
+        const uint32_t v = static_cast<uint32_t>(kv.first & 0xFFFFFFFFu);
+        if (u >= num_points || v >= num_points)
+            continue;
+        by_node[u].emplace_back(v, kv.first);
+        by_node[v].emplace_back(u, kv.first);
+    }
+    return by_node;
+}
+
+static void remove_path_edges_from_set(const std::vector<uint32_t> &path,
+                                                std::unordered_set<uint64_t> &neighborhood)
+{
+    for (size_t i = 1; i < path.size(); i++)
+        neighborhood.erase(undirected_edge_key(path[i - 1], path[i]));
+}
+
+static int pack_pages_by_edge_importance(const VamanaGraph &graph, const std::unordered_map<uint64_t, uint64_t> &weights,
+                            const std::vector<std::pair<uint32_t, uint32_t>> &sorted_edges,
+                            const std::vector<std::tuple<uint32_t, uint32_t, uint64_t>> &directed_edges, uint32_t k_hops,
+                            const PagePackConfig &cfg, std::vector<std::vector<uint32_t>> &pages,
+                            std::vector<bool> &assigned)
+{
+    return pack_pages_edge_variant(graph, weights, sorted_edges, directed_edges, k_hops, EdgePackVariant::Khop, cfg,
+                                   pages, assigned);
+}
+
 static int hot_node_pack_pages(const VamanaGraph &graph, const std::vector<uint64_t> &node_expand,
                                const std::unordered_map<uint64_t, uint64_t> &weights, uint32_t k_hops,
+                               const std::vector<std::tuple<uint32_t, uint32_t, uint64_t>> &directed_edges,
                                const PagePackConfig &cfg_in, std::vector<std::vector<uint32_t>> &pages,
-                               std::vector<bool> &assigned)
+                               std::vector<bool> &assigned, bool seed_top4_full_first = false)
 {
     if (graph.num_points == 0 || cfg_in.page_cap == 0)
         return -1;
@@ -1218,9 +1770,14 @@ static int hot_node_pack_pages(const VamanaGraph &graph, const std::vector<uint6
     cfg.node_expand = &node_expand;
 
     const auto adj = build_undirected_adjacency(graph);
+    const auto out_edges = build_sorted_out_edges(directed_edges, graph.num_points);
+    std::unordered_set<uint64_t> profile_edge_in_list;
+    init_pending_profile_edges(weights, profile_edge_in_list);
+
+    const uint32_t beam_width = (k_hops > 0) ? k_hops : 1;
 
     std::vector<bool> node_in_list;
-    const bool disk_sidecar = (cfg.max_output_nodes > 0);
+    const bool disk_cache_capped = (cfg.max_output_nodes > 0);
     init_pending_pack_nodes(static_cast<uint32_t>(graph.num_points), cfg, node_in_list);
     assigned.assign(graph.num_points, false);
 
@@ -1234,6 +1791,10 @@ static int hot_node_pack_pages(const VamanaGraph &graph, const std::vector<uint6
         return a < b;
     });
 
+    std::vector<uint32_t> seeds_by_priority = nodes_by_expand;
+    if (seed_top4_full_first)
+        partition_seeds_top4_full_first(out_edges, seeds_by_priority, 4);
+
     auto append_page = [&](const std::vector<uint32_t> &page_nodes) {
         if (page_nodes.empty())
             return;
@@ -1245,9 +1806,9 @@ static int hot_node_pack_pages(const VamanaGraph &graph, const std::vector<uint6
     const uint32_t invalid = static_cast<uint32_t>(graph.num_points);
     uint64_t output_count = 0;
     std::unordered_set<uint32_t> output_seen;
-    if (disk_sidecar)
+    if (disk_cache_capped)
         output_seen.reserve(static_cast<size_t>(cfg.max_output_nodes));
-    const std::unordered_set<uint32_t> *seen_ptr = disk_sidecar ? &output_seen : nullptr;
+    const std::unordered_set<uint32_t> *seen_ptr = disk_cache_capped ? &output_seen : nullptr;
 
     auto fill_page_from_node_list = [&](std::vector<uint32_t> &page_nodes, std::unordered_set<uint32_t> &on_page) {
         for (uint32_t node : nodes_by_expand)
@@ -1263,13 +1824,13 @@ static int hot_node_pack_pages(const VamanaGraph &graph, const std::vector<uint6
 
     while (true)
     {
-        if (disk_sidecar && output_count >= cfg.max_output_nodes)
+        if (disk_cache_capped && output_count >= cfg.max_output_nodes)
             break;
-        if (!disk_sidecar && !has_pending_pack_nodes(node_in_list))
+        if (!disk_cache_capped && !has_pending_pack_nodes(node_in_list))
             break;
 
         uint32_t seed = invalid;
-        for (uint32_t node : nodes_by_expand)
+        for (uint32_t node : seeds_by_priority)
         {
             if (is_node_pending_pack(node_in_list, node))
             {
@@ -1280,8 +1841,8 @@ static int hot_node_pack_pages(const VamanaGraph &graph, const std::vector<uint6
 
         if (seed == invalid)
         {
-            if (disk_sidecar)
-                break;
+            if (disk_cache_capped)
+            break;
             std::vector<uint32_t> page_nodes;
             std::unordered_set<uint32_t> on_page;
             fill_page_from_node_list(page_nodes, on_page);
@@ -1296,46 +1857,193 @@ static int hot_node_pack_pages(const VamanaGraph &graph, const std::vector<uint6
         place_node_on_page(page_nodes, on_page, cfg.page_cap, seed, &cfg, seen_ptr);
         node_in_list[seed] = false;
 
-        std::unordered_set<uint64_t> used_page_edges;
-        const auto target_eligible = [&](uint32_t id) -> bool { return is_node_pending_pack(node_in_list, id); };
-
-        while (page_nodes.size() < cfg.page_cap && has_pending_pack_nodes(node_in_list))
-        {
-            if (disk_sidecar && output_count >= cfg.max_output_nodes)
-                break;
-
-            std::vector<uint32_t> best_path;
-            uint32_t best_target = invalid;
-            double best_avg = -1.0;
-
-            find_best_path_from_seed_limited(seed, adj, weights, used_page_edges, k_hops, target_eligible, best_avg,
-                                             best_path, best_target);
-
-            if (best_path.empty() || best_target == invalid)
-                break;
-
-            for (uint32_t node : best_path)
-            {
-                if (page_nodes.size() >= cfg.page_cap)
-                    break;
-                if (is_node_pending_pack(node_in_list, node))
-                    place_node_on_page(page_nodes, on_page, cfg.page_cap, node, &cfg, seen_ptr);
-            }
-
-            for (uint32_t node : best_path)
-            {
-                if (node < node_in_list.size() && node_in_list[node])
-                    node_in_list[node] = false;
-            }
-            for (size_t i = 1; i < best_path.size(); i++)
-                used_page_edges.insert(undirected_edge_key(best_path[i - 1], best_path[i]));
-        }
+        fill_page_after_seed_directed_topk_and_starfill(seed, graph, adj, weights, out_edges, profile_edge_in_list,
+                                                        beam_width, cfg, seen_ptr, node_in_list, page_nodes, on_page,
+                                                        output_count);
 
         append_page(page_nodes);
         append_page_nodes_to_disk_cache_list(page_nodes, cfg, output_count, output_seen);
     }
 
-    if (disk_sidecar && output_count < cfg.max_output_nodes)
+    if (disk_cache_capped && output_count < cfg.max_output_nodes)
+    {
+        for (uint32_t node : nodes_by_expand)
+        {
+            if (output_count >= cfg.max_output_nodes)
+                break;
+            if (!is_node_pending_pack(node_in_list, node))
+                        continue;
+            try_append_unique_disk_cache_node(node, cfg, output_count, output_seen);
+            node_in_list[node] = false;
+            output_count++;
+        }
+    }
+
+    return 0;
+}
+
+// Layout P: seed by total outgoing profile edge weight; co-locate parent + top profile children (directed).
+static void star_fill_page_from_nodes(const VamanaGraph &graph,
+                                      const std::unordered_map<uint64_t, uint64_t> &weights,
+                                      const std::vector<std::vector<uint32_t>> &adj,
+                                      std::unordered_set<uint64_t> &profile_edge_in_list, uint64_t page_cap,
+                                      std::vector<uint32_t> &page_nodes, std::unordered_set<uint32_t> &on_page,
+                                      const PagePackConfig &cfg, const std::unordered_set<uint32_t> *output_seen,
+                                      std::vector<bool> &node_in_list);
+
+static int profile_parent_pack_pages(const VamanaGraph &graph,
+                                     const std::vector<std::tuple<uint32_t, uint32_t, uint64_t>> &directed_edges,
+                                     const PagePackConfig &cfg_in, std::vector<std::vector<uint32_t>> &pages,
+                                     std::vector<bool> &assigned,
+                                     const std::unordered_map<uint64_t, uint64_t> *weights_for_star = nullptr)
+{
+    if (graph.num_points == 0 || cfg_in.page_cap == 0)
+        return -1;
+
+    PagePackConfig cfg = cfg_in;
+    std::unordered_map<uint32_t, std::vector<std::pair<uint32_t, uint64_t>>> out_edges;
+    out_edges.reserve(directed_edges.size());
+    for (const auto &edge : directed_edges)
+    {
+        const uint32_t parent = std::get<0>(edge);
+        const uint32_t child = std::get<1>(edge);
+        const uint64_t count = std::get<2>(edge);
+        if (count == 0 || parent >= graph.num_points || child >= graph.num_points)
+            continue;
+        out_edges[parent].emplace_back(child, count);
+    }
+
+    std::vector<uint32_t> parents;
+    parents.reserve(out_edges.size());
+    for (auto &kv : out_edges)
+    {
+        auto &children = kv.second;
+        std::sort(children.begin(), children.end(), [](const auto &a, const auto &b) {
+            return a.second > b.second || (a.second == b.second && a.first < b.first);
+        });
+        parents.push_back(kv.first);
+    }
+    std::sort(parents.begin(), parents.end(), [&](uint32_t a, uint32_t b) {
+        uint64_t wa = 0, wb = 0;
+        for (const auto &p : out_edges[a])
+            wa += p.second;
+        for (const auto &p : out_edges[b])
+            wb += p.second;
+        if (wa != wb)
+            return wa > wb;
+        return a < b;
+    });
+
+    const auto adj = build_undirected_adjacency(graph);
+    std::unordered_set<uint64_t> profile_edge_in_list;
+    if (weights_for_star != nullptr)
+        init_pending_profile_edges(*weights_for_star, profile_edge_in_list);
+    std::vector<bool> node_in_list;
+    const bool disk_cache_capped = (cfg.max_output_nodes > 0);
+    init_pending_pack_nodes(static_cast<uint32_t>(graph.num_points), cfg, node_in_list);
+    assigned.assign(graph.num_points, false);
+
+    std::vector<uint32_t> nodes_by_expand(static_cast<size_t>(graph.num_points));
+    std::iota(nodes_by_expand.begin(), nodes_by_expand.end(), 0);
+    if (cfg.node_expand != nullptr)
+    {
+        std::sort(nodes_by_expand.begin(), nodes_by_expand.end(), [&](uint32_t a, uint32_t b) {
+            const uint64_t ca = node_heat(*cfg.node_expand, a);
+            const uint64_t cb = node_heat(*cfg.node_expand, b);
+            if (ca != cb)
+                return ca > cb;
+            return a < b;
+        });
+    }
+
+    auto append_page = [&](const std::vector<uint32_t> &page_nodes) {
+        if (page_nodes.empty())
+            return;
+        pages.push_back(page_nodes);
+        for (uint32_t node : page_nodes)
+            assigned[node] = true;
+    };
+
+    uint64_t output_count = 0;
+    std::unordered_set<uint32_t> output_seen;
+    if (disk_cache_capped)
+        output_seen.reserve(static_cast<size_t>(cfg.max_output_nodes));
+    const std::unordered_set<uint32_t> *seen_ptr = disk_cache_capped ? &output_seen : nullptr;
+
+    auto fill_page_from_node_list = [&](std::vector<uint32_t> &page_nodes, std::unordered_set<uint32_t> &on_page) {
+        for (uint32_t node : nodes_by_expand)
+        {
+            if (page_nodes.size() >= cfg.page_cap)
+                break;
+            if (!is_node_pending_pack(node_in_list, node))
+                continue;
+            place_node_on_page(page_nodes, on_page, cfg.page_cap, node, &cfg, seen_ptr);
+            node_in_list[node] = false;
+        }
+    };
+
+    while (true)
+    {
+        if (disk_cache_capped && output_count >= cfg.max_output_nodes)
+            break;
+        if (!disk_cache_capped && !has_pending_pack_nodes(node_in_list))
+            break;
+
+        uint32_t parent = static_cast<uint32_t>(graph.num_points);
+        for (uint32_t cand : parents)
+        {
+            if (is_node_pending_pack(node_in_list, cand))
+            {
+                parent = cand;
+                break;
+            }
+        }
+
+        if (parent >= graph.num_points)
+        {
+            if (disk_cache_capped)
+                break;
+            std::vector<uint32_t> page_nodes;
+            std::unordered_set<uint32_t> on_page;
+            fill_page_from_node_list(page_nodes, on_page);
+            append_page(page_nodes);
+            continue;
+        }
+
+        std::vector<uint32_t> page_nodes;
+        std::unordered_set<uint32_t> on_page;
+        page_nodes.reserve(static_cast<size_t>(cfg.page_cap));
+        place_node_on_page(page_nodes, on_page, cfg.page_cap, parent, &cfg, seen_ptr);
+        node_in_list[parent] = false;
+
+        const auto it = out_edges.find(parent);
+        if (it != out_edges.end())
+        {
+            for (const auto &child_w : it->second)
+            {
+                if (page_nodes.size() >= cfg.page_cap)
+                    break;
+                if (disk_cache_capped && output_count >= cfg.max_output_nodes)
+                    break;
+                const uint32_t child = child_w.first;
+                if (!is_node_pending_pack(node_in_list, child))
+                    continue;
+                if (!graph_has_edge(adj, parent, child))
+                    continue;
+                place_node_on_page(page_nodes, on_page, cfg.page_cap, child, &cfg, seen_ptr);
+                node_in_list[child] = false;
+            }
+        }
+
+        if (weights_for_star != nullptr)
+            star_fill_page_from_nodes(graph, *weights_for_star, adj, profile_edge_in_list, cfg.page_cap, page_nodes,
+                                      on_page, cfg, seen_ptr, node_in_list);
+
+        append_page(page_nodes);
+        append_page_nodes_to_disk_cache_list(page_nodes, cfg, output_count, output_seen);
+    }
+
+    if (disk_cache_capped && output_count < cfg.max_output_nodes)
     {
         for (uint32_t node : nodes_by_expand)
         {
@@ -1350,6 +2058,874 @@ static int hot_node_pack_pages(const VamanaGraph &graph, const std::vector<uint6
     }
 
     return 0;
+}
+
+int compute_profile_parent_disk_cache_list(
+    const VamanaGraph &graph, const std::vector<uint64_t> &node_expand,
+    const std::vector<std::tuple<uint32_t, uint32_t, uint64_t>> &directed_edges, uint64_t nnodes_per_sector,
+    uint64_t max_nodes, const std::unordered_set<uint32_t> &exclude_ids, std::vector<uint32_t> &node_list)
+{
+    node_list.clear();
+    if (max_nodes == 0 || graph.num_points == 0 || nnodes_per_sector == 0)
+        return 0;
+
+    PagePackConfig cfg;
+    cfg.page_cap = nnodes_per_sector;
+    cfg.max_output_nodes = max_nodes;
+    cfg.skip_output = &exclude_ids;
+    cfg.node_expand = &node_expand;
+    cfg.output_nodes = &node_list;
+
+    std::vector<std::vector<uint32_t>> pages;
+    std::vector<bool> assigned;
+    if (profile_parent_pack_pages(graph, directed_edges, cfg, pages, assigned) != 0)
+        return -1;
+
+    if (node_list.empty())
+    {
+        diskann::cerr << "MERIT disk-cache: profile-parent list empty (max_nodes=" << max_nodes << ")." << std::endl;
+        return -1;
+    }
+    log_disk_cache_node_list_stats(node_list, "parent");
+    return 0;
+}
+
+int compute_parent_star_disk_cache_list(
+    const VamanaGraph &graph, const std::vector<uint64_t> &node_expand,
+    const std::vector<std::tuple<uint32_t, uint32_t, uint64_t>> &directed_edges, uint64_t nnodes_per_sector,
+    uint64_t max_nodes, const std::unordered_set<uint32_t> &exclude_ids, std::vector<uint32_t> &node_list)
+{
+    node_list.clear();
+    if (max_nodes == 0 || graph.num_points == 0 || nnodes_per_sector == 0)
+        return 0;
+
+    const auto weights = build_undirected_weights(directed_edges);
+
+    PagePackConfig cfg;
+    cfg.page_cap = nnodes_per_sector;
+    cfg.max_output_nodes = max_nodes;
+    cfg.skip_output = &exclude_ids;
+    cfg.node_expand = &node_expand;
+    cfg.output_nodes = &node_list;
+
+    std::vector<std::vector<uint32_t>> pages;
+    std::vector<bool> assigned;
+    if (profile_parent_pack_pages(graph, directed_edges, cfg, pages, assigned, &weights) != 0)
+        return -1;
+
+    if (node_list.empty())
+    {
+        diskann::cerr << "MERIT disk-cache: parent_star list empty (max_nodes=" << max_nodes << ")." << std::endl;
+        return -1;
+    }
+    log_disk_cache_node_list_stats(node_list, "parent_star");
+    return 0;
+}
+
+int compute_dbeam_estar_split_disk_cache_list(
+    const VamanaGraph &graph, const std::vector<uint64_t> &node_expand,
+    const std::vector<std::tuple<uint32_t, uint32_t, uint64_t>> &directed_edges, uint64_t nnodes_per_sector,
+    uint32_t beam_width, uint64_t max_nodes, const std::unordered_set<uint32_t> &exclude_ids,
+    std::vector<uint32_t> &node_list)
+{
+    node_list.clear();
+    if (max_nodes == 0 || graph.num_points == 0 || nnodes_per_sector == 0)
+        return 0;
+    if (beam_width == 0)
+        beam_width = 1;
+
+    const uint64_t phase1_cap = max_nodes / 2;
+    if (phase1_cap == 0)
+        return compute_edge_variant_disk_cache_list(graph, node_expand, directed_edges, nnodes_per_sector, 1,
+                                                    max_nodes, exclude_ids, "edge_star", node_list);
+
+    std::vector<uint32_t> phase1;
+    if (compute_directed_beam_disk_cache_list(graph, node_expand, directed_edges, nnodes_per_sector, beam_width,
+                                              phase1_cap, exclude_ids, phase1) != 0)
+        return -1;
+
+    std::unordered_set<uint32_t> exclude2 = exclude_ids;
+    exclude2.insert(phase1.begin(), phase1.end());
+
+    std::vector<uint32_t> phase2;
+    const uint64_t phase2_cap = (max_nodes > phase1.size()) ? (max_nodes - phase1.size()) : 0;
+    if (phase2_cap > 0)
+    {
+        if (compute_edge_variant_disk_cache_list(graph, node_expand, directed_edges, nnodes_per_sector, 1, phase2_cap,
+                                                 exclude2, "edge_star", phase2) != 0)
+            return -1;
+    }
+
+    const size_t phase1_count = phase1.size();
+    node_list = std::move(phase1);
+    node_list.insert(node_list.end(), phase2.begin(), phase2.end());
+
+    if (node_list.empty())
+    {
+        diskann::cerr << "MERIT disk-cache: dbeam_estar_split list empty (max_nodes=" << max_nodes << ")." << std::endl;
+        return -1;
+    }
+    diskann::cout << "MERIT disk-cache dbeam_estar_split: phase1=" << phase1_count << " phase2=" << phase2.size()
+                  << " total=" << node_list.size() << std::endl;
+    log_disk_cache_node_list_stats(node_list, "dbeam_estar_split");
+    return 0;
+}
+
+static void star_fill_page_from_nodes(const VamanaGraph &graph,
+                                      const std::unordered_map<uint64_t, uint64_t> &weights,
+                                      const std::vector<std::vector<uint32_t>> &adj,
+                                      std::unordered_set<uint64_t> &profile_edge_in_list, uint64_t page_cap,
+                                      std::vector<uint32_t> &page_nodes, std::unordered_set<uint32_t> &on_page,
+                                      const PagePackConfig &cfg, const std::unordered_set<uint32_t> *output_seen,
+                                      std::vector<bool> &node_in_list);
+
+enum class DirectedBeamStarMode
+{
+    Undirected, // Layout E default: directed top-k + undirected star_fill
+    StarFill,   // Same as Undirected (legacy alias)
+    Directed,
+    Hybrid,
+    None
+};
+
+enum class DirectedBeamSeedMode
+{
+    ParentOut,
+    ParentOutTop4First, // ParentOut order, but top-4=100% out-edge nodes first
+    ChildIn
+};
+
+static std::unordered_map<uint32_t, std::vector<std::pair<uint32_t, uint64_t>>> build_directed_in_edges(
+    const std::vector<std::tuple<uint32_t, uint32_t, uint64_t>> &directed_edges, uint64_t num_points)
+{
+    std::unordered_map<uint32_t, std::vector<std::pair<uint32_t, uint64_t>>> in_edges;
+    in_edges.reserve(directed_edges.size());
+    for (const auto &edge : directed_edges)
+    {
+        const uint32_t parent = std::get<0>(edge);
+        const uint32_t child = std::get<1>(edge);
+        const uint64_t count = std::get<2>(edge);
+        if (count == 0 || parent >= num_points || child >= num_points)
+            continue;
+        in_edges[child].emplace_back(parent, count);
+    }
+    for (auto &kv : in_edges)
+    {
+        auto &parents = kv.second;
+        std::sort(parents.begin(), parents.end(), [](const auto &a, const auto &b) {
+            return a.second > b.second || (a.second == b.second && a.first < b.first);
+        });
+    }
+    return in_edges;
+}
+
+static void directed_star_fill_page_from_nodes(
+    const VamanaGraph &graph,
+    const std::unordered_map<uint32_t, std::vector<std::pair<uint32_t, uint64_t>>> &out_edges,
+    const std::unordered_map<uint32_t, std::vector<std::pair<uint32_t, uint64_t>>> &in_edges,
+    std::unordered_set<uint64_t> &directed_in_list, uint64_t page_cap, std::vector<uint32_t> &page_nodes,
+    std::unordered_set<uint32_t> &on_page, const PagePackConfig &cfg, const std::unordered_set<uint32_t> *output_seen,
+    std::vector<bool> &node_in_list)
+{
+    while (page_nodes.size() < page_cap)
+    {
+        uint32_t best_node = static_cast<uint32_t>(graph.num_points);
+        uint64_t best_w = 0;
+        for (uint32_t on : page_nodes)
+        {
+            const auto out_it = out_edges.find(on);
+            if (out_it != out_edges.end())
+            {
+                for (const auto &child_w : out_it->second)
+                {
+                    const uint32_t nbr = child_w.first;
+                    const uint64_t w = child_w.second;
+                    const uint64_t ek = directed_edge_key(on, nbr);
+                    if (on_page.count(nbr) > 0 || directed_in_list.count(ek) == 0)
+                        continue;
+                    if (!is_node_pending_pack(node_in_list, nbr))
+                        continue;
+                    if (w > best_w || (w == best_w && (best_node == graph.num_points || nbr < best_node)))
+                    {
+                        best_w = w;
+                        best_node = nbr;
+                    }
+                }
+            }
+            const auto in_it = in_edges.find(on);
+            if (in_it != in_edges.end())
+            {
+                for (const auto &parent_w : in_it->second)
+                {
+                    const uint32_t nbr = parent_w.first;
+                    const uint64_t w = parent_w.second;
+                    const uint64_t ek = directed_edge_key(nbr, on);
+                    if (on_page.count(nbr) > 0 || directed_in_list.count(ek) == 0)
+                        continue;
+                    if (!is_node_pending_pack(node_in_list, nbr))
+                        continue;
+                    if (w > best_w || (w == best_w && (best_node == graph.num_points || nbr < best_node)))
+                    {
+                        best_w = w;
+                        best_node = nbr;
+                    }
+                }
+            }
+        }
+        if (best_node >= graph.num_points)
+            break;
+        place_node_on_page(page_nodes, on_page, page_cap, best_node, &cfg, output_seen);
+        node_in_list[best_node] = false;
+        for (uint32_t on : page_nodes)
+        {
+            if (on == best_node)
+                continue;
+            directed_in_list.erase(directed_edge_key(on, best_node));
+            directed_in_list.erase(directed_edge_key(best_node, on));
+        }
+    }
+}
+
+static void hybrid_star_fill_page_from_nodes(
+    const VamanaGraph &graph, const std::unordered_map<uint64_t, uint64_t> &weights,
+    const std::vector<std::vector<uint32_t>> &adj,
+    const std::unordered_map<uint32_t, std::vector<std::pair<uint32_t, uint64_t>>> &out_edges,
+    const std::unordered_map<uint32_t, std::vector<std::pair<uint32_t, uint64_t>>> &in_edges,
+    std::unordered_set<uint64_t> &profile_edge_in_list, std::unordered_set<uint64_t> &directed_in_list,
+    uint64_t page_cap, std::vector<uint32_t> &page_nodes, std::unordered_set<uint32_t> &on_page,
+    const PagePackConfig &cfg, const std::unordered_set<uint32_t> *output_seen, std::vector<bool> &node_in_list)
+{
+    std::unordered_set<uint64_t> used_page_edges;
+    for (size_t i = 0; i < page_nodes.size(); ++i)
+    {
+        for (size_t j = i + 1; j < page_nodes.size(); ++j)
+            used_page_edges.insert(undirected_edge_key(page_nodes[i], page_nodes[j]));
+    }
+
+    while (page_nodes.size() < page_cap)
+    {
+        uint32_t best_dir_node = static_cast<uint32_t>(graph.num_points);
+        uint64_t best_dir_w = 0;
+        for (uint32_t on : page_nodes)
+        {
+            const auto out_it = out_edges.find(on);
+            if (out_it != out_edges.end())
+            {
+                for (const auto &child_w : out_it->second)
+                {
+                    const uint32_t nbr = child_w.first;
+                    const uint64_t w = child_w.second;
+                    const uint64_t ek = directed_edge_key(on, nbr);
+                    if (on_page.count(nbr) > 0 || directed_in_list.count(ek) == 0)
+                        continue;
+                    if (!is_node_pending_pack(node_in_list, nbr))
+                        continue;
+                    if (w > best_dir_w ||
+                        (w == best_dir_w && (best_dir_node == graph.num_points || nbr < best_dir_node)))
+                    {
+                        best_dir_w = w;
+                        best_dir_node = nbr;
+                    }
+                }
+            }
+            const auto in_it = in_edges.find(on);
+            if (in_it != in_edges.end())
+            {
+                for (const auto &parent_w : in_it->second)
+                {
+                    const uint32_t nbr = parent_w.first;
+                    const uint64_t w = parent_w.second;
+                    const uint64_t ek = directed_edge_key(nbr, on);
+                    if (on_page.count(nbr) > 0 || directed_in_list.count(ek) == 0)
+                        continue;
+                    if (!is_node_pending_pack(node_in_list, nbr))
+                        continue;
+                    if (w > best_dir_w ||
+                        (w == best_dir_w && (best_dir_node == graph.num_points || nbr < best_dir_node)))
+                    {
+                        best_dir_w = w;
+                        best_dir_node = nbr;
+                    }
+                }
+            }
+        }
+
+        uint32_t best_node = static_cast<uint32_t>(graph.num_points);
+        if (best_dir_node < graph.num_points)
+        {
+            best_node = best_dir_node;
+        }
+        else
+        {
+            uint64_t best_w = 0;
+            for (uint32_t on : page_nodes)
+            {
+                if (on >= adj.size())
+                    continue;
+                for (uint32_t nbr : adj[on])
+                {
+                    const uint64_t ek = undirected_edge_key(on, nbr);
+                    if (used_page_edges.count(ek) > 0 || on_page.count(nbr) > 0)
+                        continue;
+                    if (profile_edge_in_list.count(ek) == 0)
+                        continue;
+                    if (!is_node_pending_pack(node_in_list, nbr))
+                        continue;
+                    const uint64_t w = edge_weight(weights, on, nbr);
+                    if (w == 0)
+                        continue;
+                    if (w > best_w || (w == best_w && (best_node == graph.num_points || nbr < best_node)))
+                    {
+                        best_w = w;
+                        best_node = nbr;
+                    }
+                }
+            }
+        }
+
+        if (best_node >= graph.num_points)
+            break;
+        place_node_on_page(page_nodes, on_page, page_cap, best_node, &cfg, output_seen);
+        node_in_list[best_node] = false;
+        for (uint32_t on : page_nodes)
+        {
+            if (on == best_node)
+                continue;
+            profile_edge_in_list.erase(undirected_edge_key(on, best_node));
+            directed_in_list.erase(directed_edge_key(on, best_node));
+            directed_in_list.erase(directed_edge_key(best_node, on));
+            used_page_edges.insert(undirected_edge_key(on, best_node));
+        }
+    }
+}
+
+static int directed_beam_pack_pages(const VamanaGraph &graph,
+                                      const std::vector<uint64_t> &node_expand,
+                                      const std::vector<std::tuple<uint32_t, uint32_t, uint64_t>> &directed_edges,
+                                      const std::unordered_map<uint64_t, uint64_t> &weights, uint32_t beam_width,
+                                      DirectedBeamStarMode star_mode, DirectedBeamSeedMode seed_mode,
+                                      const PagePackConfig &cfg_in, std::vector<std::vector<uint32_t>> &pages,
+                                      std::vector<bool> &assigned)
+{
+    if (graph.num_points == 0 || cfg_in.page_cap == 0)
+        return -1;
+    if (beam_width == 0)
+        beam_width = 1;
+
+    PagePackConfig cfg = cfg_in;
+    std::unordered_map<uint32_t, std::vector<std::pair<uint32_t, uint64_t>>> out_edges;
+    out_edges.reserve(directed_edges.size());
+    std::unordered_map<uint32_t, std::vector<std::pair<uint32_t, uint64_t>>> in_edges;
+    in_edges.reserve(directed_edges.size());
+    for (const auto &edge : directed_edges)
+    {
+        const uint32_t parent = std::get<0>(edge);
+        const uint32_t child = std::get<1>(edge);
+        const uint64_t count = std::get<2>(edge);
+        if (count == 0 || parent >= graph.num_points || child >= graph.num_points)
+            continue;
+        out_edges[parent].emplace_back(child, count);
+        in_edges[child].emplace_back(parent, count);
+    }
+
+    std::vector<uint32_t> parents;
+    if (seed_mode == DirectedBeamSeedMode::ChildIn)
+    {
+        parents.reserve(in_edges.size());
+        for (auto &kv : in_edges)
+        {
+            auto &parents_of = kv.second;
+            std::sort(parents_of.begin(), parents_of.end(), [](const auto &a, const auto &b) {
+                return a.second > b.second || (a.second == b.second && a.first < b.first);
+            });
+            parents.push_back(kv.first);
+        }
+        std::sort(parents.begin(), parents.end(), [&](uint32_t a, uint32_t b) {
+            uint64_t wa = 0, wb = 0;
+            for (const auto &p : in_edges[a])
+                wa += p.second;
+            for (const auto &p : in_edges[b])
+                wb += p.second;
+            if (wa != wb)
+                return wa > wb;
+            return a < b;
+        });
+    }
+    else
+    {
+        parents.reserve(out_edges.size());
+        for (auto &kv : out_edges)
+        {
+            auto &children = kv.second;
+            std::sort(children.begin(), children.end(), [](const auto &a, const auto &b) {
+                return a.second > b.second || (a.second == b.second && a.first < b.first);
+            });
+            parents.push_back(kv.first);
+        }
+        std::sort(parents.begin(), parents.end(), [&](uint32_t a, uint32_t b) {
+            uint64_t wa = 0, wb = 0;
+            for (const auto &p : out_edges[a])
+                wa += p.second;
+            for (const auto &p : out_edges[b])
+                wb += p.second;
+            if (wa != wb)
+                return wa > wb;
+            return a < b;
+        });
+        if (seed_mode == DirectedBeamSeedMode::ParentOutTop4First)
+            partition_seeds_top4_full_first(out_edges, parents, 4);
+    }
+
+    const auto adj = build_undirected_adjacency(graph);
+    std::unordered_set<uint64_t> profile_edge_in_list;
+    init_pending_profile_edges(weights, profile_edge_in_list);
+    std::unordered_set<uint64_t> directed_in_list;
+    init_pending_directed_edges(directed_edges, directed_in_list);
+    const auto directed_in = build_directed_in_edges(directed_edges, graph.num_points);
+
+    std::vector<bool> node_in_list;
+    const bool disk_cache_capped = (cfg.max_output_nodes > 0);
+    init_pending_pack_nodes(static_cast<uint32_t>(graph.num_points), cfg, node_in_list);
+    assigned.assign(graph.num_points, false);
+
+    std::vector<uint32_t> nodes_by_expand(static_cast<size_t>(graph.num_points));
+    std::iota(nodes_by_expand.begin(), nodes_by_expand.end(), 0);
+    if (cfg.node_expand != nullptr)
+    {
+        std::sort(nodes_by_expand.begin(), nodes_by_expand.end(), [&](uint32_t a, uint32_t b) {
+            const uint64_t ca = node_heat(*cfg.node_expand, a);
+            const uint64_t cb = node_heat(*cfg.node_expand, b);
+            if (ca != cb)
+                return ca > cb;
+            return a < b;
+        });
+    }
+
+    uint64_t output_count = 0;
+    std::unordered_set<uint32_t> output_seen;
+    if (disk_cache_capped)
+        output_seen.reserve(static_cast<size_t>(cfg.max_output_nodes));
+    const std::unordered_set<uint32_t> *seen_ptr = disk_cache_capped ? &output_seen : nullptr;
+
+    const size_t max_children = (beam_width > 0) ? static_cast<size_t>(beam_width - 1) : 0;
+
+    for (uint32_t parent : parents)
+    {
+        if (disk_cache_capped && output_count >= cfg.max_output_nodes)
+            break;
+        if (!is_node_pending_pack(node_in_list, parent))
+            continue;
+
+        std::vector<uint32_t> page_nodes;
+        std::unordered_set<uint32_t> on_page;
+        page_nodes.reserve(static_cast<size_t>(cfg.page_cap));
+        place_node_on_page(page_nodes, on_page, cfg.page_cap, parent, &cfg, seen_ptr);
+        node_in_list[parent] = false;
+
+        if (star_mode == DirectedBeamStarMode::Directed)
+        {
+            const auto it = out_edges.find(parent);
+            if (it != out_edges.end())
+            {
+                size_t added = 0;
+                for (const auto &child_w : it->second)
+                {
+                    if (added >= max_children || page_nodes.size() >= cfg.page_cap)
+                        break;
+                    if (disk_cache_capped && output_count >= cfg.max_output_nodes)
+                        break;
+                    const uint32_t child = child_w.first;
+                    if (!is_node_pending_pack(node_in_list, child))
+                        continue;
+                    if (!graph_has_edge(adj, parent, child))
+                        continue;
+                    const size_t before = page_nodes.size();
+                    place_node_on_page(page_nodes, on_page, cfg.page_cap, child, &cfg, seen_ptr);
+                    if (page_nodes.size() > before)
+                    {
+                        node_in_list[child] = false;
+                        added++;
+                    }
+                }
+            }
+            directed_star_fill_page_from_nodes(graph, out_edges, directed_in, directed_in_list, cfg.page_cap,
+                                               page_nodes, on_page, cfg, seen_ptr, node_in_list);
+        }
+        else if (star_mode == DirectedBeamStarMode::Hybrid)
+        {
+            const auto it = out_edges.find(parent);
+            if (it != out_edges.end())
+            {
+                size_t added = 0;
+                for (const auto &child_w : it->second)
+                {
+                    if (added >= max_children || page_nodes.size() >= cfg.page_cap)
+                        break;
+                    if (disk_cache_capped && output_count >= cfg.max_output_nodes)
+                        break;
+                    const uint32_t child = child_w.first;
+                    if (!is_node_pending_pack(node_in_list, child))
+                        continue;
+                    if (!graph_has_edge(adj, parent, child))
+                        continue;
+                    const size_t before = page_nodes.size();
+                    place_node_on_page(page_nodes, on_page, cfg.page_cap, child, &cfg, seen_ptr);
+                    if (page_nodes.size() > before)
+                    {
+                        node_in_list[child] = false;
+                        added++;
+                    }
+                }
+            }
+            hybrid_star_fill_page_from_nodes(graph, weights, adj, out_edges, directed_in, profile_edge_in_list,
+                                             directed_in_list, cfg.page_cap, page_nodes, on_page, cfg, seen_ptr,
+                                             node_in_list);
+        }
+        else if (star_mode == DirectedBeamStarMode::None)
+        {
+            const auto it = out_edges.find(parent);
+            if (it != out_edges.end())
+            {
+                size_t added = 0;
+                for (const auto &child_w : it->second)
+                {
+                    if (added >= max_children || page_nodes.size() >= cfg.page_cap)
+                        break;
+                    if (disk_cache_capped && output_count >= cfg.max_output_nodes)
+                        break;
+                    const uint32_t child = child_w.first;
+                    if (!is_node_pending_pack(node_in_list, child))
+                        continue;
+                    if (!graph_has_edge(adj, parent, child))
+                        continue;
+                    const size_t before = page_nodes.size();
+                    place_node_on_page(page_nodes, on_page, cfg.page_cap, child, &cfg, seen_ptr);
+                    if (page_nodes.size() > before)
+                    {
+                        node_in_list[child] = false;
+                        added++;
+                    }
+                }
+            }
+        }
+        else
+        {
+            fill_page_after_seed_directed_topk_and_starfill(parent, graph, adj, weights, out_edges,
+                                                            profile_edge_in_list, beam_width, cfg, seen_ptr,
+                                                            node_in_list, page_nodes, on_page, output_count);
+        }
+
+        if (page_nodes.empty())
+            continue;
+        pages.push_back(page_nodes);
+        for (uint32_t node : page_nodes)
+            assigned[node] = true;
+        append_page_nodes_to_disk_cache_list(page_nodes, cfg, output_count, output_seen);
+    }
+
+    if (disk_cache_capped && output_count < cfg.max_output_nodes)
+    {
+        for (uint32_t node : nodes_by_expand)
+        {
+            if (output_count >= cfg.max_output_nodes)
+                break;
+            if (!is_node_pending_pack(node_in_list, node))
+                continue;
+            try_append_unique_disk_cache_node(node, cfg, output_count, output_seen);
+            node_in_list[node] = false;
+        }
+    }
+
+    return 0;
+}
+
+static int compute_directed_beam_disk_cache_list_with_seed(
+    const VamanaGraph &graph, const std::vector<uint64_t> &node_expand,
+    const std::vector<std::tuple<uint32_t, uint32_t, uint64_t>> &directed_edges, uint64_t nnodes_per_sector,
+    uint32_t beam_width, DirectedBeamStarMode star_mode, DirectedBeamSeedMode seed_mode, uint64_t max_nodes,
+    const std::unordered_set<uint32_t> &exclude_ids, std::vector<uint32_t> &node_list, const char *stats_label)
+{
+    node_list.clear();
+    if (max_nodes == 0 || graph.num_points == 0 || nnodes_per_sector == 0)
+        return 0;
+
+    const auto weights = build_undirected_weights(directed_edges);
+    PagePackConfig cfg;
+    cfg.page_cap = nnodes_per_sector;
+    cfg.max_output_nodes = max_nodes;
+    cfg.skip_output = &exclude_ids;
+    cfg.node_expand = &node_expand;
+    cfg.output_nodes = &node_list;
+
+    std::vector<std::vector<uint32_t>> pages;
+    std::vector<bool> assigned;
+    if (directed_beam_pack_pages(graph, node_expand, directed_edges, weights, beam_width, star_mode, seed_mode, cfg,
+                                 pages, assigned) != 0)
+        return -1;
+
+    if (node_list.empty())
+        return -1;
+    log_disk_cache_node_list_stats(node_list, stats_label);
+    return 0;
+}
+
+int compute_directed_beam_disk_cache_list(
+    const VamanaGraph &graph, const std::vector<uint64_t> &node_expand,
+    const std::vector<std::tuple<uint32_t, uint32_t, uint64_t>> &directed_edges, uint64_t nnodes_per_sector,
+    uint32_t beam_width, uint64_t max_nodes, const std::unordered_set<uint32_t> &exclude_ids,
+    std::vector<uint32_t> &node_list)
+{
+    if (compute_directed_beam_disk_cache_list_with_seed(graph, node_expand, directed_edges, nnodes_per_sector,
+                                                        beam_width, DirectedBeamStarMode::Undirected,
+                                                        DirectedBeamSeedMode::ParentOut, max_nodes, exclude_ids,
+                                                        node_list, "Layout E (directed_beam)") != 0)
+    {
+        diskann::cerr << "MERIT disk-cache: directed_beam list empty (max_nodes=" << max_nodes
+                      << ", beam_width=" << beam_width << ")." << std::endl;
+        return -1;
+    }
+    return 0;
+}
+
+int compute_directed_beam_top4first_disk_cache_list(
+    const VamanaGraph &graph, const std::vector<uint64_t> &node_expand,
+    const std::vector<std::tuple<uint32_t, uint32_t, uint64_t>> &directed_edges, uint64_t nnodes_per_sector,
+    uint32_t beam_width, uint64_t max_nodes, const std::unordered_set<uint32_t> &exclude_ids,
+    std::vector<uint32_t> &node_list)
+{
+    if (compute_directed_beam_disk_cache_list_with_seed(graph, node_expand, directed_edges, nnodes_per_sector,
+                                                        beam_width, DirectedBeamStarMode::Undirected,
+                                                        DirectedBeamSeedMode::ParentOutTop4First, max_nodes,
+                                                        exclude_ids, node_list, "directed_beam_top4first") != 0)
+    {
+        diskann::cerr << "MERIT disk-cache: directed_beam_top4first list empty (max_nodes=" << max_nodes
+                      << ", beam_width=" << beam_width << ")." << std::endl;
+        return -1;
+    }
+    return 0;
+}
+
+int compute_directed_beam_starfill_disk_cache_list(
+    const VamanaGraph &graph, const std::vector<uint64_t> &node_expand,
+    const std::vector<std::tuple<uint32_t, uint32_t, uint64_t>> &directed_edges, uint64_t nnodes_per_sector,
+    uint32_t beam_width, uint64_t max_nodes, const std::unordered_set<uint32_t> &exclude_ids,
+    std::vector<uint32_t> &node_list)
+{
+    if (compute_directed_beam_disk_cache_list_with_seed(graph, node_expand, directed_edges, nnodes_per_sector,
+                                                        beam_width, DirectedBeamStarMode::StarFill,
+                                                        DirectedBeamSeedMode::ParentOut, max_nodes, exclude_ids,
+                                                        node_list, "directed_beam_starfill (legacy E)") != 0)
+    {
+        diskann::cerr << "MERIT disk-cache: directed_beam_starfill list empty (max_nodes=" << max_nodes
+                      << ", beam_width=" << beam_width << ")." << std::endl;
+        return -1;
+    }
+    return 0;
+}
+
+int compute_directed_beam_inseed_disk_cache_list(
+    const VamanaGraph &graph, const std::vector<uint64_t> &node_expand,
+    const std::vector<std::tuple<uint32_t, uint32_t, uint64_t>> &directed_edges, uint64_t nnodes_per_sector,
+    uint32_t beam_width, uint64_t max_nodes, const std::unordered_set<uint32_t> &exclude_ids,
+    std::vector<uint32_t> &node_list)
+{
+    if (compute_directed_beam_disk_cache_list_with_seed(graph, node_expand, directed_edges, nnodes_per_sector,
+                                                        beam_width, DirectedBeamStarMode::Undirected,
+                                                        DirectedBeamSeedMode::ChildIn, max_nodes, exclude_ids,
+                                                        node_list, "directed_beam_inseed") != 0)
+    {
+        diskann::cerr << "MERIT disk-cache: directed_beam_inseed list empty (max_nodes=" << max_nodes
+                      << ", beam_width=" << beam_width << ")." << std::endl;
+        return -1;
+    }
+    return 0;
+}
+
+int compute_directed_beam_dual_disk_cache_list(
+    const VamanaGraph &graph, const std::vector<uint64_t> &node_expand,
+    const std::vector<std::tuple<uint32_t, uint32_t, uint64_t>> &directed_edges, uint64_t nnodes_per_sector,
+    uint32_t beam_width, uint64_t max_nodes, const std::unordered_set<uint32_t> &exclude_ids,
+    std::vector<uint32_t> &node_list)
+{
+    node_list.clear();
+    if (max_nodes == 0 || graph.num_points == 0 || nnodes_per_sector == 0)
+        return 0;
+
+    const uint64_t phase1_cap = max_nodes / 2;
+    std::vector<uint32_t> phase1;
+    if (phase1_cap > 0)
+    {
+        if (compute_directed_beam_disk_cache_list_with_seed(
+                graph, node_expand, directed_edges, nnodes_per_sector, beam_width, DirectedBeamStarMode::Undirected,
+                DirectedBeamSeedMode::ParentOut, phase1_cap, exclude_ids, phase1, "directed_beam_dual/parent") != 0)
+            return -1;
+    }
+
+    std::unordered_set<uint32_t> exclude2 = exclude_ids;
+    exclude2.insert(phase1.begin(), phase1.end());
+
+    std::vector<uint32_t> phase2;
+    const uint64_t phase2_cap = (max_nodes > phase1.size()) ? (max_nodes - phase1.size()) : 0;
+    if (phase2_cap > 0)
+    {
+        if (compute_directed_beam_disk_cache_list_with_seed(
+                graph, node_expand, directed_edges, nnodes_per_sector, beam_width, DirectedBeamStarMode::Undirected,
+                DirectedBeamSeedMode::ChildIn, phase2_cap, exclude2, phase2, "directed_beam_dual/child") != 0)
+            return -1;
+    }
+
+    node_list = std::move(phase1);
+    node_list.insert(node_list.end(), phase2.begin(), phase2.end());
+    if (node_list.empty())
+    {
+        diskann::cerr << "MERIT disk-cache: directed_beam_dual list empty (max_nodes=" << max_nodes << ")."
+                      << std::endl;
+        return -1;
+    }
+    diskann::cout << "MERIT disk-cache directed_beam_dual: parent_phase=" << (node_list.size() - phase2.size())
+                  << " child_phase=" << phase2.size() << std::endl;
+    log_disk_cache_node_list_stats(node_list, "directed_beam_dual");
+    return 0;
+}
+
+int compute_directed_star_disk_cache_list(
+    const VamanaGraph &graph, const std::vector<uint64_t> &node_expand,
+    const std::vector<std::tuple<uint32_t, uint32_t, uint64_t>> &directed_edges, uint64_t nnodes_per_sector,
+    uint32_t beam_width, uint64_t max_nodes, const std::unordered_set<uint32_t> &exclude_ids,
+    std::vector<uint32_t> &node_list)
+{
+    node_list.clear();
+    if (max_nodes == 0 || graph.num_points == 0 || nnodes_per_sector == 0)
+        return 0;
+
+    const auto weights = build_undirected_weights(directed_edges);
+    PagePackConfig cfg;
+    cfg.page_cap = nnodes_per_sector;
+    cfg.max_output_nodes = max_nodes;
+    cfg.skip_output = &exclude_ids;
+    cfg.node_expand = &node_expand;
+    cfg.output_nodes = &node_list;
+
+    std::vector<std::vector<uint32_t>> pages;
+    std::vector<bool> assigned;
+    if (directed_beam_pack_pages(graph, node_expand, directed_edges, weights, beam_width,
+                                 DirectedBeamStarMode::Directed, DirectedBeamSeedMode::ParentOut, cfg, pages,
+                                 assigned) != 0)
+        return -1;
+
+    if (node_list.empty())
+    {
+        diskann::cerr << "MERIT disk-cache: directed_star list empty (max_nodes=" << max_nodes
+                      << ", beam_width=" << beam_width << ")." << std::endl;
+        return -1;
+    }
+    log_disk_cache_node_list_stats(node_list, "directed_star");
+    return 0;
+}
+
+int compute_directed_beam_hybrid_disk_cache_list(
+    const VamanaGraph &graph, const std::vector<uint64_t> &node_expand,
+    const std::vector<std::tuple<uint32_t, uint32_t, uint64_t>> &directed_edges, uint64_t nnodes_per_sector,
+    uint32_t beam_width, uint64_t max_nodes, const std::unordered_set<uint32_t> &exclude_ids,
+    std::vector<uint32_t> &node_list)
+{
+    node_list.clear();
+    if (max_nodes == 0 || graph.num_points == 0 || nnodes_per_sector == 0)
+        return 0;
+
+    const auto weights = build_undirected_weights(directed_edges);
+    PagePackConfig cfg;
+    cfg.page_cap = nnodes_per_sector;
+    cfg.max_output_nodes = max_nodes;
+    cfg.skip_output = &exclude_ids;
+    cfg.node_expand = &node_expand;
+    cfg.output_nodes = &node_list;
+
+    std::vector<std::vector<uint32_t>> pages;
+    std::vector<bool> assigned;
+    if (directed_beam_pack_pages(graph, node_expand, directed_edges, weights, beam_width,
+                                 DirectedBeamStarMode::Hybrid, DirectedBeamSeedMode::ParentOut, cfg, pages,
+                                 assigned) != 0)
+        return -1;
+
+    if (node_list.empty())
+    {
+        diskann::cerr << "MERIT disk-cache: directed_beam_hybrid list empty (max_nodes=" << max_nodes
+                      << ", beam_width=" << beam_width << ")." << std::endl;
+        return -1;
+    }
+    log_disk_cache_node_list_stats(node_list, "directed_beam_hybrid");
+    return 0;
+}
+
+int compute_directed_beam_tight_disk_cache_list(
+    const VamanaGraph &graph, const std::vector<uint64_t> &node_expand,
+    const std::vector<std::tuple<uint32_t, uint32_t, uint64_t>> &directed_edges, uint64_t nnodes_per_sector,
+    uint32_t beam_width, uint64_t max_nodes, const std::unordered_set<uint32_t> &exclude_ids,
+    std::vector<uint32_t> &node_list)
+{
+    node_list.clear();
+    if (max_nodes == 0 || graph.num_points == 0 || nnodes_per_sector == 0)
+        return 0;
+
+    const auto weights = build_undirected_weights(directed_edges);
+    PagePackConfig cfg;
+    cfg.page_cap = nnodes_per_sector;
+    cfg.max_output_nodes = max_nodes;
+    cfg.skip_output = &exclude_ids;
+    cfg.node_expand = &node_expand;
+    cfg.output_nodes = &node_list;
+
+    std::vector<std::vector<uint32_t>> pages;
+    std::vector<bool> assigned;
+    if (directed_beam_pack_pages(graph, node_expand, directed_edges, weights, beam_width,
+                                 DirectedBeamStarMode::None, DirectedBeamSeedMode::ParentOut, cfg, pages, assigned) != 0)
+        return -1;
+
+    if (node_list.empty())
+    {
+        diskann::cerr << "MERIT disk-cache: directed_beam_tight list empty (max_nodes=" << max_nodes
+                      << ", beam_width=" << beam_width << ")." << std::endl;
+        return -1;
+    }
+    log_disk_cache_node_list_stats(node_list, "directed_beam_tight");
+    return 0;
+}
+
+static void flatten_pages_to_permutation_order(const VamanaGraph &graph, const std::vector<uint64_t> &node_expand,
+                                               const std::vector<std::vector<uint32_t>> &pages,
+                                               std::vector<uint32_t> &order)
+{
+    order.clear();
+    order.reserve(graph.num_points);
+    std::vector<bool> placed(static_cast<size_t>(graph.num_points), false);
+    for (const auto &page : pages)
+    {
+        for (uint32_t node : page)
+        {
+            if (node >= graph.num_points || placed[node])
+                continue;
+            placed[node] = true;
+            order.push_back(node);
+        }
+    }
+
+    std::vector<uint32_t> nodes_by_expand(static_cast<size_t>(graph.num_points));
+    std::iota(nodes_by_expand.begin(), nodes_by_expand.end(), 0);
+    std::sort(nodes_by_expand.begin(), nodes_by_expand.end(), [&](uint32_t a, uint32_t b) {
+        const uint64_t ca = node_heat(node_expand, a);
+        const uint64_t cb = node_heat(node_expand, b);
+        if (ca != cb)
+            return ca > cb;
+        return a < b;
+    });
+    for (uint32_t node : nodes_by_expand)
+    {
+        if (placed[node])
+            continue;
+        placed[node] = true;
+        order.push_back(node);
+    }
 }
 
 static void append_unassigned_nodes_to_pages(const VamanaGraph &graph, const std::vector<uint64_t> &node_expand,
@@ -1371,7 +2947,7 @@ static void append_unassigned_nodes_to_pages(const VamanaGraph &graph, const std
     for (uint32_t node : nodes_by_expand)
     {
         if (assigned[node])
-            continue;
+                    continue;
         tail.push_back(node);
         assigned[node] = true;
         if (tail.size() >= page_cap)
@@ -1400,7 +2976,7 @@ int compute_edge_relayout_order(const VamanaGraph &graph, const std::vector<uint
 
     std::vector<std::vector<uint32_t>> pages;
     std::vector<bool> assigned;
-    if (pack_pages_by_edge_importance(graph, weights, sorted_edges, k_hops, cfg, pages, assigned) != 0)
+    if (pack_pages_by_edge_importance(graph, weights, sorted_edges, directed_edges, k_hops, cfg, pages, assigned) != 0)
         return -1;
 
     append_unassigned_nodes_to_pages(graph, node_expand, nnodes_per_sector, pages, assigned);
@@ -1415,10 +2991,28 @@ int compute_edge_relayout_order(const VamanaGraph &graph, const std::vector<uint
     return 0;
 }
 
-int compute_edge_disk_cache_list(const VamanaGraph &graph, const std::vector<uint64_t> &node_expand,
-                                  const std::vector<std::tuple<uint32_t, uint32_t, uint64_t>> &directed_edges,
-                                  uint64_t nnodes_per_sector, uint32_t k_hops, uint64_t max_nodes,
-                                  const std::unordered_set<uint32_t> &exclude_ids, std::vector<uint32_t> &node_list)
+static EdgePackVariant edge_pack_variant_from_layout(const std::string &variant_layout)
+{
+    if (variant_layout == "edge_dir")
+        return EdgePackVariant::DirectedChild;
+    if (variant_layout == "edge_star")
+        return EdgePackVariant::Star;
+    if (variant_layout == "edge_u")
+        return EdgePackVariant::ParentOnly;
+    if (variant_layout == "edge_pair")
+        return EdgePackVariant::PairOnly;
+    if (variant_layout == "edge_clique")
+        return EdgePackVariant::Clique;
+    if (variant_layout == "dir_edge_star")
+        return EdgePackVariant::DirectedSeedStar;
+    return EdgePackVariant::Khop;
+}
+
+int compute_edge_variant_disk_cache_list(const VamanaGraph &graph, const std::vector<uint64_t> &node_expand,
+                                         const std::vector<std::tuple<uint32_t, uint32_t, uint64_t>> &directed_edges,
+                                         uint64_t nnodes_per_sector, uint32_t k_hops, uint64_t max_nodes,
+                                         const std::unordered_set<uint32_t> &exclude_ids,
+                                         const std::string &variant_layout, std::vector<uint32_t> &node_list)
 {
     node_list.clear();
     if (max_nodes == 0 || graph.num_points == 0 || nnodes_per_sector == 0)
@@ -1426,6 +3020,7 @@ int compute_edge_disk_cache_list(const VamanaGraph &graph, const std::vector<uin
 
     const auto weights = build_undirected_weights(directed_edges);
     const auto sorted_edges = sorted_undirected_edges(weights);
+    const EdgePackVariant variant = edge_pack_variant_from_layout(variant_layout);
 
     PagePackConfig cfg;
     cfg.page_cap = nnodes_per_sector;
@@ -1436,16 +3031,125 @@ int compute_edge_disk_cache_list(const VamanaGraph &graph, const std::vector<uin
 
     std::vector<std::vector<uint32_t>> pages;
     std::vector<bool> assigned;
-    if (pack_pages_by_edge_importance(graph, weights, sorted_edges, k_hops, cfg, pages, assigned) != 0)
+    if (pack_pages_edge_variant(graph, weights, sorted_edges, directed_edges, k_hops, variant, cfg, pages, assigned) !=
+        0)
         return -1;
 
     if (node_list.empty())
     {
-        diskann::cerr << "MERIT disk-cache: edge-importance list empty (max_nodes=" << max_nodes << ", k_hops=" << k_hops
-                      << ")." << std::endl;
+        diskann::cerr << "MERIT disk-cache: edge-variant list empty (layout=" << variant_layout
+                      << ", max_nodes=" << max_nodes << ", k_hops=" << k_hops << ")." << std::endl;
         return -1;
     }
-    log_disk_cache_node_list_stats(node_list, "edge");
+    log_disk_cache_node_list_stats(node_list, variant_layout.c_str());
+    return 0;
+}
+
+int compute_edge_disk_cache_list(const VamanaGraph &graph, const std::vector<uint64_t> &node_expand,
+                                  const std::vector<std::tuple<uint32_t, uint32_t, uint64_t>> &directed_edges,
+                                  uint64_t nnodes_per_sector, uint32_t k_hops, uint64_t max_nodes,
+                                  const std::unordered_set<uint32_t> &exclude_ids, std::vector<uint32_t> &node_list)
+{
+    return compute_edge_variant_disk_cache_list(graph, node_expand, directed_edges, nnodes_per_sector, k_hops,
+                                                max_nodes, exclude_ids, "edge", node_list);
+}
+
+int compute_edge_replica_disk_cache_list(const VamanaGraph &graph, const std::vector<uint64_t> &node_expand,
+                                         const std::vector<std::tuple<uint32_t, uint32_t, uint64_t>> &directed_edges,
+                                         uint64_t nnodes_per_sector, uint64_t max_slots,
+                                         const std::unordered_set<uint32_t> &exclude_ids,
+                                         std::vector<uint32_t> &node_list)
+{
+    node_list.clear();
+    if (max_slots == 0 || graph.num_points == 0 || nnodes_per_sector == 0)
+        return 0;
+
+    const auto weights = build_undirected_weights(directed_edges);
+    const auto sorted_edges = sorted_undirected_edges(weights);
+
+    PagePackConfig cfg;
+    cfg.page_cap = nnodes_per_sector;
+    cfg.max_output_nodes = max_slots;
+    cfg.allow_duplicate_output = true;
+    cfg.skip_output = &exclude_ids;
+    cfg.node_expand = &node_expand;
+    cfg.output_nodes = &node_list;
+
+    std::vector<std::vector<uint32_t>> pages;
+    if (pack_pages_edge_replica(graph, weights, sorted_edges, cfg, pages) != 0)
+        return -1;
+
+    if (node_list.empty())
+    {
+        diskann::cerr << "MERIT disk-cache: edge-replica list empty (max_slots=" << max_slots << ")." << std::endl;
+        return -1;
+    }
+    log_disk_cache_node_list_stats(node_list, "edge_replica");
+    return 0;
+}
+
+int compute_edge_star_dup_disk_cache_list(const VamanaGraph &graph, const std::vector<uint64_t> &node_expand,
+                                          const std::vector<std::tuple<uint32_t, uint32_t, uint64_t>> &directed_edges,
+                                          uint64_t nnodes_per_sector, uint64_t max_slots,
+                                          const std::unordered_set<uint32_t> &exclude_ids,
+                                          std::vector<uint32_t> &node_list)
+{
+    node_list.clear();
+    if (max_slots == 0 || graph.num_points == 0 || nnodes_per_sector == 0)
+        return 0;
+
+    const auto weights = build_undirected_weights(directed_edges);
+    const auto sorted_edges = sorted_undirected_edges(weights);
+
+    // Phase 1: unique edge_star packing (disk-cache mode => no cross-page node reuse).
+    std::vector<uint32_t> unique_list;
+    PagePackConfig cfg;
+    cfg.page_cap = nnodes_per_sector;
+    cfg.max_output_nodes = max_slots;
+    cfg.allow_duplicate_output = false;
+    cfg.skip_output = &exclude_ids;
+    cfg.node_expand = &node_expand;
+    cfg.output_nodes = &unique_list;
+
+    std::vector<std::vector<uint32_t>> pages;
+    std::vector<bool> assigned;
+    if (pack_pages_edge_variant(graph, weights, sorted_edges, directed_edges, 1, EdgePackVariant::Star, cfg, pages,
+                                assigned) != 0)
+        return -1;
+
+    if (unique_list.empty())
+    {
+        diskann::cerr << "MERIT disk-cache: edge_star_dup unique phase empty (max_slots=" << max_slots << ")."
+                      << std::endl;
+        return -1;
+    }
+
+    node_list = unique_list;
+    const size_t unique_slots = node_list.size();
+
+    // Phase 2: with leftover budget, duplicate hottest pages (earliest seed = hottest).
+    size_t page_cursor = 0;
+    uint64_t dup_slots = 0;
+    while (node_list.size() < max_slots && !pages.empty())
+    {
+        const auto &page = pages[page_cursor % pages.size()];
+        const size_t before = node_list.size();
+        for (uint32_t node : page)
+        {
+            if (node_list.size() >= max_slots)
+                break;
+            node_list.push_back(node);
+            dup_slots++;
+        }
+        page_cursor++;
+        if (page_cursor > pages.size() && node_list.size() == before)
+            break;
+    }
+
+    diskann::cout << "MERIT disk-cache edge_star_dup: unique_pages=" << pages.size()
+                  << " unique_slots=" << unique_slots << " dup_slots=" << dup_slots
+                  << " total_slots=" << node_list.size() << std::endl;
+    log_disk_cache_node_list_stats(node_list, "edge_star_dup");
     return 0;
 }
 
@@ -1465,7 +3169,7 @@ int compute_hot_node_relayout_order(const VamanaGraph &graph, const std::vector<
 
     std::vector<std::vector<uint32_t>> pages;
     std::vector<bool> assigned;
-    if (hot_node_pack_pages(graph, node_expand, weights, k_hops, cfg, pages, assigned) != 0)
+    if (hot_node_pack_pages(graph, node_expand, weights, k_hops, directed_edges, cfg, pages, assigned) != 0)
         return -1;
 
     append_unassigned_nodes_to_pages(graph, node_expand, nnodes_per_sector, pages, assigned);
@@ -1477,6 +3181,73 @@ int compute_hot_node_relayout_order(const VamanaGraph &graph, const std::vector<
 
     if (order.size() != graph.num_points)
         return -1;
+    return 0;
+}
+
+int compute_directed_beam_relayout_order(const VamanaGraph &graph, const std::vector<uint64_t> &node_expand,
+                                         const std::vector<std::tuple<uint32_t, uint32_t, uint64_t>> &directed_edges,
+                                         uint64_t nnodes_per_sector, uint32_t beam_width, std::vector<uint32_t> &order)
+{
+    if (graph.num_points == 0 || nnodes_per_sector == 0)
+        return -1;
+    if (beam_width == 0)
+        beam_width = 1;
+
+    const auto weights = build_undirected_weights(directed_edges);
+
+    PagePackConfig cfg;
+    cfg.page_cap = nnodes_per_sector;
+    cfg.max_output_nodes = 0;
+    cfg.node_expand = &node_expand;
+
+    std::vector<std::vector<uint32_t>> pages;
+    std::vector<bool> assigned;
+    if (directed_beam_pack_pages(graph, node_expand, directed_edges, weights, beam_width,
+                                 DirectedBeamStarMode::Undirected, DirectedBeamSeedMode::ParentOut, cfg, pages,
+                                 assigned) != 0)
+        return -1;
+
+    append_unassigned_nodes_to_pages(graph, node_expand, nnodes_per_sector, pages, assigned);
+
+    order.clear();
+    order.reserve(graph.num_points);
+    for (const auto &page : pages)
+        order.insert(order.end(), page.begin(), page.end());
+
+    if (order.size() != graph.num_points)
+        return -1;
+    return 0;
+}
+
+int compute_edge_star_relayout_order(const VamanaGraph &graph, const std::vector<uint64_t> &node_expand,
+                                     const std::vector<std::tuple<uint32_t, uint32_t, uint64_t>> &directed_edges,
+                                     uint64_t nnodes_per_sector, std::vector<uint32_t> &order)
+{
+    if (graph.num_points == 0 || nnodes_per_sector == 0)
+        return -1;
+
+    const auto weights = build_undirected_weights(directed_edges);
+    const auto sorted_edges = sorted_undirected_edges(weights);
+
+    PagePackConfig cfg;
+    cfg.page_cap = nnodes_per_sector;
+    cfg.max_output_nodes = 0;
+    cfg.node_expand = &node_expand;
+
+    std::vector<std::vector<uint32_t>> pages;
+    std::vector<bool> assigned;
+    if (pack_pages_edge_variant(graph, weights, sorted_edges, directed_edges, 1, EdgePackVariant::Star, cfg, pages,
+                                assigned) != 0)
+        return -1;
+
+    flatten_pages_to_permutation_order(graph, node_expand, pages, order);
+
+    if (order.size() != graph.num_points)
+    {
+        diskann::cerr << "edge_star relayout: order size " << order.size() << " != num_points " << graph.num_points
+                      << std::endl;
+        return -1;
+    }
     return 0;
 }
 
@@ -1500,7 +3271,7 @@ int compute_hot_node_disk_cache_list(const VamanaGraph &graph, const std::vector
 
     std::vector<std::vector<uint32_t>> pages;
     std::vector<bool> assigned;
-    if (hot_node_pack_pages(graph, node_expand, weights, k_hops, cfg, pages, assigned) != 0)
+    if (hot_node_pack_pages(graph, node_expand, weights, k_hops, directed_edges, cfg, pages, assigned) != 0)
         return -1;
 
     if (node_list.empty())
@@ -1510,6 +3281,40 @@ int compute_hot_node_disk_cache_list(const VamanaGraph &graph, const std::vector
         return -1;
     }
     log_disk_cache_node_list_stats(node_list, "node");
+    return 0;
+}
+
+int compute_hot_node_top4first_disk_cache_list(
+    const VamanaGraph &graph, const std::vector<uint64_t> &node_expand,
+    const std::vector<std::tuple<uint32_t, uint32_t, uint64_t>> &directed_edges, uint64_t nnodes_per_sector,
+    uint32_t k_hops, uint64_t max_nodes, const std::unordered_set<uint32_t> &exclude_ids,
+    std::vector<uint32_t> &node_list)
+{
+    node_list.clear();
+    if (max_nodes == 0 || graph.num_points == 0 || nnodes_per_sector == 0)
+        return 0;
+
+    const auto weights = build_undirected_weights(directed_edges);
+
+    PagePackConfig cfg;
+    cfg.page_cap = nnodes_per_sector;
+    cfg.max_output_nodes = max_nodes;
+    cfg.skip_output = &exclude_ids;
+    cfg.node_expand = &node_expand;
+    cfg.output_nodes = &node_list;
+
+    std::vector<std::vector<uint32_t>> pages;
+    std::vector<bool> assigned;
+    if (hot_node_pack_pages(graph, node_expand, weights, k_hops, directed_edges, cfg, pages, assigned, true) != 0)
+        return -1;
+
+    if (node_list.empty())
+    {
+        diskann::cerr << "MERIT disk-cache: hot-node top4first list empty (max_nodes=" << max_nodes
+                      << ", k_hops=" << k_hops << ")." << std::endl;
+        return -1;
+    }
+    log_disk_cache_node_list_stats(node_list, "node_top4first");
     return 0;
 }
 
@@ -1599,7 +3404,7 @@ static int frontier_pack_pages(const VamanaGraph &graph, const std::vector<uint6
     assigned.assign(graph.num_points, false);
     pages.clear();
 
-    const bool disk_sidecar = (cfg.max_output_nodes > 0);
+    const bool disk_cache_capped = (cfg.max_output_nodes > 0);
     std::vector<int32_t> node_page(graph.num_points, -1);
 
     auto page_room = [&](size_t page_idx) -> uint64_t {
@@ -1675,7 +3480,7 @@ static int frontier_pack_pages(const VamanaGraph &graph, const std::vector<uint6
     auto place_group_on_one_page = [&](const std::vector<uint32_t> &group) {
         if (group.empty())
             return;
-        if (disk_sidecar && placed_count() >= cfg.max_output_nodes)
+        if (disk_cache_capped && placed_count() >= cfg.max_output_nodes)
             return;
 
         std::vector<uint32_t> batch;
@@ -1690,7 +3495,7 @@ static int frontier_pack_pages(const VamanaGraph &graph, const std::vector<uint6
 
         while (!batch.empty())
         {
-            if (disk_sidecar && placed_count() >= cfg.max_output_nodes)
+            if (disk_cache_capped && placed_count() >= cfg.max_output_nodes)
                 break;
 
             const size_t chunk = std::min(batch.size(), static_cast<size_t>(cfg.page_cap));
@@ -1698,7 +3503,7 @@ static int frontier_pack_pages(const VamanaGraph &graph, const std::vector<uint6
             const size_t page_idx = pick_page_for_group(piece);
             for (uint32_t node : piece)
             {
-                if (disk_sidecar && placed_count() >= cfg.max_output_nodes)
+                if (disk_cache_capped && placed_count() >= cfg.max_output_nodes)
                     break;
                 assign_node_to_page(page_idx, node);
             }
@@ -1712,7 +3517,7 @@ static int frontier_pack_pages(const VamanaGraph &graph, const std::vector<uint6
 
     for (const auto &tpl : sorted_templates)
     {
-        if (disk_sidecar && placed_count() >= cfg.max_output_nodes)
+        if (disk_cache_capped && placed_count() >= cfg.max_output_nodes)
             break;
         place_group_on_one_page(tpl.second);
     }
@@ -1721,25 +3526,25 @@ static int frontier_pack_pages(const VamanaGraph &graph, const std::vector<uint6
     std::iota(nodes_by_expand.begin(), nodes_by_expand.end(), 0);
     if (cfg.node_expand != nullptr)
     {
-        std::sort(nodes_by_expand.begin(), nodes_by_expand.end(), [&](uint32_t a, uint32_t b) {
+    std::sort(nodes_by_expand.begin(), nodes_by_expand.end(), [&](uint32_t a, uint32_t b) {
             const uint64_t ca = node_heat(*cfg.node_expand, a);
             const uint64_t cb = node_heat(*cfg.node_expand, b);
-            if (ca != cb)
-                return ca > cb;
-            return a < b;
-        });
+        if (ca != cb)
+            return ca > cb;
+        return a < b;
+    });
     }
 
     for (uint32_t node : nodes_by_expand)
     {
-        if (disk_sidecar && placed_count() >= cfg.max_output_nodes)
+        if (disk_cache_capped && placed_count() >= cfg.max_output_nodes)
             break;
         if (node_page[node] >= 0 || !disk_cache_node_eligible(node, cfg))
             continue;
         assign_node_to_page(new_page(), node);
     }
 
-    if (disk_sidecar && cfg.output_nodes != nullptr)
+    if (disk_cache_capped && cfg.output_nodes != nullptr)
     {
         cfg.output_nodes->clear();
         std::unordered_set<uint32_t> output_seen;
@@ -1750,6 +3555,260 @@ static int frontier_pack_pages(const VamanaGraph &graph, const std::vector<uint6
             append_page_nodes_to_disk_cache_list(page_nodes, cfg, output_count, output_seen);
             if (output_count >= cfg.max_output_nodes)
                 break;
+            }
+        }
+
+    return 0;
+}
+
+static int load_or_build_frontier_templates(const VamanaGraph &graph,
+                                            const std::vector<std::tuple<uint32_t, uint32_t, uint64_t>> &directed_edges,
+                                            const std::string &profile_prefix, uint32_t beam_width,
+                                            std::vector<std::pair<uint64_t, std::vector<uint32_t>>> &templates)
+{
+    if (HotnessProfiler::load_frontier_templates(profile_prefix, templates) != 0)
+    {
+        templates = build_frontier_templates_from_profile_edges(graph, directed_edges, beam_width);
+        diskann::cout << "MERIT disk-cache: no hop-frontier profile; synthesized " << templates.size()
+                      << " frontier templates from directed edges (beam_width=" << beam_width << ")." << std::endl;
+    }
+    else
+    {
+        diskann::cout << "MERIT disk-cache: loaded " << templates.size() << " hop-frontier templates from profile."
+                      << std::endl;
+    }
+    return templates.empty() ? -1 : 0;
+}
+
+static std::unordered_map<uint64_t, uint64_t> build_cooccur_weights_from_frontier_templates(
+    const std::vector<std::pair<uint64_t, std::vector<uint32_t>>> &templates)
+{
+    std::unordered_map<uint64_t, uint64_t> weights;
+    for (const auto &tpl : templates)
+    {
+        const uint64_t tpl_w = tpl.first;
+        const auto &nodes = tpl.second;
+        for (size_t i = 0; i < nodes.size(); ++i)
+        {
+            for (size_t j = i + 1; j < nodes.size(); ++j)
+            {
+                const uint64_t ek = undirected_edge_key(nodes[i], nodes[j]);
+                weights[ek] += tpl_w;
+            }
+        }
+    }
+    return weights;
+}
+
+static std::vector<std::tuple<uint32_t, uint32_t, uint64_t>> cooccur_weights_to_directed_edges(
+    const std::unordered_map<uint64_t, uint64_t> &weights)
+{
+    std::vector<std::tuple<uint32_t, uint32_t, uint64_t>> edges;
+    edges.reserve(weights.size() * 2);
+    for (const auto &kv : weights)
+    {
+        const uint32_t u = static_cast<uint32_t>(kv.first >> 32);
+        const uint32_t v = static_cast<uint32_t>(kv.first & 0xFFFFFFFFu);
+        const uint64_t w = kv.second;
+        if (w == 0)
+            continue;
+        edges.emplace_back(u, v, w);
+        edges.emplace_back(v, u, w);
+    }
+    return edges;
+}
+
+static void truncate_frontier_templates_topk(std::vector<std::pair<uint64_t, std::vector<uint32_t>>> &templates,
+                                             uint32_t top_k)
+{
+    if (top_k == 0 || templates.size() <= static_cast<size_t>(top_k))
+        return;
+    std::sort(templates.begin(), templates.end(),
+              [](const auto &a, const auto &b) { return a.first > b.first; });
+    templates.resize(static_cast<size_t>(top_k));
+}
+
+static void star_fill_page_from_nodes(const VamanaGraph &graph,
+                                      const std::unordered_map<uint64_t, uint64_t> &weights,
+                                      const std::vector<std::vector<uint32_t>> &adj,
+                                      std::unordered_set<uint64_t> &profile_edge_in_list, uint64_t page_cap,
+                                      std::vector<uint32_t> &page_nodes, std::unordered_set<uint32_t> &on_page,
+                                      const PagePackConfig &cfg, const std::unordered_set<uint32_t> *output_seen,
+                                      std::vector<bool> &node_in_list)
+{
+    std::unordered_set<uint64_t> used_page_edges;
+    for (size_t i = 0; i < page_nodes.size(); ++i)
+    {
+        for (size_t j = i + 1; j < page_nodes.size(); ++j)
+            used_page_edges.insert(undirected_edge_key(page_nodes[i], page_nodes[j]));
+    }
+
+    while (page_nodes.size() < page_cap)
+    {
+        uint32_t best_node = static_cast<uint32_t>(graph.num_points);
+        uint64_t best_w = 0;
+        for (uint32_t on : page_nodes)
+        {
+            if (on >= adj.size())
+                continue;
+            for (uint32_t nbr : adj[on])
+            {
+                const uint64_t ek = undirected_edge_key(on, nbr);
+                if (used_page_edges.count(ek) > 0 || on_page.count(nbr) > 0)
+                    continue;
+                if (profile_edge_in_list.count(ek) == 0)
+                    continue;
+                if (!is_node_pending_pack(node_in_list, nbr))
+                    continue;
+                const uint64_t w = edge_weight(weights, on, nbr);
+                if (w == 0)
+                    continue;
+                if (w > best_w || (w == best_w && (best_node == graph.num_points || nbr < best_node)))
+                {
+                    best_w = w;
+                    best_node = nbr;
+                }
+            }
+        }
+        if (best_node >= graph.num_points)
+            break;
+        place_node_on_page(page_nodes, on_page, page_cap, best_node, &cfg, output_seen);
+        node_in_list[best_node] = false;
+        for (uint32_t on : page_nodes)
+        {
+            if (on == best_node)
+                continue;
+            profile_edge_in_list.erase(undirected_edge_key(on, best_node));
+            used_page_edges.insert(undirected_edge_key(on, best_node));
+        }
+    }
+}
+
+static void fill_page_after_seed_directed_topk_and_starfill(
+    uint32_t seed, const VamanaGraph &graph, const std::vector<std::vector<uint32_t>> &adj,
+    const std::unordered_map<uint64_t, uint64_t> &weights,
+    const std::unordered_map<uint32_t, std::vector<std::pair<uint32_t, uint64_t>>> &out_edges,
+    std::unordered_set<uint64_t> &profile_edge_in_list, uint32_t beam_width, const PagePackConfig &cfg,
+    const std::unordered_set<uint32_t> *seen_ptr, std::vector<bool> &node_in_list, std::vector<uint32_t> &page_nodes,
+    std::unordered_set<uint32_t> &on_page, uint64_t &output_count)
+{
+    if (beam_width == 0)
+        beam_width = 1;
+    const size_t max_children = static_cast<size_t>(beam_width - 1);
+    const bool disk_cache_capped = (cfg.max_output_nodes > 0);
+
+    const auto it = out_edges.find(seed);
+    if (it != out_edges.end())
+    {
+        size_t added = 0;
+        for (const auto &child_w : it->second)
+        {
+            if (added >= max_children || page_nodes.size() >= cfg.page_cap)
+                break;
+            if (disk_cache_capped && output_count >= cfg.max_output_nodes)
+                break;
+            const uint32_t child = child_w.first;
+            if (!is_node_pending_pack(node_in_list, child))
+                continue;
+            if (!graph_has_edge(adj, seed, child))
+                continue;
+            const size_t before = page_nodes.size();
+            place_node_on_page(page_nodes, on_page, cfg.page_cap, child, &cfg, seen_ptr);
+            if (page_nodes.size() > before)
+            {
+                node_in_list[child] = false;
+                added++;
+            }
+        }
+    }
+
+    star_fill_page_from_nodes(graph, weights, adj, profile_edge_in_list, cfg.page_cap, page_nodes, on_page, cfg,
+                              seen_ptr, node_in_list);
+}
+
+static int frontier_page_pack(const VamanaGraph &graph, const std::vector<uint64_t> &node_expand,
+                              const std::unordered_map<uint64_t, uint64_t> &weights,
+                              const std::vector<std::pair<uint64_t, std::vector<uint32_t>>> &templates,
+                              const PagePackConfig &cfg, std::vector<std::vector<uint32_t>> &pages,
+                              std::vector<bool> &assigned)
+{
+    if (graph.num_points == 0 || cfg.page_cap == 0)
+        return -1;
+
+    const auto adj = build_undirected_adjacency(graph);
+    std::unordered_set<uint64_t> profile_edge_in_list;
+    init_pending_profile_edges(weights, profile_edge_in_list);
+
+    std::vector<bool> node_in_list;
+    const bool disk_cache_capped = (cfg.max_output_nodes > 0);
+    init_pending_pack_nodes(static_cast<uint32_t>(graph.num_points), cfg, node_in_list);
+    assigned.assign(graph.num_points, false);
+
+    uint64_t output_count = 0;
+    std::unordered_set<uint32_t> output_seen;
+    if (disk_cache_capped)
+        output_seen.reserve(static_cast<size_t>(cfg.max_output_nodes));
+    const std::unordered_set<uint32_t> *seen_ptr = disk_cache_capped ? &output_seen : nullptr;
+
+    auto sorted_templates = templates;
+    std::sort(sorted_templates.begin(), sorted_templates.end(),
+              [](const auto &a, const auto &b) { return a.first > b.first; });
+
+    for (const auto &tpl : sorted_templates)
+    {
+        if (disk_cache_capped && output_count >= cfg.max_output_nodes)
+            break;
+
+        std::vector<uint32_t> page_nodes;
+        std::unordered_set<uint32_t> on_page;
+        page_nodes.reserve(static_cast<size_t>(cfg.page_cap));
+        for (uint32_t node : tpl.second)
+        {
+            if (page_nodes.size() >= cfg.page_cap)
+                break;
+            if (!is_node_pending_pack(node_in_list, node))
+                continue;
+            const size_t before = page_nodes.size();
+            place_node_on_page(page_nodes, on_page, cfg.page_cap, node, &cfg, seen_ptr);
+            if (page_nodes.size() > before)
+                node_in_list[node] = false;
+        }
+        if (page_nodes.size() < 2)
+            continue;
+
+        star_fill_page_from_nodes(graph, weights, adj, profile_edge_in_list, cfg.page_cap, page_nodes, on_page, cfg,
+                                  seen_ptr, node_in_list);
+
+        if (page_nodes.empty())
+            continue;
+        pages.push_back(page_nodes);
+        for (uint32_t node : page_nodes)
+            assigned[node] = true;
+        append_page_nodes_to_disk_cache_list(page_nodes, cfg, output_count, output_seen);
+    }
+
+    if (disk_cache_capped && output_count < cfg.max_output_nodes)
+    {
+        std::vector<uint32_t> nodes_by_expand(static_cast<size_t>(graph.num_points));
+        std::iota(nodes_by_expand.begin(), nodes_by_expand.end(), 0);
+        if (cfg.node_expand != nullptr)
+        {
+            std::sort(nodes_by_expand.begin(), nodes_by_expand.end(), [&](uint32_t a, uint32_t b) {
+                const uint64_t ca = node_heat(*cfg.node_expand, a);
+                const uint64_t cb = node_heat(*cfg.node_expand, b);
+                if (ca != cb)
+                    return ca > cb;
+                return a < b;
+            });
+        }
+        for (uint32_t node : nodes_by_expand)
+        {
+            if (output_count >= cfg.max_output_nodes)
+                break;
+            if (!is_node_pending_pack(node_in_list, node))
+                continue;
+            try_append_unique_disk_cache_node(node, cfg, output_count, output_seen);
+            node_in_list[node] = false;
         }
     }
 
@@ -1767,19 +3826,7 @@ int compute_frontier_disk_cache_list(const VamanaGraph &graph, const std::vector
         return 0;
 
     std::vector<std::pair<uint64_t, std::vector<uint32_t>>> templates;
-    if (HotnessProfiler::load_frontier_templates(profile_prefix, templates) != 0)
-    {
-        templates = build_frontier_templates_from_profile_edges(graph, directed_edges, beam_width);
-        diskann::cout << "MERIT disk-cache: no hop-frontier profile; synthesized " << templates.size()
-                      << " frontier templates from directed edges (beam_width=" << beam_width << ")." << std::endl;
-    }
-    else
-    {
-        diskann::cout << "MERIT disk-cache: loaded " << templates.size() << " hop-frontier templates from profile."
-                      << std::endl;
-    }
-
-    if (templates.empty())
+    if (load_or_build_frontier_templates(graph, directed_edges, profile_prefix, beam_width, templates) != 0)
     {
         diskann::cerr << "MERIT disk-cache: frontier template list empty." << std::endl;
         return -1;
@@ -1816,6 +3863,251 @@ int compute_frontier_disk_cache_list(const VamanaGraph &graph, const std::vector
     return 0;
 }
 
+int compute_frontier_page_disk_cache_list(const VamanaGraph &graph, const std::vector<uint64_t> &node_expand,
+                                          const std::vector<std::tuple<uint32_t, uint32_t, uint64_t>> &directed_edges,
+                                          const std::string &profile_prefix, uint64_t nnodes_per_sector,
+                                          uint32_t beam_width, uint64_t max_nodes,
+                                          const std::unordered_set<uint32_t> &exclude_ids,
+                                          std::vector<uint32_t> &node_list)
+{
+    node_list.clear();
+    if (max_nodes == 0 || graph.num_points == 0 || nnodes_per_sector == 0)
+        return 0;
+
+    std::vector<std::pair<uint64_t, std::vector<uint32_t>>> templates;
+    if (load_or_build_frontier_templates(graph, directed_edges, profile_prefix, beam_width, templates) != 0)
+    {
+        diskann::cerr << "MERIT disk-cache: frontier_page template list empty." << std::endl;
+        return -1;
+    }
+
+    PagePackConfig cfg;
+    cfg.page_cap = nnodes_per_sector;
+    cfg.max_output_nodes = max_nodes;
+    cfg.skip_output = &exclude_ids;
+    cfg.node_expand = &node_expand;
+    cfg.output_nodes = &node_list;
+
+    filter_frontier_templates_for_disk_cache(cfg, templates);
+    if (templates.empty())
+    {
+        diskann::cerr << "MERIT disk-cache: frontier_page no eligible templates." << std::endl;
+        return -1;
+    }
+
+    const auto weights = build_undirected_weights(directed_edges);
+    std::vector<std::vector<uint32_t>> pages;
+    std::vector<bool> assigned;
+    if (frontier_page_pack(graph, node_expand, weights, templates, cfg, pages, assigned) != 0)
+        return -1;
+
+    if (node_list.empty())
+    {
+        diskann::cerr << "MERIT disk-cache: frontier_page list empty." << std::endl;
+        return -1;
+    }
+    log_disk_cache_node_list_stats(node_list, "frontier_page");
+    return 0;
+}
+
+int compute_frontier_dup_disk_cache_list(const VamanaGraph &graph, const std::vector<uint64_t> &node_expand,
+                                         const std::vector<std::tuple<uint32_t, uint32_t, uint64_t>> &directed_edges,
+                                         const std::string &profile_prefix, uint64_t nnodes_per_sector,
+                                         uint32_t beam_width, uint64_t max_slots,
+                                         const std::unordered_set<uint32_t> &exclude_ids,
+                                         std::vector<uint32_t> &node_list)
+{
+    node_list.clear();
+    if (max_slots == 0 || graph.num_points == 0 || nnodes_per_sector == 0)
+        return 0;
+
+    std::vector<std::pair<uint64_t, std::vector<uint32_t>>> templates;
+    if (load_or_build_frontier_templates(graph, directed_edges, profile_prefix, beam_width, templates) != 0)
+        return -1;
+
+    PagePackConfig cfg;
+    cfg.page_cap = nnodes_per_sector;
+    cfg.max_output_nodes = max_slots;
+    cfg.skip_output = &exclude_ids;
+    cfg.node_expand = &node_expand;
+    cfg.output_nodes = &node_list;
+
+    filter_frontier_templates_for_disk_cache(cfg, templates);
+    if (templates.empty())
+        return -1;
+
+    const auto weights = build_undirected_weights(directed_edges);
+    std::vector<std::vector<uint32_t>> pages;
+    std::vector<bool> assigned;
+    if (frontier_page_pack(graph, node_expand, weights, templates, cfg, pages, assigned) != 0)
+        return -1;
+
+    if (node_list.empty())
+        return -1;
+
+    const size_t unique_slots = node_list.size();
+    size_t page_cursor = 0;
+    uint64_t dup_slots = 0;
+    while (node_list.size() < max_slots && !pages.empty())
+    {
+        const auto &page = pages[page_cursor % pages.size()];
+        const size_t before = node_list.size();
+        for (uint32_t node : page)
+        {
+            if (node_list.size() >= max_slots)
+                break;
+            node_list.push_back(node);
+            dup_slots++;
+        }
+        page_cursor++;
+        if (page_cursor > pages.size() && node_list.size() == before)
+            break;
+    }
+
+    diskann::cout << "MERIT disk-cache frontier_dup: unique_pages=" << pages.size()
+                  << " unique_slots=" << unique_slots << " dup_slots=" << dup_slots
+                  << " total_slots=" << node_list.size() << std::endl;
+    log_disk_cache_node_list_stats(node_list, "frontier_dup");
+    return 0;
+}
+
+int compute_cooccur_star_disk_cache_list(
+    const VamanaGraph &graph, const std::vector<uint64_t> &node_expand,
+    const std::vector<std::tuple<uint32_t, uint32_t, uint64_t>> &directed_edges, const std::string &profile_prefix,
+    uint64_t nnodes_per_sector, uint32_t beam_width, uint64_t max_nodes,
+    const std::unordered_set<uint32_t> &exclude_ids, std::vector<uint32_t> &node_list)
+{
+    node_list.clear();
+    if (max_nodes == 0 || graph.num_points == 0 || nnodes_per_sector == 0)
+        return 0;
+
+    std::vector<std::pair<uint64_t, std::vector<uint32_t>>> templates;
+    if (load_or_build_frontier_templates(graph, directed_edges, profile_prefix, beam_width, templates) != 0)
+        return -1;
+
+    const auto co_weights = build_cooccur_weights_from_frontier_templates(templates);
+    if (co_weights.empty())
+    {
+        diskann::cerr << "MERIT disk-cache: co-occur weight map empty." << std::endl;
+        return -1;
+    }
+
+    const auto co_edges = cooccur_weights_to_directed_edges(co_weights);
+    const auto weights = build_undirected_weights(co_edges);
+
+    PagePackConfig cfg;
+    cfg.page_cap = nnodes_per_sector;
+    cfg.max_output_nodes = max_nodes;
+    cfg.skip_output = &exclude_ids;
+    cfg.node_expand = &node_expand;
+    cfg.output_nodes = &node_list;
+
+    std::vector<std::vector<uint32_t>> pages;
+    std::vector<bool> assigned;
+    if (pack_pages_edge_variant(graph, weights, sorted_undirected_edges(weights), co_edges, 1, EdgePackVariant::Star,
+                                cfg, pages, assigned) != 0)
+        return -1;
+
+    if (node_list.empty())
+    {
+        diskann::cerr << "MERIT disk-cache: cooccur_star list empty (max_nodes=" << max_nodes << ")." << std::endl;
+        return -1;
+    }
+    diskann::cout << "MERIT disk-cache cooccur_star: co_pairs=" << co_weights.size()
+                  << " templates=" << templates.size() << std::endl;
+    log_disk_cache_node_list_stats(node_list, "cooccur_star");
+    return 0;
+}
+
+int compute_dbeam_cooccur_disk_cache_list(
+    const VamanaGraph &graph, const std::vector<uint64_t> &node_expand,
+    const std::vector<std::tuple<uint32_t, uint32_t, uint64_t>> &directed_edges, const std::string &profile_prefix,
+    uint64_t nnodes_per_sector, uint32_t beam_width, uint64_t max_nodes,
+    const std::unordered_set<uint32_t> &exclude_ids, std::vector<uint32_t> &node_list)
+{
+    node_list.clear();
+    if (max_nodes == 0 || graph.num_points == 0 || nnodes_per_sector == 0)
+        return 0;
+
+    const uint64_t phase1_cap = max_nodes / 2;
+    std::vector<uint32_t> phase1;
+    if (compute_directed_beam_disk_cache_list(graph, node_expand, directed_edges, nnodes_per_sector, beam_width,
+                                              phase1_cap, exclude_ids, phase1) != 0)
+        return -1;
+
+    std::unordered_set<uint32_t> exclude2 = exclude_ids;
+    exclude2.insert(phase1.begin(), phase1.end());
+
+    std::vector<uint32_t> phase2;
+    const uint64_t phase2_cap = (max_nodes > phase1.size()) ? (max_nodes - phase1.size()) : 0;
+    if (phase2_cap > 0)
+    {
+        if (compute_cooccur_star_disk_cache_list(graph, node_expand, directed_edges, profile_prefix, nnodes_per_sector,
+                                                 beam_width, phase2_cap, exclude2, phase2) != 0)
+            return -1;
+    }
+
+    node_list = std::move(phase1);
+    node_list.insert(node_list.end(), phase2.begin(), phase2.end());
+    if (node_list.empty())
+    {
+        diskann::cerr << "MERIT disk-cache: dbeam_cooccur list empty (max_nodes=" << max_nodes << ")." << std::endl;
+        return -1;
+    }
+    diskann::cout << "MERIT disk-cache dbeam_cooccur: phase1=" << (node_list.size() - phase2.size())
+                  << " phase2=" << phase2.size() << " total=" << node_list.size() << std::endl;
+    log_disk_cache_node_list_stats(node_list, "dbeam_cooccur");
+    return 0;
+}
+
+int compute_frontier_topk_disk_cache_list(
+    const VamanaGraph &graph, const std::vector<uint64_t> &node_expand,
+    const std::vector<std::tuple<uint32_t, uint32_t, uint64_t>> &directed_edges, const std::string &profile_prefix,
+    uint64_t nnodes_per_sector, uint32_t beam_width, uint64_t max_nodes,
+    const std::unordered_set<uint32_t> &exclude_ids, std::vector<uint32_t> &node_list)
+{
+    node_list.clear();
+    if (max_nodes == 0 || graph.num_points == 0 || nnodes_per_sector == 0)
+        return 0;
+
+    std::vector<std::pair<uint64_t, std::vector<uint32_t>>> templates;
+    if (load_or_build_frontier_templates(graph, directed_edges, profile_prefix, beam_width, templates) != 0)
+        return -1;
+
+    const uint32_t top_k = (beam_width > 0) ? beam_width * 1000U : 5000U;
+    truncate_frontier_templates_topk(templates, top_k);
+
+    PagePackConfig cfg;
+    cfg.page_cap = nnodes_per_sector;
+    cfg.max_output_nodes = max_nodes;
+    cfg.skip_output = &exclude_ids;
+    cfg.node_expand = &node_expand;
+    cfg.output_nodes = &node_list;
+
+    filter_frontier_templates_for_disk_cache(cfg, templates);
+    if (templates.empty())
+    {
+        diskann::cerr << "MERIT disk-cache: frontier_topk template list empty after filter." << std::endl;
+        return -1;
+    }
+
+    const auto weights = build_undirected_weights(directed_edges);
+    std::vector<std::vector<uint32_t>> pages;
+    std::vector<bool> assigned;
+    if (frontier_page_pack(graph, node_expand, weights, templates, cfg, pages, assigned) != 0)
+        return -1;
+
+    if (node_list.empty())
+    {
+        diskann::cerr << "MERIT disk-cache: frontier_topk list empty (max_nodes=" << max_nodes << ")." << std::endl;
+        return -1;
+    }
+    diskann::cout << "MERIT disk-cache frontier_topk: top_k=" << top_k << " templates_used=" << templates.size()
+                  << std::endl;
+    log_disk_cache_node_list_stats(node_list, "frontier_topk");
+    return 0;
+}
+
 void append_uncounted_nodes_to_disk_list(const std::vector<uint64_t> &node_expand, uint64_t max_nodes,
                                          const std::unordered_set<uint32_t> &exclude_ids,
                                          std::vector<uint32_t> &node_list)
@@ -1832,9 +4124,9 @@ void append_uncounted_nodes_to_disk_list(const std::vector<uint64_t> &node_expan
     for (uint32_t id = 0; id < num_points; ++id)
     {
         if (exclude_ids.find(id) != exclude_ids.end())
-            continue;
+                continue;
         if (in_list.find(id) != in_list.end())
-            continue;
+                continue;
         if (id >= node_expand.size() || node_expand[id] == 0)
             continue;
         remaining.push_back(id);
@@ -1848,8 +4140,8 @@ void append_uncounted_nodes_to_disk_list(const std::vector<uint64_t> &node_expan
 
     for (uint32_t id : remaining)
     {
-        if (node_list.size() >= max_nodes)
-            break;
+            if (node_list.size() >= max_nodes)
+                break;
         node_list.push_back(id);
         in_list.insert(id);
     }
@@ -1914,6 +4206,90 @@ int read_disk_index_nnodes_per_sector(const std::string &disk_index_file, uint64
     if (!in)
         return -1;
     return 0;
+}
+
+int merit_dump_disk_cache_pages(const VamanaGraph &graph, const std::vector<uint64_t> &node_expand,
+                                const std::vector<std::tuple<uint32_t, uint32_t, uint64_t>> &directed_edges,
+                                const std::string &layout_in, uint64_t nnodes_per_sector, uint32_t k_hops,
+                                uint64_t max_nodes, const std::unordered_set<uint32_t> &exclude_ids,
+                                std::vector<std::vector<uint32_t>> &pages)
+{
+    pages.clear();
+    if (max_nodes == 0 || graph.num_points == 0 || nnodes_per_sector == 0)
+        return 0;
+
+    const std::string layout = normalize_disk_cache_layout(layout_in);
+    const auto weights = build_undirected_weights(directed_edges);
+    PagePackConfig cfg;
+    cfg.page_cap = nnodes_per_sector;
+    cfg.max_output_nodes = max_nodes;
+    cfg.skip_output = &exclude_ids;
+    cfg.node_expand = &node_expand;
+
+    std::vector<uint32_t> node_list;
+    std::vector<bool> assigned;
+
+    if (layout == "node")
+    {
+        cfg.output_nodes = &node_list;
+        if (hot_node_pack_pages(graph, node_expand, weights, k_hops, directed_edges, cfg, pages, assigned) != 0)
+            return -1;
+        return 0;
+    }
+
+    if (layout == "edge" || layout == "jiang")
+    {
+        const auto sorted_edges = sorted_undirected_edges(weights);
+        cfg.output_nodes = &node_list;
+        if (pack_pages_edge_variant(graph, weights, sorted_edges, directed_edges, k_hops, EdgePackVariant::Khop, cfg,
+                                    pages, assigned) != 0)
+            return -1;
+        return 0;
+    }
+
+    if (layout == "directed_beam")
+    {
+        const uint32_t beam_width = (k_hops > 0) ? k_hops : 1;
+        cfg.output_nodes = &node_list;
+        if (directed_beam_pack_pages(graph, node_expand, directed_edges, weights, beam_width,
+                                     DirectedBeamStarMode::Undirected, DirectedBeamSeedMode::ParentOut, cfg, pages,
+                                     assigned) != 0)
+            return -1;
+        return 0;
+    }
+
+    if (layout == "directed_beam_starfill")
+    {
+        const uint32_t beam_width = (k_hops > 0) ? k_hops : 1;
+        cfg.output_nodes = &node_list;
+        if (directed_beam_pack_pages(graph, node_expand, directed_edges, weights, beam_width,
+                                     DirectedBeamStarMode::StarFill, DirectedBeamSeedMode::ParentOut, cfg, pages,
+                                     assigned) != 0)
+            return -1;
+        return 0;
+    }
+
+    if (layout == "directed_beam_tight")
+    {
+        const uint32_t beam_width = (k_hops > 0) ? k_hops : 1;
+        cfg.output_nodes = &node_list;
+        if (directed_beam_pack_pages(graph, node_expand, directed_edges, weights, beam_width,
+                                     DirectedBeamStarMode::None, DirectedBeamSeedMode::ParentOut, cfg, pages,
+                                     assigned) != 0)
+            return -1;
+        return 0;
+    }
+
+    if (layout == "parent")
+    {
+        cfg.output_nodes = &node_list;
+        if (profile_parent_pack_pages(graph, directed_edges, cfg, pages, assigned) != 0)
+            return -1;
+        return 0;
+    }
+
+    diskann::cerr << "merit_dump_disk_cache_pages: unsupported layout " << layout_in << std::endl;
+    return -1;
 }
 
 } // namespace diskann

@@ -152,10 +152,10 @@ template <typename T> class SSDQueryScratch : public AbstractScratch<T>
     std::vector<Neighbor> full_retset;
     tsl::robin_map<uint32_t, uint32_t> profile_parent;
     tsl::robin_set<uint64_t> read_sectors; // distinct base _disk.index sectors (frontier reads / base sector cache)
-    tsl::robin_set<uint32_t> read_merit_sidecar_sectors; // distinct MERIT sidecar file sectors
+    tsl::robin_set<uint32_t> read_merit_disk_cache_sectors; // distinct MERIT disk cache file sectors
     // Per-query sector cache: key = base _disk.index sector id
     tsl::robin_map<uint64_t, std::array<char, defaults::SECTOR_LEN>> sector_cache;
-    // Per-query MERIT sidecar cache: key = sidecar sector id (not base sector)
+    // Per-query MERIT disk cache: key = disk cache sector id (not base sector)
     tsl::robin_map<uint32_t, std::array<char, defaults::SECTOR_LEN>> merit_sector_cache;
     // Temporal order of sector ids for cache-miss disk reads (one query)
     std::vector<uint64_t> disk_read_sector_order;
