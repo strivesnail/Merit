@@ -23,6 +23,74 @@
 
 namespace
 {
+inline void write_merit_dc_seed_tail(char *slot_dst, uint64_t max_node_len, uint64_t disk_bytes_per_point,
+                                     uint32_t nnbrs, uint8_t total_pages)
+{
+    const uint64_t used = disk_bytes_per_point + static_cast<uint64_t>(nnbrs + 1) * sizeof(uint32_t);
+    if (used + 4 > max_node_len)
+        return;
+    slot_dst[used] = static_cast<char>(diskann::MERIT_DC_SEED_MAGIC);
+    slot_dst[used + 1] = static_cast<char>(total_pages & diskann::MERIT_DC_FLAG_TOTAL_PAGES_MASK);
+    slot_dst[used + 2] = 0;
+    slot_dst[used + 3] = 0;
+}
+
+inline void save_seed_pages_sidecar(const std::string &path, const std::vector<std::pair<uint32_t, uint8_t>> &entries)
+{
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    const uint32_t n = static_cast<uint32_t>(entries.size());
+    out.write(reinterpret_cast<const char *>(&n), sizeof(n));
+    for (const auto &entry : entries)
+    {
+        out.write(reinterpret_cast<const char *>(&entry.first), sizeof(entry.first));
+        out.write(reinterpret_cast<const char *>(&entry.second), sizeof(entry.second));
+    }
+}
+
+inline void reorder_frontier_nhoods_by_expand_order(
+    const std::vector<uint32_t> &expand_order, std::vector<std::pair<uint32_t, char *>> &frontier_nhoods)
+{
+    if (expand_order.empty() || frontier_nhoods.size() <= 1)
+        return;
+    std::unordered_map<uint32_t, char *> buf_by_id;
+    buf_by_id.reserve(frontier_nhoods.size());
+    for (const auto &fn : frontier_nhoods)
+        buf_by_id[fn.first] = fn.second;
+    std::vector<std::pair<uint32_t, char *>> ordered;
+    ordered.reserve(frontier_nhoods.size());
+    for (uint32_t id : expand_order)
+    {
+        const auto it = buf_by_id.find(id);
+        if (it != buf_by_id.end())
+            ordered.emplace_back(id, it->second);
+    }
+    if (ordered.size() == frontier_nhoods.size())
+        frontier_nhoods = std::move(ordered);
+}
+
+inline int load_seed_pages_sidecar(const std::string &path, std::vector<std::pair<uint32_t, uint8_t>> &entries)
+{
+    entries.clear();
+    if (!file_exists(path))
+        return 0;
+    std::ifstream in(path, std::ios::binary);
+    if (!in.is_open())
+        return -1;
+    uint32_t n = 0;
+    in.read(reinterpret_cast<char *>(&n), sizeof(n));
+    if (!in)
+        return -1;
+    entries.resize(n);
+    for (uint32_t i = 0; i < n; ++i)
+    {
+        in.read(reinterpret_cast<char *>(&entries[i].first), sizeof(entries[i].first));
+        in.read(reinterpret_cast<char *>(&entries[i].second), sizeof(entries[i].second));
+        if (!in)
+            return -1;
+    }
+    return 0;
+}
+
 inline float issue_merit_and_base_disk_reads(std::shared_ptr<AlignedFileReader> &base_reader,
                                             std::shared_ptr<AlignedFileReader> &merit_reader, IOContext &base_ctx,
                                             std::vector<AlignedRead> &merit_reqs, std::vector<AlignedRead> &base_reqs,
@@ -1533,6 +1601,8 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
         frontier_read_reqs.reserve(2 * beam_width);
         std::vector<std::pair<uint32_t, std::pair<uint32_t, uint32_t *>>> cached_nhoods;
         cached_nhoods.reserve(2 * beam_width);
+        std::vector<uint32_t> expand_order;
+        expand_order.reserve(2 * beam_width);
 
         while (retset.has_unexpanded_node() && num_ios < io_limit)
         {
@@ -1542,6 +1612,7 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
             frontier_nhoods.clear();
             frontier_read_reqs.clear();
             cached_nhoods.clear();
+            expand_order.clear();
             sector_scratch_idx = 0;
             // find new beam
             uint32_t num_seen = 0;
@@ -1550,6 +1621,7 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
             {
                 auto nbr = retset.closest_unexpanded();
                 num_seen++;
+                expand_order.push_back(nbr.id);
                 bool mem_hit = false;
                 if (_merit_mem_pool != nullptr && _merit_mem_pool->active())
                 {
@@ -1748,8 +1820,8 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
                 }
 
                 complete_merit_disk_cache_io(query_scratch, merit_pending, merit_disk_fanout);
-                finalize_merit_pending_nodes(merit_pending, query_scratch, sector_scratch, sector_scratch_idx,
-                                               frontier_nhoods);
+                finalize_merit_pending_nodes(merit_pending, merit_frontier, query_scratch, sector_scratch,
+                                           sector_scratch_idx, frontier_nhoods, stats);
             }
             else
             {
@@ -1892,10 +1964,23 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
             }
 
             if (!merit_pending.empty())
-                finalize_merit_pending_nodes(merit_pending, query_scratch, sector_scratch, sector_scratch_idx,
-                                             frontier_nhoods);
+                finalize_merit_pending_nodes(merit_pending, merit_frontier, query_scratch, sector_scratch,
+                                             sector_scratch_idx, frontier_nhoods, stats);
 
             }
+            reorder_frontier_nhoods_by_expand_order(expand_order, frontier_nhoods);
+
+            std::unordered_map<uint32_t, std::pair<uint32_t, std::pair<uint32_t, uint32_t *>>> cached_by_id;
+            cached_by_id.reserve(cached_nhoods.size());
+            for (auto &c : cached_nhoods)
+                cached_by_id.emplace(c.first, c);
+
+            std::unordered_map<uint32_t, char *> disk_by_id;
+            disk_by_id.reserve(frontier_nhoods.size());
+            for (auto &fn : frontier_nhoods)
+                disk_by_id[fn.first] = fn.second;
+
+#ifdef USE_BING_INFRA
         // process cached nhoods
         for (auto &cached_nhood : cached_nhoods)
         {
@@ -1960,21 +2045,14 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
                 }
             }
         }
-#ifdef USE_BING_INFRA
         // process each frontier nhood - compute distances to unvisited nodes
         int completedIndex = -1;
         long requestCount = static_cast<long>(frontier_read_reqs.size());
-        // If we issued read requests and if a read is complete or there are
-        // reads in wait state, then enter the while loop.
         while (requestCount > 0 && getNextCompletedRequest(reader, ctx, requestCount, completedIndex))
         {
             assert(completedIndex >= 0);
             auto &frontier_nhood = frontier_nhoods[completedIndex];
             (*ctx.m_pRequestsStatus)[completedIndex] = IOContext::PROCESS_COMPLETE;
-#else
-        for (auto &frontier_nhood : frontier_nhoods)
-        {
-#endif
             char *node_disk_buf = offset_to_node(frontier_nhood.second, frontier_nhood.first);
             if (_merit_mem_pool != nullptr && _merit_mem_pool->active() && _merit_mem_runtime_admit)
             {
@@ -2001,7 +2079,6 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
             }
             full_retset.push_back(Neighbor(frontier_nhood.first, cur_expanded_dist));
             uint32_t *node_nbrs = (node_buf + 1);
-            // compute node_nbrs <-> query dist in PQ space
             cpu_timer.reset();
             compute_dists(node_nbrs, nnbrs, dist_scratch);
             if (stats != nullptr)
@@ -2011,7 +2088,6 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
             }
 
             cpu_timer.reset();
-            // process prefetch-ed nhood
             for (uint64_t m = 0; m < nnbrs; ++m)
             {
                 uint32_t id = node_nbrs[m];
@@ -2027,9 +2103,7 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
                     cmps++;
                     float dist = dist_scratch[m];
                     if (stats != nullptr)
-                    {
                         stats->n_cmps++;
-                    }
 
                     Neighbor nn(id, dist);
                     retset.insert(nn);
@@ -2037,10 +2111,142 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
             }
 
             if (stats != nullptr)
-            {
                 stats->cpu_us += (float)cpu_timer.elapsed();
-            }
         }
+#else
+            for (uint32_t expand_id : expand_order)
+            {
+                const auto cached_it = cached_by_id.find(expand_id);
+                if (cached_it != cached_by_id.end())
+                {
+                    auto &cached_nhood = cached_it->second;
+                    T *node_fp_coords_copy = nullptr;
+                    if (_merit_mem_pool != nullptr && _merit_mem_pool->active())
+                    {
+                        std::pair<uint32_t, uint32_t *> nh_dummy;
+                        if (!_merit_mem_pool->lookup(cached_nhood.first, node_fp_coords_copy, nh_dummy))
+                            continue;
+                    }
+                    else
+                    {
+                        auto global_cache_iter = _coord_cache.find(cached_nhood.first);
+                        if (global_cache_iter == _coord_cache.end())
+                            continue;
+                        node_fp_coords_copy = global_cache_iter->second;
+                    }
+                    float cur_expanded_dist;
+                    if (!_use_disk_index_pq)
+                    {
+                        cur_expanded_dist =
+                            _dist_cmp->compare(aligned_query_T, node_fp_coords_copy, (uint32_t)_aligned_dim);
+                    }
+                    else
+                    {
+                        if (metric == diskann::Metric::INNER_PRODUCT)
+                            cur_expanded_dist =
+                                _disk_pq_table.inner_product(query_float, (uint8_t *)node_fp_coords_copy);
+                        else
+                            cur_expanded_dist = _disk_pq_table.l2_distance(query_float, (uint8_t *)node_fp_coords_copy);
+                    }
+                    full_retset.push_back(Neighbor((uint32_t)cached_nhood.first, cur_expanded_dist));
+
+                    uint64_t nnbrs = cached_nhood.second.first;
+                    uint32_t *node_nbrs = cached_nhood.second.second;
+
+                    cpu_timer.reset();
+                    compute_dists(node_nbrs, nnbrs, dist_scratch);
+                    if (stats != nullptr)
+                    {
+                        stats->n_cmps += (uint32_t)nnbrs;
+                        stats->cpu_us += (float)cpu_timer.elapsed();
+                    }
+
+                    for (uint64_t m = 0; m < nnbrs; ++m)
+                    {
+                        uint32_t id = node_nbrs[m];
+                        if (visited.insert(id).second)
+                        {
+                            profile_on_first_visit(id, cached_nhood.first);
+                            if (!use_filter && _dummy_pts.find(id) != _dummy_pts.end())
+                                continue;
+
+                            if (use_filter && !(point_has_label(id, filter_label)) &&
+                                (!_use_universal_label || !point_has_label(id, _universal_filter_label)))
+                                continue;
+                            cmps++;
+                            float dist = dist_scratch[m];
+                            Neighbor nn(id, dist);
+                            retset.insert(nn);
+                        }
+                    }
+                    continue;
+                }
+
+                const auto disk_it = disk_by_id.find(expand_id);
+                if (disk_it == disk_by_id.end())
+                    continue;
+
+                char *node_disk_buf = offset_to_node(disk_it->second, expand_id);
+                if (_merit_mem_pool != nullptr && _merit_mem_pool->active() && _merit_mem_runtime_admit)
+                {
+                    const uint32_t evicted = _merit_mem_pool->try_admit(expand_id, node_disk_buf, _disk_bytes_per_point,
+                                                                        _max_node_len);
+                    if (stats != nullptr && evicted != MeritMemoryPool<T>::INVALID_NODE)
+                        stats->n_merit_mem_evictions++;
+                }
+                uint32_t *node_buf = offset_to_node_nhood(node_disk_buf);
+                uint64_t nnbrs = (uint64_t)(*node_buf);
+                T *node_fp_coords = offset_to_node_coords(node_disk_buf);
+                memcpy(data_buf, node_fp_coords, _disk_bytes_per_point);
+                float cur_expanded_dist;
+                if (!_use_disk_index_pq)
+                {
+                    cur_expanded_dist = _dist_cmp->compare(aligned_query_T, data_buf, (uint32_t)_aligned_dim);
+                }
+                else
+                {
+                    if (metric == diskann::Metric::INNER_PRODUCT)
+                        cur_expanded_dist = _disk_pq_table.inner_product(query_float, (uint8_t *)data_buf);
+                    else
+                        cur_expanded_dist = _disk_pq_table.l2_distance(query_float, (uint8_t *)data_buf);
+                }
+                full_retset.push_back(Neighbor(expand_id, cur_expanded_dist));
+                uint32_t *node_nbrs = (node_buf + 1);
+                cpu_timer.reset();
+                compute_dists(node_nbrs, nnbrs, dist_scratch);
+                if (stats != nullptr)
+                {
+                    stats->n_cmps += (uint32_t)nnbrs;
+                    stats->cpu_us += (float)cpu_timer.elapsed();
+                }
+
+                cpu_timer.reset();
+                for (uint64_t m = 0; m < nnbrs; ++m)
+                {
+                    uint32_t id = node_nbrs[m];
+                    if (visited.insert(id).second)
+                    {
+                        profile_on_first_visit(id, expand_id);
+                        if (!use_filter && _dummy_pts.find(id) != _dummy_pts.end())
+                            continue;
+
+                        if (use_filter && !(point_has_label(id, filter_label)) &&
+                            (!_use_universal_label || !point_has_label(id, _universal_filter_label)))
+                            continue;
+                        cmps++;
+                        float dist = dist_scratch[m];
+                        if (stats != nullptr)
+                            stats->n_cmps++;
+
+                        Neighbor nn(id, dist);
+                        retset.insert(nn);
+                    }
+                }
+
+                if (stats != nullptr)
+                    stats->cpu_us += (float)cpu_timer.elapsed();
+            }
+#endif
 
         hops++;
     }
@@ -2421,9 +2627,12 @@ template <typename T, typename LabelT>
 int PQFlashIndex<T, LabelT>::build_merit_disk_node_list(const std::string &profile_prefix, uint64_t max_nodes,
                                                         uint64_t memory_tier_exclude_count, uint32_t k_hops,
                                                         const std::string &layout_in,
-                                                        std::vector<uint32_t> &node_list) const
+                                                        std::vector<uint32_t> &node_list,
+                                                        std::vector<SeedPageGroup> *seed_page_groups) const
 {
     node_list.clear();
+    if (seed_page_groups != nullptr)
+        seed_page_groups->clear();
     if (max_nodes == 0)
         return 0;
 
@@ -2470,7 +2679,8 @@ int PQFlashIndex<T, LabelT>::build_merit_disk_node_list(const std::string &profi
         (k_hops == 0 && layout != "edge" && layout != "edge_dir" && layout != "edge_star" && layout != "edge_u" &&
          layout != "edge_pair" && layout != "edge_clique" && layout != "edge_replica" &&
          layout != "edge_star_dup" && layout != "frontier_page" && layout != "frontier_dup" &&
-         layout != "directed_beam" && layout != "directed_beam_dual" && layout != "directed_beam_inseed" &&
+         layout != "directed_beam" && !is_directed_beam_pct_layout(layout) && layout != "directed_beam_dual" &&
+         layout != "directed_beam_inseed" &&
          layout != "directed_beam_tight" && layout != "directed_beam_starfill" &&
          layout != "directed_beam_top4first" && layout != "node_top4first" && layout != "cooccur_star" &&
          layout != "dbeam_cooccur" &&
@@ -2645,6 +2855,19 @@ int PQFlashIndex<T, LabelT>::build_merit_disk_node_list(const std::string &profi
         return 0;
     }
 
+    if (is_directed_beam_pct_layout(layout))
+    {
+        const double pct = directed_beam_pct_layout_threshold(layout);
+        if (compute_directed_beam_pct_disk_cache_list(graph, node_expand, edges, nps, max_nodes, exclude_ids,
+                                                        node_list, pct, layout.c_str(), seed_page_groups) != 0)
+            return -1;
+        diskann::cout << "MERIT disk-cache node list: Layout E (" << layout << ") packing, selected "
+                      << node_list.size() << " nodes (exclude memory-tier=" << exclude_ids.size() << ")."
+                      << std::endl;
+        append_uncounted_nodes_to_disk_list(node_expand, max_nodes, exclude_ids, node_list);
+        return 0;
+    }
+
     if (layout == "directed_beam_starfill")
     {
         const uint32_t beam_width = (k_hops > 0) ? k_hops : 4;
@@ -2813,6 +3036,99 @@ template <typename T, typename LabelT> bool PQFlashIndex<T, LabelT>::merit_dc_ma
 {
     return !_merit_dc_map.empty() && _merit_dc_map.find(node_id) != _merit_dc_map.end() &&
            !_merit_dc_map.at(node_id).empty();
+}
+
+template <typename T, typename LabelT>
+int PQFlashIndex<T, LabelT>::verify_merit_disk_cache_against_base(uint64_t max_reports)
+{
+    if (_merit_dc_map.empty() || !_merit_disk_reader)
+    {
+        diskann::cout << "MERIT verify: disk cache empty or reader missing." << std::endl;
+        return 0;
+    }
+
+    ScratchStoreManager<SSDThreadData<T>> manager(this->_thread_data);
+    auto this_thread_data = manager.scratch_space();
+    IOContext &ctx = this_thread_data->ctx;
+    _merit_disk_reader->register_thread();
+
+    char *sidecar_buf = nullptr;
+    alloc_aligned((void **)&sidecar_buf, defaults::SECTOR_LEN, defaults::SECTOR_LEN);
+
+    uint64_t checked = 0;
+    uint64_t mismatches = 0;
+    uint64_t reports = 0;
+
+    std::vector<uint32_t> one_id(1);
+    std::vector<T *> coord_bufs(1);
+    std::vector<std::pair<uint32_t, uint32_t *>> nbr_bufs(1);
+    std::vector<T> base_coord(_aligned_dim);
+    std::vector<uint32_t> base_nbr(_max_degree + 1);
+
+    for (const auto &kv : _merit_dc_map)
+    {
+        const uint32_t node_id = kv.first;
+        if (kv.second.empty())
+            continue;
+        const MeritDiskLoc &loc = kv.second[0];
+
+        one_id[0] = node_id;
+        coord_bufs[0] = base_coord.data();
+        nbr_bufs[0] = {0, base_nbr.data()};
+        const auto ok = read_nodes(one_id, coord_bufs, nbr_bufs);
+        if (!ok[0])
+        {
+            diskann::cerr << "MERIT verify: base read failed for node " << node_id << std::endl;
+            continue;
+        }
+
+        AlignedRead ar;
+        ar.offset = static_cast<uint64_t>(loc.sector) * defaults::SECTOR_LEN;
+        ar.len = defaults::SECTOR_LEN;
+        ar.buf = sidecar_buf;
+        std::vector<AlignedRead> sidecar_reqs;
+        sidecar_reqs.push_back(ar);
+        _merit_disk_reader->read(sidecar_reqs, ctx);
+
+        char *slot = sidecar_buf + static_cast<uint64_t>(loc.slot) * _max_node_len;
+        const T *dc_coords = offset_to_node_coords(slot);
+        uint32_t *dc_nhood = offset_to_node_nhood(slot);
+        const uint32_t dc_nnbrs = *dc_nhood;
+
+        bool bad = false;
+        std::string reason;
+        if (nbr_bufs[0].first != dc_nnbrs)
+        {
+            bad = true;
+            reason = "nnbrs base=" + std::to_string(nbr_bufs[0].first) + " sidecar=" + std::to_string(dc_nnbrs);
+        }
+        else if (memcmp(base_coord.data(), dc_coords, _disk_bytes_per_point) != 0)
+        {
+            bad = true;
+            reason = "coords differ";
+        }
+        else if (memcmp(base_nbr.data() + 1, dc_nhood + 1, static_cast<size_t>(dc_nnbrs) * sizeof(uint32_t)) != 0)
+        {
+            bad = true;
+            reason = "nbr list differs";
+        }
+
+        checked++;
+        if (bad)
+        {
+            mismatches++;
+            if (reports < max_reports)
+            {
+                diskann::cerr << "MERIT verify mismatch node=" << node_id << " sector=" << loc.sector
+                              << " slot=" << loc.slot << " nsectors=" << loc.nsectors << " " << reason << std::endl;
+                reports++;
+            }
+        }
+    }
+
+    aligned_free(sidecar_buf);
+    diskann::cout << "MERIT verify: checked=" << checked << " mismatches=" << mismatches << std::endl;
+    return mismatches > 0 ? -1 : 0;
 }
 
 template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::clear_merit_memory_cache()
@@ -3099,6 +3415,23 @@ int PQFlashIndex<T, LabelT>::load_merit_disk_cache_from_prefix(const std::string
         }
     }
 
+    const std::string seed_pages_path = output_prefix + "_merit_dc.seed_pages";
+    std::vector<std::pair<uint32_t, uint8_t>> seed_pages_sidecar;
+    if (load_seed_pages_sidecar(seed_pages_path, seed_pages_sidecar) == 0)
+    {
+        for (const auto &entry : seed_pages_sidecar)
+        {
+            const uint32_t seed_id = entry.first;
+            const uint8_t total_pages = entry.second;
+            if (total_pages <= 1)
+                continue;
+            auto map_it = _merit_dc_map.find(seed_id);
+            if (map_it == _merit_dc_map.end() || map_it->second.empty())
+                continue;
+            map_it.value()[0].nsectors = total_pages;
+        }
+    }
+
     _merit_dc_path = data_path;
     _merit_dc_num_nodes = node_list.size();
 
@@ -3143,12 +3476,18 @@ int PQFlashIndex<T, LabelT>::build_and_load_merit_disk_cache(const std::string &
         return 0;
 
     std::vector<uint32_t> node_list;
-    if (build_merit_disk_node_list(profile_prefix, max_nodes, rank_skip, k_hops, layout, node_list) != 0)
+    std::vector<SeedPageGroup> seed_groups;
+    const std::string layout_norm = normalize_disk_cache_layout(layout);
+    std::vector<SeedPageGroup> *seed_groups_ptr =
+        is_directed_beam_pct_layout(layout_norm) ? &seed_groups : nullptr;
+    if (build_merit_disk_node_list(profile_prefix, max_nodes, rank_skip, k_hops, layout, node_list, seed_groups_ptr) !=
+        0)
         return -1;
 
     const std::string data_path =
         unified_single_file ? (output_prefix + "_disk_merit_unified.index") : (output_prefix + "_merit_dc.data");
     const std::string nodes_path = output_prefix + "_merit_dc.nodes";
+    const std::string seed_pages_path = output_prefix + "_merit_dc.seed_pages";
 
     // Persist node order for debugging / reload.
     diskann::save_bin<uint32_t>(nodes_path, node_list.data(), node_list.size(), 1);
@@ -3201,11 +3540,87 @@ int PQFlashIndex<T, LabelT>::build_and_load_merit_disk_cache(const std::string &
         memset(buf, 0, defaults::SECTOR_LEN);
     };
 
+    auto write_node_into_slot = [&](uint32_t node_id, char *slot_dst, const T *coords, uint32_t nnbrs,
+                                    const uint32_t *nbrs, uint32_t sector_id, uint16_t slot_id, uint16_t nsectors,
+                                    bool write_seed_tail, uint8_t seed_total_pages) {
+        memcpy(slot_dst, coords, _disk_bytes_per_point);
+        uint32_t *nhood = reinterpret_cast<uint32_t *>(slot_dst + _disk_bytes_per_point);
+        nhood[0] = nnbrs;
+        memcpy(nhood + 1, nbrs, nnbrs * sizeof(uint32_t));
+        if (write_seed_tail)
+            write_merit_dc_seed_tail(slot_dst, _max_node_len, _disk_bytes_per_point, nnbrs, seed_total_pages);
+
+        MeritDiskLoc loc;
+        loc.sector = sector_id;
+        loc.slot = slot_id;
+        loc.nsectors = nsectors;
+        _merit_dc_map[node_id].push_back(loc);
+    };
+
     memset(sector_buf, 0, defaults::SECTOR_LEN);
     uint64_t slot_in_sector = 0;
     uint32_t cur_sector = 0;
+    size_t flat_write_begin = 0;
 
-    for (size_t begin = 0; begin < node_list.size(); begin += BLOCK)
+    if (!seed_groups.empty() && _nnodes_per_sector > 0)
+    {
+        std::vector<std::pair<uint32_t, uint8_t>> seed_pages_sidecar;
+        seed_pages_sidecar.reserve(seed_groups.size());
+
+        for (const SeedPageGroup &group : seed_groups)
+        {
+            for (size_t pi = 0; pi < group.pages.size(); ++pi)
+            {
+                const auto &page_nodes = group.pages[pi];
+                if (page_nodes.empty())
+                    continue;
+
+                memset(sector_buf, 0, defaults::SECTOR_LEN);
+                for (size_t begin = 0; begin < page_nodes.size(); begin += BLOCK)
+                {
+                    const size_t end = std::min(page_nodes.size(), begin + BLOCK);
+                    const size_t bn = end - begin;
+                    std::vector<uint32_t> batch(page_nodes.begin() + begin, page_nodes.begin() + end);
+                    coord_ptrs.resize(bn);
+                    nbr_ptrs.resize(bn);
+                    for (size_t i = 0; i < bn; i++)
+                    {
+                        coord_ptrs[i] = coord_storage.data() + i * _aligned_dim;
+                        nbr_ptrs[i] = {0, nbr_storage.data() + i * (_max_degree + 1)};
+                    }
+                    auto ok = read_nodes(batch, coord_ptrs, nbr_ptrs);
+                    for (size_t i = 0; i < bn; i++)
+                    {
+                        if (!ok[i])
+                        {
+                            aligned_free(sector_buf);
+                            out.close();
+                            diskann::cerr << "Failed to read base node " << batch[i]
+                                          << " for MERIT disk-cache (pct80 group)." << std::endl;
+                            return -1;
+                        }
+                        const uint32_t node_id = batch[i];
+                        const uint16_t slot_id = static_cast<uint16_t>(begin + i);
+                        const bool is_seed = (pi == 0 && node_id == group.seed);
+                        write_node_into_slot(node_id, sector_buf + static_cast<uint64_t>(slot_id) * _max_node_len,
+                                             coord_ptrs[i], nbr_ptrs[i].first, nbr_ptrs[i].second, cur_sector,
+                                             slot_id, is_seed ? group.total_pages : 1, is_seed, group.total_pages);
+                    }
+                }
+                flush_sector(sector_buf);
+                cur_sector++;
+            }
+            seed_pages_sidecar.emplace_back(group.seed, group.total_pages);
+        }
+
+        save_seed_pages_sidecar(seed_pages_path, seed_pages_sidecar);
+        for (const SeedPageGroup &group : seed_groups)
+            for (const auto &page : group.pages)
+                flat_write_begin += page.size();
+        slot_in_sector = 0;
+    }
+
+    for (size_t begin = flat_write_begin; begin < node_list.size(); begin += BLOCK)
     {
         const size_t end = std::min(node_list.size(), begin + BLOCK);
         const size_t bn = end - begin;
@@ -3231,16 +3646,8 @@ int PQFlashIndex<T, LabelT>::build_and_load_merit_disk_cache(const std::string &
             if (_nnodes_per_sector > 0)
             {
                 char *dst = sector_buf + slot_in_sector * _max_node_len;
-                memcpy(dst, coord_ptrs[i], _disk_bytes_per_point);
-                uint32_t *nhood = reinterpret_cast<uint32_t *>(dst + _disk_bytes_per_point);
-                nhood[0] = nbr_ptrs[i].first;
-                memcpy(nhood + 1, nbr_ptrs[i].second, nbr_ptrs[i].first * sizeof(uint32_t));
-
-                MeritDiskLoc loc;
-                loc.sector = cur_sector;
-                loc.slot = static_cast<uint16_t>(slot_in_sector);
-                loc.nsectors = 1;
-                _merit_dc_map[batch[i]].push_back(loc);
+                write_node_into_slot(batch[i], dst, coord_ptrs[i], nbr_ptrs[i].first, nbr_ptrs[i].second, cur_sector,
+                                     static_cast<uint16_t>(slot_in_sector), 1, false, 1);
 
                 slot_in_sector++;
                 if (slot_in_sector == nps)
@@ -3327,6 +3734,8 @@ void PQFlashIndex<T, LabelT>::prepare_merit_disk_cache_io(
     if (merit_ids.empty())
         return;
 
+    const bool disable_multiread = (std::getenv("MERIT_DISABLE_MULTIREAD") != nullptr);
+
     const size_t read_len = num_sectors_per_node * defaults::SECTOR_LEN;
 
     // Batch replica selection: greedy set-cover on sectors to minimize distinct reads.
@@ -3339,6 +3748,7 @@ void PQFlashIndex<T, LabelT>::prepare_merit_disk_cache_io(
     std::vector<PendingChoice> choices;
     choices.reserve(merit_ids.size());
     std::unordered_set<uint32_t> need_ids(merit_ids.begin(), merit_ids.end());
+    std::unordered_set<uint32_t> chosen_ids;
 
     while (!need_ids.empty())
     {
@@ -3374,6 +3784,7 @@ void PQFlashIndex<T, LabelT>::prepare_merit_disk_cache_io(
         }
 
         const auto &hit = sector_hits[best_sector];
+        const size_t choices_before = choices.size();
         for (const auto &id_loc : hit)
         {
             if (need_ids.count(id_loc.first) == 0)
@@ -3385,17 +3796,95 @@ void PQFlashIndex<T, LabelT>::prepare_merit_disk_cache_io(
             pc.id = id_loc.first;
             pc.loc_idx = id_loc.second;
             pc.loc = it->second[id_loc.second];
+            if (!chosen_ids.insert(pc.id).second)
+                continue;
             choices.push_back(pc);
             need_ids.erase(id_loc.first);
         }
+
+        for (size_t ci = choices_before; ci < choices.size(); ++ci)
+        {
+            const PendingChoice &anchor = choices[ci];
+            if (disable_multiread || anchor.loc.nsectors <= 1)
+                continue;
+            const uint32_t span_base = anchor.loc.sector;
+            const uint32_t span_end = span_base + anchor.loc.nsectors;
+            for (auto id_it = need_ids.begin(); id_it != need_ids.end();)
+            {
+                const uint32_t id = *id_it;
+                const auto map_it = _merit_dc_map.find(id);
+                if (map_it == _merit_dc_map.end() || map_it->second.empty())
+                {
+                    ++id_it;
+                    continue;
+                }
+                size_t cover_li = 0;
+                bool covered = false;
+                for (size_t li = 0; li < map_it->second.size(); ++li)
+                {
+                    const MeritDiskLoc &loc = map_it->second[li];
+                    if (loc.sector >= span_base && loc.sector < span_end)
+                    {
+                        cover_li = li;
+                        covered = true;
+                        break;
+                    }
+                }
+                if (!covered)
+                {
+                    ++id_it;
+                    continue;
+                }
+                PendingChoice pc;
+                pc.id = id;
+                pc.loc_idx = cover_li;
+                pc.loc = map_it->second[cover_li];
+                if (!chosen_ids.insert(pc.id).second)
+                {
+                    id_it = need_ids.erase(id_it);
+                    continue;
+                }
+                choices.push_back(pc);
+                if (stats != nullptr)
+                    stats->n_merit_setcover_grouped++;
+                id_it = need_ids.erase(id_it);
+            }
+        }
     }
+
+    struct MultireadSpan
+    {
+        uint32_t base = 0;
+        uint16_t nsectors = 1;
+    };
+    std::vector<MultireadSpan> multiread_spans;
+    multiread_spans.reserve(choices.size());
+    if (!disable_multiread)
+    {
+        for (const PendingChoice &pc : choices)
+        {
+            if (pc.loc.nsectors > 1)
+                multiread_spans.push_back({pc.loc.sector, pc.loc.nsectors});
+        }
+    }
+
+    auto multiread_root_for_sector = [&](uint32_t sector) -> uint32_t {
+        for (const MultireadSpan &sp : multiread_spans)
+        {
+            if (sector >= sp.base && sector < sp.base + sp.nsectors)
+                return sp.base;
+        }
+        return sector;
+    };
 
     pending.reserve(choices.size());
     for (const PendingChoice &pc : choices)
     {
         const MeritDiskLoc loc = pc.loc;
+        const uint32_t io_base =
+            disable_multiread ? loc.sector : multiread_root_for_sector(loc.sector);
         query_scratch->read_merit_disk_cache_sectors.insert(loc.sector);
-        pending.push_back({pc.id, nullptr, loc});
+        pending.push_back({pc.id, nullptr, loc, io_base});
         const size_t pidx = pending.size() - 1;
 
         if (stats != nullptr)
@@ -3413,13 +3902,19 @@ void PQFlashIndex<T, LabelT>::prepare_merit_disk_cache_io(
             if (cit != query_scratch->merit_sector_cache.end())
             {
                 pending[pidx].sec_buf = const_cast<char *>(cit->second.data());
+                pending[pidx].io_base_sector = loc.sector;
                 if (stats != nullptr)
                     stats->n_sector_cache_hits++;
                 served = true;
             }
         }
         if (!served)
-            disk_fanout_groups[loc.sector].push_back(pidx);
+        {
+            const uint32_t group_sec = io_base;
+            if (group_sec != loc.sector && stats != nullptr)
+                stats->n_merit_io_avoided++;
+            disk_fanout_groups[group_sec].push_back(pidx);
+        }
     }
 
     for (auto &kv : disk_fanout_groups)
@@ -3428,17 +3923,59 @@ void PQFlashIndex<T, LabelT>::prepare_merit_disk_cache_io(
         std::vector<size_t> &indices = kv.second;
         if (indices.empty())
             continue;
-        char *read_buf = sector_scratch + num_sectors_per_node * sector_scratch_idx * defaults::SECTOR_LEN;
-        sector_scratch_idx++;
+
+        size_t root_idx = indices[0];
+        uint16_t group_nsectors = 1;
+        if (disable_multiread)
+            group_nsectors = 1;
+        else
+        {
+            for (size_t idx : indices)
+                group_nsectors = std::max(group_nsectors, pending[idx].loc.nsectors);
+            for (const MultireadSpan &sp : multiread_spans)
+            {
+                if (sp.base == disk_cache_sec)
+                {
+                    group_nsectors = std::max(group_nsectors, sp.nsectors);
+                    break;
+                }
+            }
+        }
+        if (!disable_multiread)
+        {
+            for (size_t idx : indices)
+            {
+                if (pending[idx].loc.sector == disk_cache_sec && pending[idx].loc.nsectors == group_nsectors)
+                {
+                    root_idx = idx;
+                    break;
+                }
+            }
+        }
+        if (root_idx != indices[0])
+            std::swap(indices[0], root_idx);
+
+        const uint64_t buf_sectors =
+            disable_multiread ? static_cast<uint64_t>(num_sectors_per_node)
+                              : std::max(static_cast<uint64_t>(group_nsectors),
+                                         static_cast<uint64_t>(num_sectors_per_node));
+        char *read_buf = sector_scratch + sector_scratch_idx * defaults::SECTOR_LEN;
+        sector_scratch_idx += buf_sectors;
         pending[indices[0]].sec_buf = read_buf;
-        const MeritReadPending &first = pending[indices[0]];
-        const uint64_t byte_len = static_cast<uint64_t>(first.loc.nsectors) * defaults::SECTOR_LEN;
+        for (size_t idx : indices)
+            pending[idx].io_base_sector =
+                disable_multiread ? pending[idx].loc.sector : disk_cache_sec;
+        const uint64_t byte_len = static_cast<uint64_t>(group_nsectors) * defaults::SECTOR_LEN;
         const uint64_t off =
             (_merit_unified_disk ? _merit_region_byte_offset : 0) +
             static_cast<uint64_t>(disk_cache_sec) * defaults::SECTOR_LEN;
         merit_io.emplace_back(off, byte_len, read_buf);
         if (stats != nullptr)
+        {
             stats->n_disk_reads++;
+            if (group_nsectors > 1)
+                stats->n_merit_multiread_ios++;
+        }
     }
 }
 
@@ -3454,11 +3991,20 @@ void PQFlashIndex<T, LabelT>::complete_merit_disk_cache_io(
             continue;
         const char *primary = pending[indices[0]].sec_buf;
         char *shared_buf = const_cast<char *>(primary);
-        if (_query_sector_cache_enabled)
+        if (_query_sector_cache_enabled && pending[indices[0]].loc.nsectors == 1)
         {
             std::array<char, defaults::SECTOR_LEN> &slot = query_scratch->merit_sector_cache[kv.first];
             memcpy(slot.data(), primary, defaults::SECTOR_LEN);
             shared_buf = slot.data();
+        }
+        else if (_query_sector_cache_enabled && pending[indices[0]].loc.nsectors > 1)
+        {
+            for (uint16_t si = 0; si < pending[indices[0]].loc.nsectors; ++si)
+            {
+                std::array<char, defaults::SECTOR_LEN> &slot =
+                    query_scratch->merit_sector_cache[kv.first + static_cast<uint32_t>(si)];
+                memcpy(slot.data(), primary + static_cast<size_t>(si) * defaults::SECTOR_LEN, defaults::SECTOR_LEN);
+            }
         }
         for (size_t idx : indices)
             pending[idx].sec_buf = shared_buf;
@@ -3467,31 +4013,58 @@ void PQFlashIndex<T, LabelT>::complete_merit_disk_cache_io(
 
 template <typename T, typename LabelT>
 void PQFlashIndex<T, LabelT>::finalize_merit_pending_nodes(const std::vector<MeritReadPending> &pending,
+                                                           const std::vector<uint32_t> &merit_order,
                                                            SSDQueryScratch<T> *query_scratch, char *sector_scratch,
                                                            uint64_t &sector_scratch_idx,
-                                                           std::vector<std::pair<uint32_t, char *>> &frontier_nhoods)
+                                                           std::vector<std::pair<uint32_t, char *>> &frontier_nhoods,
+                                                           QueryStats *stats)
 {
-    (void)query_scratch;
+    std::unordered_map<uint32_t, char *> ready;
+    ready.reserve(pending.size());
     for (const auto &mp : pending)
     {
         char *sec_buf = mp.sec_buf;
+        uint32_t io_base = mp.io_base_sector;
+        if (sec_buf == nullptr && _query_sector_cache_enabled)
+        {
+            const auto cit = query_scratch->merit_sector_cache.find(mp.loc.sector);
+            if (cit != query_scratch->merit_sector_cache.end())
+            {
+                sec_buf = const_cast<char *>(cit->second.data());
+                io_base = mp.loc.sector;
+            }
+        }
+        if (sec_buf == nullptr)
+            continue;
+
         char *out_buf = sec_buf;
         if (_nnodes_per_sector > 0)
         {
             const uint64_t base_slot = mp.id % _nnodes_per_sector;
-            if (base_slot != mp.loc.slot)
-            {
-                out_buf = sector_scratch + sector_scratch_idx * defaults::SECTOR_LEN;
-                sector_scratch_idx++;
-                memcpy(out_buf, sec_buf, defaults::SECTOR_LEN);
-                char *packed = sec_buf + static_cast<uint64_t>(mp.loc.slot) * _max_node_len;
-                std::vector<char> tmp(_max_node_len);
-                memcpy(tmp.data(), packed, _max_node_len);
-                memset(out_buf, 0, defaults::SECTOR_LEN);
-                memcpy(out_buf + base_slot * _max_node_len, tmp.data(), _max_node_len);
-            }
+            const uint64_t sector_off =
+                (mp.loc.sector >= io_base)
+                    ? static_cast<uint64_t>(mp.loc.sector - io_base) * defaults::SECTOR_LEN
+                    : 0;
+            // Merit pages use loc.slot (dense page layout); normalize to id % nps for offset_to_node.
+            out_buf = sector_scratch + sector_scratch_idx * defaults::SECTOR_LEN;
+            sector_scratch_idx++;
+            memset(out_buf, 0, defaults::SECTOR_LEN);
+            const char *packed = sec_buf + sector_off + static_cast<uint64_t>(mp.loc.slot) * _max_node_len;
+            memcpy(out_buf + base_slot * _max_node_len, packed, _max_node_len);
         }
-        frontier_nhoods.emplace_back(mp.id, out_buf);
+        ready[mp.id] = out_buf;
+    }
+
+    for (uint32_t id : merit_order)
+    {
+        const auto it = ready.find(id);
+        if (it == ready.end())
+        {
+            if (stats != nullptr)
+                stats->n_merit_finalize_skipped++;
+            continue;
+        }
+        frontier_nhoods.emplace_back(id, it->second);
     }
 }
 

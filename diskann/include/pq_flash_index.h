@@ -15,6 +15,7 @@
 #include "hotness_profiler.h"
 #include "merit_memory_pool.h"
 #include "scratch.h"
+#include "relayout_utils.h"
 #include "tsl/robin_map.h"
 #include "tsl/robin_set.h"
 
@@ -22,6 +23,9 @@
 
 namespace diskann
 {
+
+inline constexpr uint8_t MERIT_DC_SEED_MAGIC = 0x4D;
+inline constexpr uint8_t MERIT_DC_FLAG_TOTAL_PAGES_MASK = 0xFF;
 
 template <typename T, typename LabelT = uint32_t> class PQFlashIndex
 {
@@ -135,11 +139,14 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
     // Hot-node + k-hop page order (relayout semantics); disk cache only, max_nodes cap, exclude memory-tier ids.
     DISKANN_DLLEXPORT int build_merit_disk_node_list(const std::string &profile_prefix, uint64_t max_nodes,
                                                      uint64_t memory_tier_exclude_count, uint32_t k_hops,
-                                                     const std::string &layout, std::vector<uint32_t> &node_list) const;
+                                                     const std::string &layout, std::vector<uint32_t> &node_list,
+                                                     std::vector<SeedPageGroup> *seed_page_groups = nullptr) const;
 
     DISKANN_DLLEXPORT uint64_t merit_memory_cached_count() const;
     DISKANN_DLLEXPORT bool merit_mem_pool_contains(uint32_t node_id) const;
     DISKANN_DLLEXPORT bool merit_dc_map_contains(uint32_t node_id) const;
+    // Compare every MERIT disk-cache node against base _disk.index (coords + nbr list).
+    DISKANN_DLLEXPORT int verify_merit_disk_cache_against_base(uint64_t max_reports = 20);
     DISKANN_DLLEXPORT void clear_merit_memory_cache();
     // Load MERIT dynamic pool (Top-N from profile); does not use DiskANN _nhood_cache.
     DISKANN_DLLEXPORT int load_merit_memory_pool(const std::string &profile_prefix,
@@ -207,6 +214,8 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
         uint32_t id = 0;
         char *sec_buf = nullptr;
         MeritDiskLoc loc;
+        // Start sector of the IO buffer in sec_buf (multi-page seed group reads).
+        uint32_t io_base_sector = 0;
     };
 
     void prepare_merit_disk_cache_io(const std::vector<uint32_t> &merit_ids, SSDQueryScratch<T> *query_scratch,
@@ -218,9 +227,11 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
     void complete_merit_disk_cache_io(SSDQueryScratch<T> *query_scratch, std::vector<MeritReadPending> &pending,
                                    const std::unordered_map<uint32_t, std::vector<size_t>> &disk_fanout_groups);
 
-    void finalize_merit_pending_nodes(const std::vector<MeritReadPending> &pending, SSDQueryScratch<T> *query_scratch,
+    void finalize_merit_pending_nodes(const std::vector<MeritReadPending> &pending,
+                                      const std::vector<uint32_t> &merit_order, SSDQueryScratch<T> *query_scratch,
                                       char *sector_scratch, uint64_t &sector_scratch_idx,
-                                      std::vector<std::pair<uint32_t, char *>> &frontier_nhoods);
+                                      std::vector<std::pair<uint32_t, char *>> &frontier_nhoods,
+                                      QueryStats *stats = nullptr);
 
     // index info for multi-node sectors
     // nhood of node `i` is in sector: [i / nnodes_per_sector]

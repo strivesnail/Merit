@@ -24,7 +24,7 @@ int main(int argc, char **argv)
                                                                      "Access profile prefix")(
         "output", po::value<std::string>(&output_json)->required(), "Output JSON path")(
         "layout", po::value<std::string>(&layout_mode)->default_value("node"),
-        "Layout: node(B) | edge(C) | directed_beam(E) | parent(P)")(
+        "Layout: node(B) | edge(C) | directed_beam(E) | directed_beam_pct80(E_pct80) | parent(P)")(
         "k_hops", po::value<uint32_t>(&k_hops)->default_value(1), "k_hops / beam_width for E")(
         "nnodes_per_sector", po::value<uint64_t>(&nnodes_per_sector)->default_value(5), "Page capacity (nodes)")(
         "max_nodes", po::value<uint64_t>(&max_nodes)->default_value(100000), "Disk cache node cap")(

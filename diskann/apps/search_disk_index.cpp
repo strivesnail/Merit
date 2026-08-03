@@ -279,6 +279,11 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
         }
         _pFlashIndex->enable_query_sector_cache(true);
         diskann::cout << "MERIT disk-cache: query-local sector cache enabled (base + disk cache sectors)." << std::endl;
+        if (std::getenv("MERIT_VERIFY_DC") != nullptr)
+        {
+            if (_pFlashIndex->verify_merit_disk_cache_against_base() != 0)
+                diskann::cerr << "MERIT verify: sidecar vs base mismatches detected." << std::endl;
+        }
     }
 
     omp_set_num_threads(num_threads);
@@ -556,6 +561,20 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
             diskann::cout << std::setw(16) << recall;
         }
         diskann::cout << std::endl;
+        if (merit_disk_cache_ratio > 0.0)
+        {
+            auto mean_multiread = diskann::get_mean_stats<uint32_t>(
+                stats, query_num, [](const diskann::QueryStats &s) { return s.n_merit_multiread_ios; });
+            auto mean_io_avoided = diskann::get_mean_stats<uint32_t>(
+                stats, query_num, [](const diskann::QueryStats &s) { return s.n_merit_io_avoided; });
+            auto mean_scover_grp = diskann::get_mean_stats<uint32_t>(
+                stats, query_num, [](const diskann::QueryStats &s) { return s.n_merit_setcover_grouped; });
+            auto mean_finalize_skipped = diskann::get_mean_stats<uint32_t>(
+                stats, query_num, [](const diskann::QueryStats &s) { return s.n_merit_finalize_skipped; });
+            diskann::cout << "      pct80 IO: multiread_ios=" << mean_multiread << " io_avoided=" << mean_io_avoided
+                          << " setcover_grouped=" << mean_scover_grp
+                          << " finalize_skipped=" << mean_finalize_skipped << std::endl;
+        }
         if (enable_query_sector_cache)
         {
             auto mean_max_jump = diskann::get_mean_stats<double>(
@@ -874,7 +893,7 @@ int main(int argc, char **argv)
             "MERIT disk cache node order: 0 = flat Top-N by node_expand; >0 = k-hop page packing (node/edge) or beam width (frontier/directed_beam).");
         optional_configs.add_options()(
             "merit_disk_cache_layout", po::value<std::string>(&merit_disk_cache_layout)->default_value("directed_beam"),
-            "MERIT disk cache packing: flat(A) | node(B) | edge(C) | frontier(D) | directed_beam(E) | parent(P) | edge_dir | edge_star | dir_edge_star | directed_beam_hybrid | directed_star | d | e.");
+            "MERIT disk cache packing: flat(A) | node(B) | edge(C) | frontier(D) | directed_beam(E) | directed_beam_pct80(E_pct80) | parent(P) | edge_dir | edge_star | dir_edge_star | directed_beam_hybrid | directed_star | d | e | e_pct80.");
         optional_configs.add_options()(
             "merit_disk_cache_reuse_prefix", po::value<std::string>(&merit_disk_cache_reuse_prefix)->default_value(""),
             "Load existing disk cache from prefix_merit_dc.{data,nodes} instead of repacking.");
