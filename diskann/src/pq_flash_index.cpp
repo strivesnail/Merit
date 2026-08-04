@@ -47,6 +47,17 @@ inline void save_seed_pages_sidecar(const std::string &path, const std::vector<s
     }
 }
 
+// Sector cache stores data in robin_map-owned arrays; map insert/rehash can invalidate
+// pointers into those arrays. Active node buffers must live in per-query sector_scratch.
+inline char *copy_to_sector_scratch(char *sector_scratch, uint64_t &sector_scratch_idx, const char *src,
+                                    size_t len)
+{
+    char *buf = sector_scratch + sector_scratch_idx * diskann::defaults::SECTOR_LEN;
+    sector_scratch_idx++;
+    memcpy(buf, src, len);
+    return buf;
+}
+
 inline void reorder_frontier_nhoods_by_expand_order(
     const std::vector<uint32_t> &expand_order, std::vector<std::pair<uint32_t, char *>> &frontier_nhoods)
 {
@@ -1729,7 +1740,8 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
                         const auto cache_it = query_scratch->sector_cache.find(sec);
                         if (cache_it != query_scratch->sector_cache.end())
                         {
-                            fnhood.second = const_cast<char *>(cache_it->second.data());
+                            fnhood.second = copy_to_sector_scratch(sector_scratch, sector_scratch_idx,
+                                                                     cache_it->second.data(), read_len);
                             if (stats != nullptr)
                             {
                                 stats->n_sector_cache_hits++;
@@ -1807,15 +1819,7 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
                     if (_query_sector_cache_enabled && read_len <= defaults::SECTOR_LEN)
                     {
                         for (const auto &bm : base_miss_bufs)
-                        {
-                            std::array<char, defaults::SECTOR_LEN> &slot = query_scratch->sector_cache[bm.first];
-                            memcpy(slot.data(), bm.second, read_len);
-                            for (auto &fn : frontier_nhoods)
-                            {
-                                if (fn.second == bm.second)
-                                    fn.second = slot.data();
-                            }
-                        }
+                            memcpy(query_scratch->sector_cache[bm.first].data(), bm.second, read_len);
                     }
                 }
 
@@ -1857,7 +1861,8 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
                     const auto cache_it = query_scratch->sector_cache.find(sec);
                     if (cache_it != query_scratch->sector_cache.end())
                     {
-                        fnhood.second = const_cast<char *>(cache_it->second.data());
+                        fnhood.second = copy_to_sector_scratch(sector_scratch, sector_scratch_idx,
+                                                                 cache_it->second.data(), read_len);
                         if (stats != nullptr)
                         {
                             stats->n_sector_cache_hits++;
@@ -1911,15 +1916,8 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
                         }
                     }
                     for (size_t ri = 0; ri < frontier_read_reqs.size(); ri++)
-                    {
-                        std::array<char, defaults::SECTOR_LEN> &slot = query_scratch->sector_cache[miss_sector_ids[ri]];
-                        memcpy(slot.data(), frontier_read_reqs[ri].buf, read_len);
-                        for (auto &fn : frontier_nhoods)
-                        {
-                            if (fn.second == frontier_read_reqs[ri].buf)
-                                fn.second = slot.data();
-                        }
-                    }
+                        memcpy(query_scratch->sector_cache[miss_sector_ids[ri]].data(),
+                               frontier_read_reqs[ri].buf, read_len);
                     complete_merit_disk_cache_io(query_scratch, merit_pending, merit_disk_fanout);
                 }
             }
@@ -3901,7 +3899,8 @@ void PQFlashIndex<T, LabelT>::prepare_merit_disk_cache_io(
             const auto cit = query_scratch->merit_sector_cache.find(loc.sector);
             if (cit != query_scratch->merit_sector_cache.end())
             {
-                pending[pidx].sec_buf = const_cast<char *>(cit->second.data());
+                pending[pidx].sec_buf =
+                    copy_to_sector_scratch(sector_scratch, sector_scratch_idx, cit->second.data(), read_len);
                 pending[pidx].io_base_sector = loc.sector;
                 if (stats != nullptr)
                     stats->n_sector_cache_hits++;
@@ -3990,24 +3989,16 @@ void PQFlashIndex<T, LabelT>::complete_merit_disk_cache_io(
         if (indices.empty())
             continue;
         const char *primary = pending[indices[0]].sec_buf;
-        char *shared_buf = const_cast<char *>(primary);
         if (_query_sector_cache_enabled && pending[indices[0]].loc.nsectors == 1)
-        {
-            std::array<char, defaults::SECTOR_LEN> &slot = query_scratch->merit_sector_cache[kv.first];
-            memcpy(slot.data(), primary, defaults::SECTOR_LEN);
-            shared_buf = slot.data();
-        }
+            memcpy(query_scratch->merit_sector_cache[kv.first].data(), primary, defaults::SECTOR_LEN);
         else if (_query_sector_cache_enabled && pending[indices[0]].loc.nsectors > 1)
         {
             for (uint16_t si = 0; si < pending[indices[0]].loc.nsectors; ++si)
-            {
-                std::array<char, defaults::SECTOR_LEN> &slot =
-                    query_scratch->merit_sector_cache[kv.first + static_cast<uint32_t>(si)];
-                memcpy(slot.data(), primary + static_cast<size_t>(si) * defaults::SECTOR_LEN, defaults::SECTOR_LEN);
-            }
+                memcpy(query_scratch->merit_sector_cache[kv.first + static_cast<uint32_t>(si)].data(),
+                       primary + static_cast<size_t>(si) * defaults::SECTOR_LEN, defaults::SECTOR_LEN);
         }
         for (size_t idx : indices)
-            pending[idx].sec_buf = shared_buf;
+            pending[idx].sec_buf = const_cast<char *>(primary);
     }
 }
 
@@ -4030,7 +4021,8 @@ void PQFlashIndex<T, LabelT>::finalize_merit_pending_nodes(const std::vector<Mer
             const auto cit = query_scratch->merit_sector_cache.find(mp.loc.sector);
             if (cit != query_scratch->merit_sector_cache.end())
             {
-                sec_buf = const_cast<char *>(cit->second.data());
+                sec_buf = copy_to_sector_scratch(sector_scratch, sector_scratch_idx, cit->second.data(),
+                                                 defaults::SECTOR_LEN);
                 io_base = mp.loc.sector;
             }
         }
