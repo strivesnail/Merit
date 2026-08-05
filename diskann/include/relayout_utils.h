@@ -11,12 +11,14 @@
 namespace diskann
 {
 
-// Multi-page seed group for directed_beam_pct80 (contiguous disk-cache sectors per seed).
+// Multi-page seed group for directed_beam_pct* (contiguous disk-cache sectors per seed).
 struct SeedPageGroup
 {
     uint32_t seed = 0;
-    uint8_t total_pages = 1; // 1..255 contiguous sectors for this seed
+    uint8_t total_pages = 1; // hot pct pages only (multiread span); cold tail excluded
     std::vector<std::vector<uint32_t>> pages;
+    // Remaining profile children (pct < 100): packed in sectors immediately after hot pages.
+    std::vector<std::vector<uint32_t>> cold_pages;
 };
 
 struct VamanaGraph
@@ -129,6 +131,24 @@ DISKANN_DLLEXPORT bool is_directed_beam_pct_layout(const std::string &layout_nor
 DISKANN_DLLEXPORT double directed_beam_pct_layout_threshold(const std::string &layout_norm);
 
 DISKANN_DLLEXPORT int compute_directed_beam_pct_disk_cache_list(
+    const VamanaGraph &graph, const std::vector<uint64_t> &node_expand,
+    const std::vector<std::tuple<uint32_t, uint32_t, uint64_t>> &directed_edges, uint64_t nnodes_per_sector,
+    uint64_t max_nodes, const std::unordered_set<uint32_t> &exclude_ids, std::vector<uint32_t> &node_list,
+    double pct_threshold, const char *layout_label, std::vector<SeedPageGroup> *seed_page_groups = nullptr);
+
+// MERIT disk cache: seed-centric replica packing (no global dedup); map indexes seed_id only.
+DISKANN_DLLEXPORT bool is_directed_seed_replica_layout(const std::string &layout_norm);
+DISKANN_DLLEXPORT bool is_directed_seed_replica_pct_layout(const std::string &layout_norm);
+DISKANN_DLLEXPORT bool is_seed_only_disk_cache_layout(const std::string &layout_norm);
+DISKANN_DLLEXPORT double directed_seed_replica_layout_threshold(const std::string &layout_norm);
+
+DISKANN_DLLEXPORT int compute_directed_seed_replica_beam_disk_cache_list(
+    const VamanaGraph &graph, const std::vector<uint64_t> &node_expand,
+    const std::vector<std::tuple<uint32_t, uint32_t, uint64_t>> &directed_edges, uint64_t nnodes_per_sector,
+    uint32_t beam_width, uint64_t max_nodes, const std::unordered_set<uint32_t> &exclude_ids,
+    std::vector<uint32_t> &node_list, std::vector<SeedPageGroup> *seed_page_groups = nullptr);
+
+DISKANN_DLLEXPORT int compute_directed_seed_replica_disk_cache_list(
     const VamanaGraph &graph, const std::vector<uint64_t> &node_expand,
     const std::vector<std::tuple<uint32_t, uint32_t, uint64_t>> &directed_edges, uint64_t nnodes_per_sector,
     uint64_t max_nodes, const std::unordered_set<uint32_t> &exclude_ids, std::vector<uint32_t> &node_list,

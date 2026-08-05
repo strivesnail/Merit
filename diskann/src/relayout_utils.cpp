@@ -196,12 +196,29 @@ std::string normalize_disk_cache_layout(std::string layout)
         layout = "frontier_page";
     if (layout == "frontier_dup" || layout == "frontierdup")
         layout = "frontier_dup";
+    if (layout == "directed_beam_pct30" || layout == "e_pct30" || layout == "dbeam_pct30")
+        layout = "directed_beam_pct30";
+    if (layout == "directed_beam_pct50" || layout == "e_pct50" || layout == "dbeam_pct50")
+        layout = "directed_beam_pct50";
     if (layout == "directed_beam_pct80" || layout == "e_pct80" || layout == "dbeam_pct80")
         layout = "directed_beam_pct80";
     if (layout == "directed_beam_pct90" || layout == "e_pct90" || layout == "dbeam_pct90")
         layout = "directed_beam_pct90";
     if (layout == "directed_beam_pct100" || layout == "e_pct100" || layout == "dbeam_pct100")
         layout = "directed_beam_pct100";
+    if (layout == "directed_seed_replica" || layout == "seed_replica" || layout == "seedreplica" ||
+        layout == "seed_only")
+        layout = "directed_seed_replica";
+    if (layout == "directed_seed_replica_pct30" || layout == "seed_replica_pct30" || layout == "seed_pct30")
+        layout = "directed_seed_replica_pct30";
+    if (layout == "directed_seed_replica_pct50" || layout == "seed_replica_pct50" || layout == "seed_pct50")
+        layout = "directed_seed_replica_pct50";
+    if (layout == "directed_seed_replica_pct80" || layout == "seed_replica_pct80" || layout == "seed_pct80")
+        layout = "directed_seed_replica_pct80";
+    if (layout == "directed_seed_replica_pct90" || layout == "seed_replica_pct90" || layout == "seed_pct90")
+        layout = "directed_seed_replica_pct90";
+    if (layout == "directed_seed_replica_pct100" || layout == "seed_replica_pct100" || layout == "seed_pct100")
+        layout = "directed_seed_replica_pct100";
     if (layout == "directed_beam" || layout == "dir_beam" || layout == "dbeam")
         layout = "directed_beam";
     if (layout == "directed_star" || layout == "dstar")
@@ -240,7 +257,9 @@ std::string normalize_disk_cache_layout(std::string layout)
 bool disk_cache_layout_allows_replicas(const std::string &layout)
 {
     const std::string n = normalize_disk_cache_layout(layout);
-    return n == "edge_replica" || n == "edge_star_dup" || n == "frontier_dup";
+    return n == "edge_replica" || n == "edge_star_dup" || n == "frontier_dup" ||
+           n == "directed_seed_replica" || n == "directed_seed_replica_pct80" ||
+           n == "directed_seed_replica_pct90" || n == "directed_seed_replica_pct100";
 }
 
 static double path_average_weight(const std::vector<uint32_t> &path,
@@ -2411,7 +2430,8 @@ static int directed_beam_pack_pages(const VamanaGraph &graph,
                                       const std::unordered_map<uint64_t, uint64_t> &weights, uint32_t beam_width,
                                       DirectedBeamStarMode star_mode, DirectedBeamSeedMode seed_mode,
                                       const PagePackConfig &cfg_in, std::vector<std::vector<uint32_t>> &pages,
-                                      std::vector<bool> &assigned)
+                                      std::vector<bool> &assigned, bool replica_no_dedup = false,
+                                      std::vector<SeedPageGroup> *seed_groups_out = nullptr)
 {
     if (graph.num_points == 0 || cfg_in.page_cap == 0)
         return -1;
@@ -2419,6 +2439,9 @@ static int directed_beam_pack_pages(const VamanaGraph &graph,
         beam_width = 1;
 
     PagePackConfig cfg = cfg_in;
+    if (replica_no_dedup)
+        cfg.allow_duplicate_output = true;
+
     std::unordered_map<uint32_t, std::vector<std::pair<uint32_t, uint64_t>>> out_edges;
     out_edges.reserve(directed_edges.size());
     std::unordered_map<uint32_t, std::vector<std::pair<uint32_t, uint64_t>>> in_edges;
@@ -2511,7 +2534,18 @@ static int directed_beam_pack_pages(const VamanaGraph &graph,
     std::unordered_set<uint32_t> output_seen;
     if (disk_cache_capped)
         output_seen.reserve(static_cast<size_t>(cfg.max_output_nodes));
-    const std::unordered_set<uint32_t> *seen_ptr = disk_cache_capped ? &output_seen : nullptr;
+    const std::unordered_set<uint32_t> *seen_ptr =
+        replica_no_dedup ? nullptr : (disk_cache_capped ? &output_seen : nullptr);
+
+    auto can_pack_node = [&](uint32_t node) {
+        if (replica_no_dedup)
+            return disk_cache_node_eligible(node, cfg);
+        return is_node_pending_pack(node_in_list, node);
+    };
+
+    std::vector<bool> replica_pending;
+    if (replica_no_dedup)
+        replica_pending.assign(static_cast<size_t>(graph.num_points), true);
 
     const size_t max_children = (beam_width > 0) ? static_cast<size_t>(beam_width - 1) : 0;
 
@@ -2519,14 +2553,19 @@ static int directed_beam_pack_pages(const VamanaGraph &graph,
     {
         if (disk_cache_capped && output_count >= cfg.max_output_nodes)
             break;
-        if (!is_node_pending_pack(node_in_list, parent))
+        if (!can_pack_node(parent))
             continue;
+
+        if (replica_no_dedup)
+            std::fill(replica_pending.begin(), replica_pending.end(), true);
+        std::vector<bool> &pack_state = replica_no_dedup ? replica_pending : node_in_list;
 
         std::vector<uint32_t> page_nodes;
         std::unordered_set<uint32_t> on_page;
         page_nodes.reserve(static_cast<size_t>(cfg.page_cap));
         place_node_on_page(page_nodes, on_page, cfg.page_cap, parent, &cfg, seen_ptr);
-        node_in_list[parent] = false;
+        if (!replica_no_dedup)
+            node_in_list[parent] = false;
 
         if (star_mode == DirectedBeamStarMode::Directed)
         {
@@ -2541,7 +2580,7 @@ static int directed_beam_pack_pages(const VamanaGraph &graph,
                     if (disk_cache_capped && output_count >= cfg.max_output_nodes)
                         break;
                     const uint32_t child = child_w.first;
-                    if (!is_node_pending_pack(node_in_list, child))
+                    if (!can_pack_node(child))
                         continue;
                     if (!graph_has_edge(adj, parent, child))
                         continue;
@@ -2549,13 +2588,14 @@ static int directed_beam_pack_pages(const VamanaGraph &graph,
                     place_node_on_page(page_nodes, on_page, cfg.page_cap, child, &cfg, seen_ptr);
                     if (page_nodes.size() > before)
                     {
-                        node_in_list[child] = false;
+                        if (!replica_no_dedup)
+                            node_in_list[child] = false;
                         added++;
                     }
                 }
             }
             directed_star_fill_page_from_nodes(graph, out_edges, directed_in, directed_in_list, cfg.page_cap,
-                                               page_nodes, on_page, cfg, seen_ptr, node_in_list);
+                                               page_nodes, on_page, cfg, seen_ptr, pack_state);
         }
         else if (star_mode == DirectedBeamStarMode::Hybrid)
         {
@@ -2570,7 +2610,7 @@ static int directed_beam_pack_pages(const VamanaGraph &graph,
                     if (disk_cache_capped && output_count >= cfg.max_output_nodes)
                         break;
                     const uint32_t child = child_w.first;
-                    if (!is_node_pending_pack(node_in_list, child))
+                    if (!can_pack_node(child))
                         continue;
                     if (!graph_has_edge(adj, parent, child))
                         continue;
@@ -2578,14 +2618,15 @@ static int directed_beam_pack_pages(const VamanaGraph &graph,
                     place_node_on_page(page_nodes, on_page, cfg.page_cap, child, &cfg, seen_ptr);
                     if (page_nodes.size() > before)
                     {
-                        node_in_list[child] = false;
+                        if (!replica_no_dedup)
+                            node_in_list[child] = false;
                         added++;
                     }
                 }
             }
             hybrid_star_fill_page_from_nodes(graph, weights, adj, out_edges, directed_in, profile_edge_in_list,
                                              directed_in_list, cfg.page_cap, page_nodes, on_page, cfg, seen_ptr,
-                                             node_in_list);
+                                             pack_state);
         }
         else if (star_mode == DirectedBeamStarMode::None)
         {
@@ -2600,7 +2641,7 @@ static int directed_beam_pack_pages(const VamanaGraph &graph,
                     if (disk_cache_capped && output_count >= cfg.max_output_nodes)
                         break;
                     const uint32_t child = child_w.first;
-                    if (!is_node_pending_pack(node_in_list, child))
+                    if (!can_pack_node(child))
                         continue;
                     if (!graph_has_edge(adj, parent, child))
                         continue;
@@ -2608,7 +2649,8 @@ static int directed_beam_pack_pages(const VamanaGraph &graph,
                     place_node_on_page(page_nodes, on_page, cfg.page_cap, child, &cfg, seen_ptr);
                     if (page_nodes.size() > before)
                     {
-                        node_in_list[child] = false;
+                        if (!replica_no_dedup)
+                            node_in_list[child] = false;
                         added++;
                     }
                 }
@@ -2618,7 +2660,7 @@ static int directed_beam_pack_pages(const VamanaGraph &graph,
         {
             fill_page_after_seed_directed_topk_and_starfill(parent, graph, adj, weights, out_edges,
                                                             profile_edge_in_list, beam_width, cfg, seen_ptr,
-                                                            node_in_list, page_nodes, on_page, output_count);
+                                                            pack_state, page_nodes, on_page, output_count);
         }
 
         if (page_nodes.empty())
@@ -2627,9 +2669,17 @@ static int directed_beam_pack_pages(const VamanaGraph &graph,
         for (uint32_t node : page_nodes)
             assigned[node] = true;
         append_page_nodes_to_disk_cache_list(page_nodes, cfg, output_count, output_seen);
+        if (seed_groups_out != nullptr)
+        {
+            SeedPageGroup grp;
+            grp.seed = parent;
+            grp.total_pages = 1;
+            grp.pages.push_back(page_nodes);
+            seed_groups_out->push_back(grp);
+        }
     }
 
-    if (disk_cache_capped && output_count < cfg.max_output_nodes)
+    if (!replica_no_dedup && disk_cache_capped && output_count < cfg.max_output_nodes)
     {
         for (uint32_t node : nodes_by_expand)
         {
@@ -2675,11 +2725,48 @@ static int compute_directed_beam_disk_cache_list_with_seed(
     return 0;
 }
 
+int compute_directed_seed_replica_beam_disk_cache_list(
+    const VamanaGraph &graph, const std::vector<uint64_t> &node_expand,
+    const std::vector<std::tuple<uint32_t, uint32_t, uint64_t>> &directed_edges, uint64_t nnodes_per_sector,
+    uint32_t beam_width, uint64_t max_nodes, const std::unordered_set<uint32_t> &exclude_ids,
+    std::vector<uint32_t> &node_list, std::vector<SeedPageGroup> *seed_page_groups)
+{
+    node_list.clear();
+    if (seed_page_groups != nullptr)
+        seed_page_groups->clear();
+    if (max_nodes == 0 || graph.num_points == 0 || nnodes_per_sector == 0)
+        return 0;
+
+    const auto weights = build_undirected_weights(directed_edges);
+    PagePackConfig cfg;
+    cfg.page_cap = nnodes_per_sector;
+    cfg.max_output_nodes = max_nodes;
+    cfg.allow_duplicate_output = true;
+    cfg.skip_output = &exclude_ids;
+    cfg.node_expand = &node_expand;
+    cfg.output_nodes = &node_list;
+
+    std::vector<std::vector<uint32_t>> pages;
+    std::vector<bool> assigned;
+    std::vector<SeedPageGroup> groups;
+    if (directed_beam_pack_pages(graph, node_expand, directed_edges, weights, beam_width,
+                                 DirectedBeamStarMode::Undirected, DirectedBeamSeedMode::ParentOut, cfg, pages,
+                                 assigned, true, seed_page_groups != nullptr ? &groups : nullptr) != 0)
+        return -1;
+
+    if (node_list.empty())
+        return -1;
+    if (seed_page_groups != nullptr)
+        *seed_page_groups = std::move(groups);
+    log_disk_cache_node_list_stats(node_list, "directed_seed_replica (Layout E replica)");
+    return 0;
+}
+
 // max_pages=0 in split_directed_neighbors_into_pages => no page-count cap.
 static constexpr uint8_t MERIT_DC_PCT_UNLIMITED_PAGES = 0;
 
 static size_t directed_out_edges_for_pct_threshold(
-    const std::vector<std::pair<uint32_t, uint64_t>> &sorted_out, double pct_threshold)
+    const std::vector<std::pair<uint32_t, uint64_t>> &sorted_out, double pct_threshold, uint64_t page_cap)
 {
     uint64_t total = 0;
     for (const auto &edge : sorted_out)
@@ -2695,7 +2782,28 @@ static size_t directed_out_edges_for_pct_threshold(
         if (static_cast<double>(cum) / static_cast<double>(total) >= pct_threshold)
             break;
     }
-    return k;
+    // Page-aligned threshold:
+    // - Page0 carries seed + neighbors => first-page neighbor capacity = page_cap - 1.
+    // - Later pages are pure neighbors => page_cap neighbors per page.
+    // We keep adding neighbors until the page containing the threshold-crossing neighbor is full.
+    if (page_cap == 0 || k == 0)
+        return k;
+
+    const size_t total_nbrs = sorted_out.size();
+    const size_t first_cap = (page_cap > 0) ? static_cast<size_t>(page_cap - 1) : 0;
+    size_t rounded = k;
+    if (k <= first_cap)
+    {
+        rounded = first_cap;
+    }
+    else
+    {
+        const size_t rem = k - first_cap;
+        const size_t pp = static_cast<size_t>(page_cap);
+        const size_t pages_after = (rem + pp - 1) / pp;
+        rounded = first_cap + pages_after * pp;
+    }
+    return std::min(rounded, total_nbrs);
 }
 
 static void split_directed_neighbors_into_pages(uint32_t seed, const std::vector<uint32_t> &directed_nbrs,
@@ -2720,6 +2828,20 @@ static void split_directed_neighbors_into_pages(uint32_t seed, const std::vector
             page.push_back(directed_nbrs[idx++]);
         if (!page.empty())
             pages.push_back(page);
+    }
+}
+
+static void split_nodes_into_pages(const std::vector<uint32_t> &nodes, uint64_t page_cap,
+                                   std::vector<std::vector<uint32_t>> &pages)
+{
+    pages.clear();
+    if (page_cap == 0 || nodes.empty())
+        return;
+    for (uint32_t node : nodes)
+    {
+        if (pages.empty() || pages.back().size() >= page_cap)
+            pages.emplace_back();
+        pages.back().push_back(node);
     }
 }
 
@@ -2792,6 +2914,8 @@ static int directed_beam_pct_pack_pages(const VamanaGraph &graph, const std::vec
     const std::unordered_set<uint32_t> *seen_ptr = disk_cache_capped ? &output_seen : nullptr;
 
     uint64_t multi_page_seeds = 0;
+    uint64_t cold_tail_pages = 0;
+    uint64_t cold_tail_nodes = 0;
     seed_groups.clear();
 
     for (uint32_t parent : parents)
@@ -2805,7 +2929,7 @@ static int directed_beam_pct_pack_pages(const VamanaGraph &graph, const std::vec
         if (it == out_edges.end())
             continue;
 
-        const size_t k = directed_out_edges_for_pct_threshold(it->second, pct_threshold);
+        const size_t k = directed_out_edges_for_pct_threshold(it->second, pct_threshold, cfg.page_cap);
         std::vector<uint32_t> directed_nbrs;
         directed_nbrs.reserve(k);
         for (size_t i = 0; i < k && i < it->second.size(); ++i)
@@ -2870,12 +2994,65 @@ static int directed_beam_pct_pack_pages(const VamanaGraph &graph, const std::vec
         grp.seed = parent;
         grp.total_pages = static_cast<uint8_t>(built_pages.size());
         grp.pages = built_pages;
+
+        if (pct_threshold < 1.0 - 1e-9)
+        {
+            std::vector<uint32_t> cold_nbrs;
+            cold_nbrs.reserve(it->second.size() - k);
+            for (size_t i = k; i < it->second.size(); ++i)
+            {
+                const uint32_t child = it->second[i].first;
+                if (!is_node_pending_pack(node_in_list, child))
+                    continue;
+                if (!graph_has_edge(adj, parent, child))
+                    continue;
+                cold_nbrs.push_back(child);
+            }
+
+            std::vector<std::vector<uint32_t>> cold_template;
+            split_nodes_into_pages(cold_nbrs, cfg.page_cap, cold_template);
+            for (const auto &template_page : cold_template)
+            {
+                if (disk_cache_capped && output_count >= cfg.max_output_nodes)
+                    break;
+
+                std::vector<uint32_t> page_nodes;
+                std::unordered_set<uint32_t> on_page;
+                page_nodes.reserve(static_cast<size_t>(cfg.page_cap));
+                for (uint32_t node : template_page)
+                {
+                    if (disk_cache_capped && output_count >= cfg.max_output_nodes)
+                        break;
+                    if (!is_node_pending_pack(node_in_list, node))
+                        continue;
+                    if (!graph_has_edge(adj, parent, node))
+                        continue;
+                    const size_t before = page_nodes.size();
+                    place_node_on_page(page_nodes, on_page, cfg.page_cap, node, &cfg, seen_ptr);
+                    if (page_nodes.size() > before)
+                        node_in_list[node] = false;
+                }
+                if (page_nodes.empty())
+                    continue;
+                grp.cold_pages.push_back(page_nodes);
+            }
+        }
+
         seed_groups.push_back(grp);
         if (grp.total_pages > 1)
             multi_page_seeds++;
 
         for (const auto &page_nodes : built_pages)
         {
+            pages.push_back(page_nodes);
+            for (uint32_t node : page_nodes)
+                assigned[node] = true;
+            append_page_nodes_to_disk_cache_list(page_nodes, cfg, output_count, output_seen);
+        }
+        for (const auto &page_nodes : grp.cold_pages)
+        {
+            cold_tail_pages++;
+            cold_tail_nodes += page_nodes.size();
             pages.push_back(page_nodes);
             for (uint32_t node : page_nodes)
                 assigned[node] = true;
@@ -2899,20 +3076,346 @@ static int directed_beam_pct_pack_pages(const VamanaGraph &graph, const std::vec
     if (!seed_groups.empty())
     {
         diskann::cout << "MERIT disk-cache " << layout_name << ": seed_groups=" << seed_groups.size()
-                      << " multi_page_seeds=" << multi_page_seeds << std::endl;
+                      << " multi_page_seeds=" << multi_page_seeds;
+        if (cold_tail_pages > 0)
+            diskann::cout << " cold_tail_pages=" << cold_tail_pages << " cold_tail_nodes=" << cold_tail_nodes;
+        diskann::cout << std::endl;
     }
+
+    return 0;
+}
+
+struct SeedReplicaPackPlan
+{
+    uint32_t parent = 0;
+    std::vector<std::vector<uint32_t>> template_pages;
+    std::vector<std::vector<uint32_t>> cold_template_pages;
+    size_t next_page = 0;
+    size_t next_cold_page = 0;
+    int group_idx = -1;
+};
+
+static bool seed_replica_materialize_page(const std::vector<std::vector<uint32_t>> &adj, uint32_t parent,
+                                          const std::vector<uint32_t> &template_page, const PagePackConfig &cfg,
+                                          std::vector<uint32_t> &page_nodes)
+{
+    page_nodes.clear();
+    std::unordered_set<uint32_t> on_page;
+    page_nodes.reserve(static_cast<size_t>(cfg.page_cap));
+
+    for (uint32_t node : template_page)
+    {
+        if (node == parent)
+        {
+            if (!disk_cache_node_eligible(parent, cfg))
+                continue;
+            place_node_on_page(page_nodes, on_page, cfg.page_cap, parent, &cfg, nullptr);
+            continue;
+        }
+        if (!disk_cache_node_eligible(node, cfg))
+            continue;
+        if (!graph_has_edge(adj, parent, node))
+            continue;
+        place_node_on_page(page_nodes, on_page, cfg.page_cap, node, &cfg, nullptr);
+    }
+
+    if (page_nodes.empty())
+        return false;
+    const bool only_seed = (page_nodes.size() == 1 && page_nodes[0] == parent);
+    return !only_seed;
+}
+
+static void log_seed_replica_uncovered_expand_nodes(const std::vector<uint64_t> &node_expand,
+                                                    const PagePackConfig &cfg,
+                                                    const std::unordered_set<uint32_t> &on_seed_pages)
+{
+    if (cfg.node_expand == nullptr)
+        return;
+
+    uint64_t expand_total = 0;
+    uint64_t expand_missing = 0;
+    const uint32_t num_points = static_cast<uint32_t>(node_expand.size());
+    for (uint32_t id = 0; id < num_points; ++id)
+    {
+        if (cfg.skip_output != nullptr && cfg.skip_output->count(id) > 0)
+            continue;
+        if (node_heat(node_expand, id) == 0)
+            continue;
+        expand_total++;
+        if (on_seed_pages.count(id) == 0)
+            expand_missing++;
+    }
+
+    if (expand_missing > 0)
+    {
+        diskann::cout << "MERIT disk-cache seed_replica: " << expand_missing << " / " << expand_total
+                      << " expand nodes are not on any seed page (no flat append). Increase ratio or lower pct."
+                      << std::endl;
+    }
+}
+
+static int directed_beam_pct_seed_replica_pack_pages(
+    const VamanaGraph &graph, const std::vector<uint64_t> &node_expand,
+    const std::vector<std::tuple<uint32_t, uint32_t, uint64_t>> &directed_edges, double pct_threshold,
+    const char *layout_name, const PagePackConfig &cfg_in, std::vector<std::vector<uint32_t>> &pages,
+    std::vector<bool> &assigned, std::vector<SeedPageGroup> &seed_groups)
+{
+    if (graph.num_points == 0 || cfg_in.page_cap == 0)
+        return -1;
+
+    PagePackConfig cfg = cfg_in;
+    cfg.allow_duplicate_output = true;
+
+    std::unordered_map<uint32_t, std::vector<std::pair<uint32_t, uint64_t>>> out_edges;
+    out_edges.reserve(directed_edges.size());
+    for (const auto &edge : directed_edges)
+    {
+        const uint32_t parent = std::get<0>(edge);
+        const uint32_t child = std::get<1>(edge);
+        const uint64_t count = std::get<2>(edge);
+        if (count == 0 || parent >= graph.num_points || child >= graph.num_points)
+            continue;
+        out_edges[parent].emplace_back(child, count);
+    }
+
+    std::vector<uint32_t> parents;
+    parents.reserve(out_edges.size());
+    for (auto &kv : out_edges)
+    {
+        auto &children = kv.second;
+        std::sort(children.begin(), children.end(), [](const auto &a, const auto &b) {
+            return a.second > b.second || (a.second == b.second && a.first < b.first);
+        });
+        parents.push_back(kv.first);
+    }
+    std::sort(parents.begin(), parents.end(), [&](uint32_t a, uint32_t b) {
+        uint64_t wa = 0, wb = 0;
+        for (const auto &p : out_edges[a])
+            wa += p.second;
+        for (const auto &p : out_edges[b])
+            wb += p.second;
+        if (wa != wb)
+            return wa > wb;
+        return a < b;
+    });
+
+    const auto adj = build_undirected_adjacency(graph);
+    assigned.assign(graph.num_points, false);
+
+    uint64_t output_count = 0;
+    std::unordered_set<uint32_t> output_seen;
+    if (cfg.max_output_nodes > 0)
+        output_seen.reserve(static_cast<size_t>(cfg.max_output_nodes));
+    std::unordered_set<uint32_t> unique_on_seed_pages;
+
+    uint64_t multi_page_seeds = 0;
+    uint64_t cold_tail_pages = 0;
+    uint64_t cold_tail_nodes = 0;
+    uint64_t skipped_parents = 0;
+    uint64_t seeds_blocked_by_budget = 0;
+    seed_groups.clear();
+
+    std::vector<SeedReplicaPackPlan> plans;
+    plans.reserve(parents.size());
+    for (uint32_t parent : parents)
+    {
+        if (!disk_cache_node_eligible(parent, cfg))
+        {
+            skipped_parents++;
+            continue;
+        }
+
+        const auto it = out_edges.find(parent);
+        if (it == out_edges.end())
+            continue;
+
+        const size_t k = directed_out_edges_for_pct_threshold(it->second, pct_threshold, cfg.page_cap);
+        std::vector<uint32_t> directed_nbrs;
+        directed_nbrs.reserve(k);
+        for (size_t i = 0; i < k && i < it->second.size(); ++i)
+        {
+            const uint32_t child = it->second[i].first;
+            if (!disk_cache_node_eligible(child, cfg))
+                continue;
+            if (!graph_has_edge(adj, parent, child))
+                continue;
+            directed_nbrs.push_back(child);
+        }
+
+        SeedReplicaPackPlan plan;
+        plan.parent = parent;
+        split_directed_neighbors_into_pages(parent, directed_nbrs, cfg.page_cap, MERIT_DC_PCT_UNLIMITED_PAGES,
+                                            plan.template_pages);
+        if (plan.template_pages.empty())
+            continue;
+
+        if (pct_threshold < 1.0 - 1e-9)
+        {
+            std::vector<uint32_t> cold_nbrs;
+            cold_nbrs.reserve(it->second.size() - k);
+            for (size_t i = k; i < it->second.size(); ++i)
+            {
+                const uint32_t child = it->second[i].first;
+                if (!disk_cache_node_eligible(child, cfg))
+                    continue;
+                if (!graph_has_edge(adj, parent, child))
+                    continue;
+                cold_nbrs.push_back(child);
+            }
+            split_nodes_into_pages(cold_nbrs, cfg.page_cap, plan.cold_template_pages);
+        }
+        plans.push_back(std::move(plan));
+    }
+
+    const auto budget_left = [&]() {
+        return cfg.max_output_nodes == 0 || output_count < cfg.max_output_nodes;
+    };
+
+    const auto emit_plan_page = [&](SeedReplicaPackPlan &plan) -> bool {
+        if (plan.next_page >= plan.template_pages.size())
+            return false;
+        if (!budget_left())
+            return false;
+
+        std::vector<uint32_t> page_nodes;
+        if (!seed_replica_materialize_page(adj, plan.parent, plan.template_pages[plan.next_page], cfg, page_nodes))
+        {
+            plan.next_page++;
+            return false;
+        }
+
+        if (plan.group_idx < 0)
+        {
+            SeedPageGroup grp;
+            grp.seed = plan.parent;
+            grp.total_pages = 1;
+            grp.pages.push_back(page_nodes);
+            seed_groups.push_back(grp);
+            plan.group_idx = static_cast<int>(seed_groups.size()) - 1;
+        }
+        else
+        {
+            SeedPageGroup &grp = seed_groups[static_cast<size_t>(plan.group_idx)];
+            const size_t pages_before = grp.pages.size();
+            grp.pages.push_back(page_nodes);
+            grp.total_pages = static_cast<uint8_t>(grp.pages.size());
+            if (pages_before == 1 && grp.pages.size() == 2)
+                multi_page_seeds++;
+        }
+
+        pages.push_back(page_nodes);
+        for (uint32_t node : page_nodes)
+        {
+            assigned[node] = true;
+            unique_on_seed_pages.insert(node);
+        }
+        append_page_nodes_to_disk_cache_list(page_nodes, cfg, output_count, output_seen);
+        plan.next_page++;
+        return true;
+    };
+
+    const auto emit_plan_cold_page = [&](SeedReplicaPackPlan &plan) -> bool {
+        if (plan.group_idx < 0 || plan.next_cold_page >= plan.cold_template_pages.size())
+            return false;
+        if (!budget_left())
+            return false;
+
+        std::vector<uint32_t> page_nodes;
+        if (!seed_replica_materialize_page(adj, plan.parent, plan.cold_template_pages[plan.next_cold_page], cfg,
+                                           page_nodes))
+        {
+            plan.next_cold_page++;
+            return false;
+        }
+
+        SeedPageGroup &grp = seed_groups[static_cast<size_t>(plan.group_idx)];
+        grp.cold_pages.push_back(page_nodes);
+        pages.push_back(page_nodes);
+        cold_tail_pages++;
+        cold_tail_nodes += page_nodes.size();
+        for (uint32_t node : page_nodes)
+        {
+            assigned[node] = true;
+            unique_on_seed_pages.insert(node);
+        }
+        append_page_nodes_to_disk_cache_list(page_nodes, cfg, output_count, output_seen);
+        plan.next_cold_page++;
+        return true;
+    };
+
+    // Phase 1: every eligible profile parent gets its first seed page before any seed grows multi-page.
+    for (SeedReplicaPackPlan &plan : plans)
+    {
+        if (!budget_left())
+            break;
+        if (plan.next_page == 0)
+            emit_plan_page(plan);
+    }
+
+    // Phase 2: round-robin extra neighbor pages until budget is exhausted.
+    bool progress = true;
+    while (progress && budget_left())
+    {
+        progress = false;
+        for (SeedReplicaPackPlan &plan : plans)
+        {
+            if (!budget_left())
+                break;
+            if (plan.group_idx < 0 || plan.next_page >= plan.template_pages.size())
+                continue;
+            if (emit_plan_page(plan))
+                progress = true;
+        }
+    }
+
+    // Phase 3: place cold-tail pages (pct<100) next to each seed group on disk writeout.
+    progress = true;
+    while (progress && budget_left())
+    {
+        progress = false;
+        for (SeedReplicaPackPlan &plan : plans)
+        {
+            if (!budget_left())
+                break;
+            if (emit_plan_cold_page(plan))
+                progress = true;
+        }
+    }
+
+    for (const SeedReplicaPackPlan &plan : plans)
+    {
+        if (plan.group_idx < 0)
+            seeds_blocked_by_budget++;
+    }
+
+    if (!seed_groups.empty() || !plans.empty())
+    {
+        diskann::cout << "MERIT disk-cache " << layout_name << ": seed_groups=" << seed_groups.size()
+                      << " profile_parents=" << parents.size() << " pack_plans=" << plans.size()
+                      << " multi_page_seeds=" << multi_page_seeds << " skipped_parents=" << skipped_parents
+                      << " seeds_blocked_by_budget=" << seeds_blocked_by_budget;
+        if (cold_tail_pages > 0)
+            diskann::cout << " cold_tail_pages=" << cold_tail_pages << " cold_tail_nodes=" << cold_tail_nodes;
+        diskann::cout << std::endl;
+    }
+    log_seed_replica_uncovered_expand_nodes(node_expand, cfg, unique_on_seed_pages);
 
     return 0;
 }
 
 bool is_directed_beam_pct_layout(const std::string &layout_norm)
 {
-    return layout_norm == "directed_beam_pct80" || layout_norm == "directed_beam_pct90" ||
-           layout_norm == "directed_beam_pct100";
+    return layout_norm == "directed_beam_pct30" || layout_norm == "directed_beam_pct50" ||
+           layout_norm == "directed_beam_pct80" ||
+           layout_norm == "directed_beam_pct90" || layout_norm == "directed_beam_pct100";
 }
 
 double directed_beam_pct_layout_threshold(const std::string &layout_norm)
 {
+    if (layout_norm == "directed_beam_pct30")
+        return 0.30;
+    if (layout_norm == "directed_beam_pct50")
+        return 0.50;
     if (layout_norm == "directed_beam_pct90")
         return 0.90;
     if (layout_norm == "directed_beam_pct100")
@@ -2944,6 +3447,73 @@ int compute_directed_beam_pct_disk_cache_list(
     std::vector<SeedPageGroup> groups;
     if (directed_beam_pct_pack_pages(graph, node_expand, directed_edges, pct_threshold, layout_label, cfg, pages,
                                      assigned, groups) != 0)
+        return -1;
+
+    if (node_list.empty())
+        return -1;
+    if (seed_page_groups != nullptr)
+        *seed_page_groups = std::move(groups);
+    log_disk_cache_node_list_stats(node_list, layout_label);
+    return 0;
+}
+
+bool is_directed_seed_replica_layout(const std::string &layout_norm)
+{
+    return layout_norm == "directed_seed_replica" || is_directed_seed_replica_pct_layout(layout_norm);
+}
+
+bool is_directed_seed_replica_pct_layout(const std::string &layout_norm)
+{
+    return layout_norm == "directed_seed_replica_pct30" || layout_norm == "directed_seed_replica_pct50" ||
+           layout_norm == "directed_seed_replica_pct80" || layout_norm == "directed_seed_replica_pct90" ||
+           layout_norm == "directed_seed_replica_pct100";
+}
+
+bool is_seed_only_disk_cache_layout(const std::string &layout_norm)
+{
+    (void)layout_norm;
+    // Seed-replica changes packing only; lookup/expand stay Layout-E unless MERIT_SEED_ONLY_* env opts in.
+    return false;
+}
+
+double directed_seed_replica_layout_threshold(const std::string &layout_norm)
+{
+    if (layout_norm == "directed_seed_replica_pct30")
+        return 0.30;
+    if (layout_norm == "directed_seed_replica_pct50")
+        return 0.50;
+    if (layout_norm == "directed_seed_replica_pct90")
+        return 0.90;
+    if (layout_norm == "directed_seed_replica_pct80")
+        return 0.80;
+    return 1.0;
+}
+
+int compute_directed_seed_replica_disk_cache_list(
+    const VamanaGraph &graph, const std::vector<uint64_t> &node_expand,
+    const std::vector<std::tuple<uint32_t, uint32_t, uint64_t>> &directed_edges, uint64_t nnodes_per_sector,
+    uint64_t max_nodes, const std::unordered_set<uint32_t> &exclude_ids, std::vector<uint32_t> &node_list,
+    double pct_threshold, const char *layout_label, std::vector<SeedPageGroup> *seed_page_groups)
+{
+    node_list.clear();
+    if (seed_page_groups != nullptr)
+        seed_page_groups->clear();
+    if (max_nodes == 0 || graph.num_points == 0 || nnodes_per_sector == 0)
+        return 0;
+
+    PagePackConfig cfg;
+    cfg.page_cap = nnodes_per_sector;
+    cfg.max_output_nodes = max_nodes;
+    cfg.allow_duplicate_output = true;
+    cfg.skip_output = &exclude_ids;
+    cfg.node_expand = &node_expand;
+    cfg.output_nodes = &node_list;
+
+    std::vector<std::vector<uint32_t>> pages;
+    std::vector<bool> assigned;
+    std::vector<SeedPageGroup> groups;
+    if (directed_beam_pct_seed_replica_pack_pages(graph, node_expand, directed_edges, pct_threshold, layout_label, cfg,
+                                                  pages, assigned, groups) != 0)
         return -1;
 
     if (node_list.empty())
@@ -4561,6 +5131,21 @@ int merit_dump_disk_cache_pages(const VamanaGraph &graph, const std::vector<uint
         std::string label = std::string("Layout E (") + layout + ")";
         if (compute_directed_beam_pct_disk_cache_list(graph, node_expand, directed_edges, nnodes_per_sector, max_nodes,
                                                       exclude_ids, node_list, pct, label.c_str(), &seed_groups) != 0)
+            return -1;
+        for (const SeedPageGroup &group : seed_groups)
+            for (const auto &page : group.pages)
+                pages.push_back(page);
+        return 0;
+    }
+
+    if (is_directed_seed_replica_layout(layout))
+    {
+        std::vector<SeedPageGroup> seed_groups;
+        const double pct = directed_seed_replica_layout_threshold(layout);
+        std::string label = std::string("seed_replica (") + layout + ")";
+        if (compute_directed_seed_replica_disk_cache_list(graph, node_expand, directed_edges, nnodes_per_sector,
+                                                          max_nodes, exclude_ids, node_list, pct, label.c_str(),
+                                                          &seed_groups) != 0)
             return -1;
         for (const SeedPageGroup &group : seed_groups)
             for (const auto &page : group.pages)

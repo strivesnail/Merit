@@ -318,10 +318,27 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
     // MERIT disk-cache: packed side file; location = (sector_id, slot_in_sector)
     std::shared_ptr<AlignedFileReader> _merit_disk_reader;
     tsl::robin_map<uint32_t, std::vector<MeritDiskLoc>> _merit_dc_map;
+    tsl::robin_map<uint32_t, std::vector<uint32_t>> _merit_dc_seed_page_nbrs;
+    // seed -> member -> loc on that seed's page(s); used for parent/seed-first IO routing
+    tsl::robin_map<uint32_t, tsl::robin_map<uint32_t, MeritDiskLoc>> _merit_dc_seed_member_loc;
+    tsl::robin_map<uint32_t, MeritDiskLoc> _merit_dc_seed_canonical_loc;
     std::string _merit_dc_path;
     uint64_t _merit_dc_num_nodes = 0;
     bool _merit_unified_disk = false;
     uint64_t _merit_region_byte_offset = 0;
+    bool _merit_seed_only_layout = false;
+    bool _merit_seed_only_expand = false;
+    bool _merit_seed_first_lookup = false;
+
+    void merit_get_expand_neighbors(uint32_t expand_id, char *node_disk_buf, const uint32_t *&out_nbrs,
+                                    uint64_t &out_nnbrs) const;
+
+    void update_merit_seed_first_lookup_flag();
+
+    bool merit_disk_cache_lookup_hit(uint32_t node_id, const SSDQueryScratch<T> *query_scratch) const;
+
+    bool merit_resolve_disk_cache_loc(uint32_t node_id, const SSDQueryScratch<T> *query_scratch,
+                                      MeritDiskLoc &out_loc) const;
 
     // thread-specific scratch
     ConcurrentQueue<SSDThreadData<T> *> _thread_data;

@@ -277,8 +277,18 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
             diskann::cerr << "Failed to build/load MERIT disk cache." << std::endl;
             return -1;
         }
-        _pFlashIndex->enable_query_sector_cache(true);
-        diskann::cout << "MERIT disk-cache: query-local sector cache enabled (base + disk cache sectors)." << std::endl;
+        const char *disable_sc = std::getenv("MERIT_DISABLE_QUERY_SECTOR_CACHE");
+        if (disable_sc != nullptr && std::strcmp(disable_sc, "0") != 0)
+        {
+            diskann::cout << "MERIT disk-cache: query-local sector cache disabled (MERIT_DISABLE_QUERY_SECTOR_CACHE)."
+                          << std::endl;
+        }
+        else
+        {
+            _pFlashIndex->enable_query_sector_cache(true);
+            diskann::cout << "MERIT disk-cache: query-local sector cache enabled (base + disk cache sectors)."
+                          << std::endl;
+        }
         if (std::getenv("MERIT_VERIFY_DC") != nullptr)
         {
             if (_pFlashIndex->verify_merit_disk_cache_against_base() != 0)
@@ -893,7 +903,7 @@ int main(int argc, char **argv)
             "MERIT disk cache node order: 0 = flat Top-N by node_expand; >0 = k-hop page packing (node/edge) or beam width (frontier/directed_beam).");
         optional_configs.add_options()(
             "merit_disk_cache_layout", po::value<std::string>(&merit_disk_cache_layout)->default_value("directed_beam"),
-            "MERIT disk cache packing: flat(A) | node(B) | edge(C) | frontier(D) | directed_beam(E) | directed_beam_pct80(E_pct80) | parent(P) | edge_dir | edge_star | dir_edge_star | directed_beam_hybrid | directed_star | d | e | e_pct80.");
+            "MERIT disk cache packing: flat(A) | node(B) | edge(C) | frontier(D) | directed_beam(E) | directed_beam_pct80(E_pct80) | directed_seed_replica_pct100(seed_replica) | parent(P) | edge_dir | edge_star | dir_edge_star | directed_beam_hybrid | directed_star | d | e | e_pct80.");
         optional_configs.add_options()(
             "merit_disk_cache_reuse_prefix", po::value<std::string>(&merit_disk_cache_reuse_prefix)->default_value(""),
             "Load existing disk cache from prefix_merit_dc.{data,nodes} instead of repacking.");
