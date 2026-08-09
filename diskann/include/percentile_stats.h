@@ -72,6 +72,13 @@ struct QueryStats
         unsigned hop = 0;
         std::vector<uint32_t> merit_nodes;
         std::vector<uint32_t> base_nodes;
+        struct PhysicalRead
+        {
+            bool merit = false;
+            uint64_t sector = 0;
+            uint16_t nsectors = 1;
+        };
+        std::vector<PhysicalRead> physical_reads;
     };
     // Populated when hop-frontier recording is enabled (diagnostics).
     std::vector<HopFrontierRecord> hop_frontier_trace;

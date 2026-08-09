@@ -1674,8 +1674,6 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
             this->_hotness_profiler.on_directed_edge(parent_it->second, node_id);
     };
     auto profile_on_first_visit = [this, query_scratch](uint32_t id, uint32_t parent) {
-        if (!this->_hotness_profiler.enabled())
-            return;
         if (query_scratch->profile_parent.find(id) == query_scratch->profile_parent.end())
             query_scratch->profile_parent.insert({id, parent});
     };
@@ -1732,6 +1730,7 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
     uint32_t cmps = 0;
     uint32_t hops = 0;
     uint32_t num_ios = 0;
+    uint32_t while_iteration = 0;
 
     // cleared every iteration
         std::vector<uint32_t> frontier;
@@ -1749,6 +1748,7 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
 
         while (retset.has_unexpanded_node() && num_ios < io_limit)
         {
+            const uint32_t current_iteration = while_iteration++;
             // clear iteration state
             frontier.clear();
             merit_frontier.clear();
@@ -1815,7 +1815,7 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
             if (_record_hop_frontier && stats != nullptr && (!merit_frontier.empty() || !frontier.empty()))
             {
                 QueryStats::HopFrontierRecord rec;
-                rec.hop = stats->n_hops;
+                rec.hop = current_iteration;
                 rec.merit_nodes = merit_frontier;
                 rec.base_nodes = frontier;
                 stats->hop_frontier_trace.push_back(std::move(rec));
@@ -1898,6 +1898,8 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
                             stats->n_4k++;
                             stats->n_ios++;
                             stats->n_disk_reads++;
+                            if (_record_hop_frontier && !stats->hop_frontier_trace.empty())
+                                stats->hop_frontier_trace.back().physical_reads.push_back({false, sec, 1});
                         }
                         num_ios++;
                     }
@@ -2016,6 +2018,8 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
                             stats->n_4k++;
                             stats->n_ios++;
                             stats->n_disk_reads++;
+                            if (_record_hop_frontier && !stats->hop_frontier_trace.empty())
+                                stats->hop_frontier_trace.back().physical_reads.push_back({false, sec, 1});
                         }
                         num_ios++;
                     }
@@ -2071,6 +2075,8 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
                         stats->n_4k++;
                         stats->n_ios++;
                         stats->n_disk_reads++;
+                        if (_record_hop_frontier && !stats->hop_frontier_trace.empty())
+                            stats->hop_frontier_trace.back().physical_reads.push_back({false, sec, 1});
                     }
                     num_ios++;
                 }
@@ -4054,17 +4060,8 @@ bool PQFlashIndex<T, LabelT>::merit_resolve_disk_cache_loc(uint32_t node_id,
     if (_merit_dc_seed_member_loc.empty())
         return false;
 
-    const auto seed_it = _merit_dc_seed_member_loc.find(node_id);
-    if (seed_it != _merit_dc_seed_member_loc.end())
-    {
-        const auto self_it = seed_it->second.find(node_id);
-        if (self_it != seed_it->second.end())
-        {
-            out_loc = self_it->second;
-            return true;
-        }
-    }
-
+    // Strict parent-seed lookup: every non-medoid node may only use the page
+    // belonging to the graph parent that first discovered it.
     if (query_scratch != nullptr)
     {
         const auto parent_it = query_scratch->profile_parent.find(node_id);
@@ -4081,8 +4078,23 @@ bool PQFlashIndex<T, LabelT>::merit_resolve_disk_cache_loc(uint32_t node_id,
                     return true;
                 }
             }
+            return false;
         }
     }
+
+    // Bootstrap exception: the medoid has no graph parent, so start from its
+    // own seed page. Non-medoid nodes never fall back to self-seed.
+    const auto seed_it = _merit_dc_seed_member_loc.find(node_id);
+    if (seed_it != _merit_dc_seed_member_loc.end())
+    {
+        const auto self_it = seed_it->second.find(node_id);
+        if (self_it != seed_it->second.end())
+        {
+            out_loc = self_it->second;
+            return true;
+        }
+    }
+
     return false;
 }
 
@@ -4096,8 +4108,7 @@ bool PQFlashIndex<T, LabelT>::merit_disk_cache_lookup_hit(uint32_t node_id,
     if (_merit_seed_first_lookup)
     {
         MeritDiskLoc loc;
-        if (merit_resolve_disk_cache_loc(node_id, query_scratch, loc))
-            return true;
+        return merit_resolve_disk_cache_loc(node_id, query_scratch, loc);
     }
 
     const auto it = _merit_dc_map.find(node_id);
@@ -4146,6 +4157,8 @@ void PQFlashIndex<T, LabelT>::prepare_merit_disk_cache_io(
         uint32_t id = 0;
         size_t loc_idx = 0;
         MeritDiskLoc loc;
+        uint32_t io_base_sector = 0;
+        uint16_t io_nsectors = 1;
     };
     std::vector<PendingChoice> choices;
     choices.reserve(merit_ids.size());
@@ -4159,9 +4172,19 @@ void PQFlashIndex<T, LabelT>::prepare_merit_disk_cache_io(
         {
             MeritDiskLoc loc;
             if (merit_resolve_disk_cache_loc(id, query_scratch, loc) && chosen_ids.insert(id).second)
-                choices.push_back({id, 0, loc});
-            else
-                unresolved.push_back(id);
+            {
+                uint32_t seed_id = id;
+                if (query_scratch != nullptr)
+                {
+                    const auto parent_it = query_scratch->profile_parent.find(id);
+                    if (parent_it != query_scratch->profile_parent.end())
+                        seed_id = parent_it->second;
+                }
+                const auto canonical_it = _merit_dc_seed_canonical_loc.find(seed_id);
+                const MeritDiskLoc io_span =
+                    canonical_it != _merit_dc_seed_canonical_loc.end() ? canonical_it->second : loc;
+                choices.push_back({id, 0, loc, io_span.sector, io_span.nsectors});
+            }
         }
     }
     else
@@ -4217,6 +4240,8 @@ void PQFlashIndex<T, LabelT>::prepare_merit_disk_cache_io(
             pc.id = id_loc.first;
             pc.loc_idx = id_loc.second;
             pc.loc = it->second[id_loc.second];
+            pc.io_base_sector = pc.loc.sector;
+            pc.io_nsectors = pc.loc.nsectors;
             if (!chosen_ids.insert(pc.id).second)
                 continue;
             choices.push_back(pc);
@@ -4260,6 +4285,8 @@ void PQFlashIndex<T, LabelT>::prepare_merit_disk_cache_io(
                 pc.id = id;
                 pc.loc_idx = cover_li;
                 pc.loc = map_it->second[cover_li];
+                pc.io_base_sector = span_base;
+                pc.io_nsectors = anchor.loc.nsectors;
                 if (!chosen_ids.insert(pc.id).second)
                 {
                     id_it = need_ids.erase(id_it);
@@ -4284,8 +4311,8 @@ void PQFlashIndex<T, LabelT>::prepare_merit_disk_cache_io(
     {
         for (const PendingChoice &pc : choices)
         {
-            if (pc.loc.nsectors > 1)
-                multiread_spans.push_back({pc.loc.sector, pc.loc.nsectors});
+            if (pc.io_nsectors > 1)
+                multiread_spans.push_back({pc.io_base_sector, pc.io_nsectors});
         }
     }
 
@@ -4303,9 +4330,9 @@ void PQFlashIndex<T, LabelT>::prepare_merit_disk_cache_io(
     {
         const MeritDiskLoc loc = pc.loc;
         const uint32_t io_base =
-            disable_multiread ? loc.sector : multiread_root_for_sector(loc.sector);
+            disable_multiread ? loc.sector : multiread_root_for_sector(pc.io_base_sector);
         query_scratch->read_merit_disk_cache_sectors.insert(loc.sector);
-        pending.push_back({pc.id, nullptr, loc, io_base});
+        pending.push_back({pc.id, nullptr, loc, io_base, disable_multiread ? uint16_t{1} : pc.io_nsectors});
         const size_t pidx = pending.size() - 1;
 
         if (stats != nullptr)
@@ -4385,8 +4412,11 @@ void PQFlashIndex<T, LabelT>::prepare_merit_disk_cache_io(
         sector_scratch_idx += buf_sectors;
         pending[indices[0]].sec_buf = read_buf;
         for (size_t idx : indices)
+        {
             pending[idx].io_base_sector =
                 disable_multiread ? pending[idx].loc.sector : disk_cache_sec;
+            pending[idx].io_nsectors = group_nsectors;
+        }
         const uint64_t byte_len = static_cast<uint64_t>(group_nsectors) * defaults::SECTOR_LEN;
         const uint64_t off =
             (_merit_unified_disk ? _merit_region_byte_offset : 0) +
@@ -4397,6 +4427,9 @@ void PQFlashIndex<T, LabelT>::prepare_merit_disk_cache_io(
             stats->n_disk_reads++;
             if (group_nsectors > 1)
                 stats->n_merit_multiread_ios++;
+            if (_record_hop_frontier && !stats->hop_frontier_trace.empty())
+                stats->hop_frontier_trace.back().physical_reads.push_back(
+                    {true, disk_cache_sec, group_nsectors});
         }
     }
 }
@@ -4412,11 +4445,11 @@ void PQFlashIndex<T, LabelT>::complete_merit_disk_cache_io(
         if (indices.empty())
             continue;
         const char *primary = pending[indices[0]].sec_buf;
-        if (_query_sector_cache_enabled && pending[indices[0]].loc.nsectors == 1)
+        if (_query_sector_cache_enabled && pending[indices[0]].io_nsectors == 1)
             memcpy(query_scratch->merit_sector_cache[kv.first].data(), primary, defaults::SECTOR_LEN);
-        else if (_query_sector_cache_enabled && pending[indices[0]].loc.nsectors > 1)
+        else if (_query_sector_cache_enabled && pending[indices[0]].io_nsectors > 1)
         {
-            for (uint16_t si = 0; si < pending[indices[0]].loc.nsectors; ++si)
+            for (uint16_t si = 0; si < pending[indices[0]].io_nsectors; ++si)
                 memcpy(query_scratch->merit_sector_cache[kv.first + static_cast<uint32_t>(si)].data(),
                        primary + static_cast<size_t>(si) * defaults::SECTOR_LEN, defaults::SECTOR_LEN);
         }

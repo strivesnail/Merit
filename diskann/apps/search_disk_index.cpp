@@ -714,15 +714,19 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
             std::ofstream hout(dump_hop_trace_path);
             if (hout.is_open())
             {
-                hout << "query_id,hop,source,node_id\n";
+                hout << "query_id,iteration,record_type,source,node_id,sector,nsectors\n";
                 for (size_t qi = 0; qi < query_num; qi++)
                 {
                     for (const auto &rec : stats[qi].hop_frontier_trace)
                     {
                         for (uint32_t nid : rec.merit_nodes)
-                            hout << qi << ',' << rec.hop << ",merit," << nid << '\n';
+                            hout << qi << ',' << rec.hop << ",frontier,merit," << nid << ",,\n";
                         for (uint32_t nid : rec.base_nodes)
-                            hout << qi << ',' << rec.hop << ",base," << nid << '\n';
+                            hout << qi << ',' << rec.hop << ",frontier,base," << nid << ",,\n";
+                        for (const auto &read : rec.physical_reads)
+                            hout << qi << ',' << rec.hop << ",physical_read,"
+                                 << (read.merit ? "merit" : "base") << ",," << read.sector << ','
+                                 << read.nsectors << '\n';
                     }
                 }
                 hout.close();

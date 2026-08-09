@@ -216,6 +216,8 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
         MeritDiskLoc loc;
         // Start sector of the IO buffer in sec_buf (multi-page seed group reads).
         uint32_t io_base_sector = 0;
+        // Number of contiguous 4KB pages in the single physical IO.
+        uint16_t io_nsectors = 1;
     };
 
     void prepare_merit_disk_cache_io(const std::vector<uint32_t> &merit_ids, SSDQueryScratch<T> *query_scratch,
