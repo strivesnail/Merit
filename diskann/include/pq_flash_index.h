@@ -342,6 +342,9 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
     bool merit_resolve_disk_cache_loc(uint32_t node_id, const SSDQueryScratch<T> *query_scratch,
                                       MeritDiskLoc &out_loc) const;
 
+    bool merit_loc_in_query_cache(const SSDQueryScratch<T> *query_scratch, uint32_t base_sector,
+                                  uint16_t nsectors) const;
+
     // thread-specific scratch
     ConcurrentQueue<SSDThreadData<T> *> _thread_data;
     uint64_t _max_nthreads;
