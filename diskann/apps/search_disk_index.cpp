@@ -907,7 +907,7 @@ int main(int argc, char **argv)
             "MERIT disk cache node order: 0 = flat Top-N by node_expand; >0 = k-hop page packing (node/edge) or beam width (frontier/directed_beam).");
         optional_configs.add_options()(
             "merit_disk_cache_layout", po::value<std::string>(&merit_disk_cache_layout)->default_value("directed_beam"),
-            "MERIT disk cache packing: flat(A) | node(B) | edge(C) | frontier(D) | directed_beam(E) | directed_beam_pct80(E_pct80) | directed_seed_replica_pct100(seed_replica) | parent(P) | edge_dir | edge_star | dir_edge_star | directed_beam_hybrid | directed_star | d | e | e_pct80.");
+            "MERIT disk cache packing: flat(A) | node(B) | edge(C) | frontier(D) | directed_beam(E) | directed_beam_pct80(E_pct80) | directed_child_only_pct100(scheme_i) | directed_child_replica_pct100(scheme_i_unlimited) | directed_seed_replica_pct100(seed_replica) | parent(P) | edge_dir | edge_star | dir_edge_star | directed_beam_hybrid | directed_star | d | e | e_pct80.");
         optional_configs.add_options()(
             "merit_disk_cache_reuse_prefix", po::value<std::string>(&merit_disk_cache_reuse_prefix)->default_value(""),
             "Load existing disk cache from prefix_merit_dc.{data,nodes} instead of repacking.");

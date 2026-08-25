@@ -331,6 +331,7 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
     bool _merit_seed_only_layout = false;
     bool _merit_seed_only_expand = false;
     bool _merit_seed_first_lookup = false;
+    bool _merit_child_only_layout = false;
 
     void merit_get_expand_neighbors(uint32_t expand_id, char *node_disk_buf, const uint32_t *&out_nbrs,
                                     uint64_t &out_nnbrs) const;

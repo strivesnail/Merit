@@ -136,6 +136,28 @@ DISKANN_DLLEXPORT int compute_directed_beam_pct_disk_cache_list(
     uint64_t max_nodes, const std::unordered_set<uint32_t> &exclude_ids, std::vector<uint32_t> &node_list,
     double pct_threshold, const char *layout_label, std::vector<SeedPageGroup> *seed_page_groups = nullptr);
 
+// MERIT disk cache: one physical copy per node, with child-only extents keyed by parent.
+// Unlike seed_replica, the parent is not repeated on its child pages (except the graph medoid bootstrap page).
+DISKANN_DLLEXPORT bool is_directed_child_only_layout(const std::string &layout_norm);
+DISKANN_DLLEXPORT double directed_child_only_layout_threshold(const std::string &layout_norm);
+
+DISKANN_DLLEXPORT int compute_directed_child_only_disk_cache_list(
+    const VamanaGraph &graph, const std::vector<uint64_t> &node_expand,
+    const std::vector<std::tuple<uint32_t, uint32_t, uint64_t>> &directed_edges, uint64_t nnodes_per_sector,
+    uint64_t max_nodes, const std::unordered_set<uint32_t> &exclude_ids, std::vector<uint32_t> &node_list,
+    double pct_threshold, const char *layout_label, std::vector<SeedPageGroup> *seed_page_groups = nullptr);
+
+// Unlimited-space Scheme I: materialize every profiled parent->child relation,
+// allowing the child to appear under multiple parents while still omitting the parent seed.
+DISKANN_DLLEXPORT bool is_directed_child_replica_layout(const std::string &layout_norm);
+DISKANN_DLLEXPORT double directed_child_replica_layout_threshold(const std::string &layout_norm);
+
+DISKANN_DLLEXPORT int compute_directed_child_replica_disk_cache_list(
+    const VamanaGraph &graph, const std::vector<uint64_t> &node_expand,
+    const std::vector<std::tuple<uint32_t, uint32_t, uint64_t>> &directed_edges, uint64_t nnodes_per_sector,
+    uint64_t max_slots, const std::unordered_set<uint32_t> &exclude_ids, std::vector<uint32_t> &node_list,
+    double pct_threshold, const char *layout_label, std::vector<SeedPageGroup> *seed_page_groups = nullptr);
+
 // MERIT disk cache: seed-centric replica packing (no global dedup); map indexes seed_id only.
 DISKANN_DLLEXPORT bool is_directed_seed_replica_layout(const std::string &layout_norm);
 DISKANN_DLLEXPORT bool is_directed_seed_replica_pct_layout(const std::string &layout_norm);
