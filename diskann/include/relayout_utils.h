@@ -176,6 +176,26 @@ DISKANN_DLLEXPORT int compute_directed_seed_replica_disk_cache_list(
     uint64_t max_nodes, const std::unordered_set<uint32_t> &exclude_ids, std::vector<uint32_t> &node_list,
     double pct_threshold, const char *layout_label, std::vector<SeedPageGroup> *seed_page_groups = nullptr);
 
+// Seed replica with benefit-per-page ranking under byte budget (no flat append).
+DISKANN_DLLEXPORT bool is_directed_seed_replica_benefit_layout(const std::string &layout_norm);
+DISKANN_DLLEXPORT double directed_seed_replica_benefit_layout_threshold(const std::string &layout_norm);
+DISKANN_DLLEXPORT int compute_directed_seed_replica_benefit_disk_cache_list(
+    const VamanaGraph &graph, const std::vector<uint64_t> &node_expand,
+    const std::vector<std::tuple<uint32_t, uint32_t, uint64_t>> &directed_edges, uint64_t nnodes_per_sector,
+    uint64_t max_nodes, const std::unordered_set<uint32_t> &exclude_ids, std::vector<uint32_t> &node_list,
+    double pct_threshold, const char *layout_label, std::vector<SeedPageGroup> *seed_page_groups = nullptr);
+
+DISKANN_DLLEXPORT bool is_directed_seed_replica_budget_layout(const std::string &layout_norm);
+
+// Hybrid: top out-heat seeds as replica core (core_frac of slots) + unique expand fill.
+DISKANN_DLLEXPORT bool is_directed_seed_core_unique_fill_layout(const std::string &layout_norm);
+DISKANN_DLLEXPORT double directed_seed_core_unique_fill_frac(const std::string &layout_norm);
+DISKANN_DLLEXPORT int compute_directed_seed_core_unique_fill_disk_cache_list(
+    const VamanaGraph &graph, const std::vector<uint64_t> &node_expand,
+    const std::vector<std::tuple<uint32_t, uint32_t, uint64_t>> &directed_edges, uint64_t nnodes_per_sector,
+    uint64_t max_nodes, const std::unordered_set<uint32_t> &exclude_ids, std::vector<uint32_t> &node_list,
+    double core_frac, const char *layout_label, std::vector<SeedPageGroup> *seed_page_groups = nullptr);
+
 DISKANN_DLLEXPORT int compute_directed_beam_pct80_disk_cache_list(
     const VamanaGraph &graph, const std::vector<uint64_t> &node_expand,
     const std::vector<std::tuple<uint32_t, uint32_t, uint64_t>> &directed_edges, uint64_t nnodes_per_sector,

@@ -26,6 +26,9 @@ class HotnessProfiler
     DISKANN_DLLEXPORT bool enabled() const;
 
     DISKANN_DLLEXPORT void on_node_expand(uint32_t node_id);
+    // First time a node enters the per-query visited set (access heat; independent of edges).
+    DISKANN_DLLEXPORT void on_node_visit(uint32_t node_id);
+    // Child expanded with known discoverer parent: credit parent out-heat (+ optional edge map).
     DISKANN_DLLEXPORT void on_directed_edge(uint32_t parent, uint32_t child);
     DISKANN_DLLEXPORT void on_merit_hop_frontier(const std::vector<uint32_t> &merit_nodes);
 
@@ -34,6 +37,10 @@ class HotnessProfiler
 
     DISKANN_DLLEXPORT static int load(const std::string &profile_prefix, std::vector<uint64_t> &node_expand,
                                       std::vector<std::tuple<uint32_t, uint32_t, uint64_t>> &directed_edges);
+    // Optional; returns -1 if file missing (older profiles).
+    DISKANN_DLLEXPORT static int load_node_visit(const std::string &profile_prefix, std::vector<uint64_t> &node_visit);
+    DISKANN_DLLEXPORT static int load_node_out_heat(const std::string &profile_prefix,
+                                                    std::vector<uint64_t> &node_out_heat);
 
     // Layout D: sorted merit frontier -> weight (hop co-occurrence from profiling).
     DISKANN_DLLEXPORT static int load_frontier_templates(
@@ -43,6 +50,9 @@ class HotnessProfiler
     bool _enabled = false;
     uint64_t _num_points = 0;
     std::unique_ptr<std::atomic<uint64_t>[]> _node_expand;
+    std::unique_ptr<std::atomic<uint64_t>[]> _node_visit;
+    // Per-parent credit: child expanded after being first-discovered from this node.
+    std::unique_ptr<std::atomic<uint64_t>[]> _node_out_heat;
     mutable std::mutex _edge_mutex;
     std::unordered_map<uint64_t, uint64_t> _directed_edges;
     mutable std::mutex _frontier_mutex;

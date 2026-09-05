@@ -1700,6 +1700,7 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
     auto profile_on_first_visit = [this, query_scratch](uint32_t id, uint32_t parent) {
         if (query_scratch->profile_parent.find(id) == query_scratch->profile_parent.end())
             query_scratch->profile_parent.insert({id, parent});
+        this->_hotness_profiler.on_node_visit(id);
     };
     Timer query_timer, io_timer, cpu_timer;
 
@@ -1750,6 +1751,7 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
     compute_dists(&best_medoid, 1, dist_scratch);
     retset.insert(Neighbor(best_medoid, dist_scratch[0]));
     visited.insert(best_medoid);
+    this->_hotness_profiler.on_node_visit(best_medoid);
 
     uint32_t cmps = 0;
     uint32_t hops = 0;
@@ -2927,6 +2929,9 @@ int PQFlashIndex<T, LabelT>::build_merit_disk_node_list(const std::string &profi
          layout != "directed_beam" && !is_directed_beam_pct_layout(layout) &&
          !is_directed_child_only_layout(layout) && !is_directed_child_replica_layout(layout) &&
          !is_directed_seed_replica_layout(layout) &&
+         !diskann::is_directed_seed_replica_benefit_layout(layout) &&
+         !diskann::is_directed_seed_replica_budget_layout(layout) &&
+         !diskann::is_directed_seed_core_unique_fill_layout(layout) &&
          layout != "directed_beam_dual" &&
          layout != "directed_beam_inseed" &&
          layout != "directed_beam_tight" && layout != "directed_beam_starfill" &&
@@ -3165,10 +3170,49 @@ int PQFlashIndex<T, LabelT>::build_merit_disk_node_list(const std::string &profi
                       << node_list.size() << " seed_groups="
                       << (seed_page_groups != nullptr ? seed_page_groups->size() : 0)
                       << " (exclude memory-tier=" << exclude_ids.size() << ")." << std::endl;
-        append_uncounted_nodes_to_disk_list(node_expand,
-                                            merit_disk_append_cap_for_full_coverage(node_expand, exclude_ids, node_list,
-                                                                                    max_nodes),
-                                            exclude_ids, node_list);
+        append_uncounted_nodes_to_disk_list(node_expand, max_nodes, exclude_ids, node_list);
+        return 0;
+    }
+
+    if (diskann::is_directed_seed_replica_benefit_layout(layout))
+    {
+        const double pct = diskann::directed_seed_replica_benefit_layout_threshold(layout);
+        if (compute_directed_seed_replica_benefit_disk_cache_list(graph, node_expand, edges, nps, max_nodes,
+                                                                  exclude_ids, node_list, pct, layout.c_str(),
+                                                                  seed_page_groups) != 0)
+            return -1;
+        diskann::cout << "MERIT disk-cache node list: seed_replica_benefit (" << layout << ") packing, slots="
+                      << node_list.size() << " seed_groups="
+                      << (seed_page_groups != nullptr ? seed_page_groups->size() : 0)
+                      << " (exclude memory-tier=" << exclude_ids.size() << ", benefit-ranked seeds)." << std::endl;
+        append_uncounted_nodes_to_disk_list(node_expand, max_nodes, exclude_ids, node_list);
+        return 0;
+    }
+
+    if (diskann::is_directed_seed_replica_budget_layout(layout))
+    {
+        const double pct = directed_seed_replica_layout_threshold("directed_seed_replica_pct100");
+        if (compute_directed_seed_replica_disk_cache_list(graph, node_expand, edges, nps, max_nodes, exclude_ids,
+                                                          node_list, pct, layout.c_str(), seed_page_groups) != 0)
+            return -1;
+        diskann::cout << "MERIT disk-cache node list: seed_replica_budget (" << layout << ") packing, slots="
+                      << node_list.size() << " seed_groups="
+                      << (seed_page_groups != nullptr ? seed_page_groups->size() : 0)
+                      << " (strict ratio budget, out-heat ranked, no flat append)." << std::endl;
+        return 0;
+    }
+
+    if (diskann::is_directed_seed_core_unique_fill_layout(layout))
+    {
+        const double core_frac = diskann::directed_seed_core_unique_fill_frac(layout);
+        if (compute_directed_seed_core_unique_fill_disk_cache_list(graph, node_expand, edges, nps, max_nodes,
+                                                                   exclude_ids, node_list, core_frac, layout.c_str(),
+                                                                   seed_page_groups) != 0)
+            return -1;
+        diskann::cout << "MERIT disk-cache node list: seed_core_unique_fill (" << layout << ") slots="
+                      << node_list.size() << " seed_groups="
+                      << (seed_page_groups != nullptr ? seed_page_groups->size() : 0)
+                      << " (core_frac=" << core_frac << ", unique expand fill)." << std::endl;
         return 0;
     }
 
@@ -3865,7 +3909,10 @@ int PQFlashIndex<T, LabelT>::build_and_load_merit_disk_cache(const std::string &
          std::strcmp(std::getenv("MERIT_SEED_ONLY_EXPAND"), "0") != 0);
     std::vector<SeedPageGroup> *seed_groups_ptr =
         (is_directed_beam_pct_layout(layout_norm) || is_directed_child_only_layout(layout_norm) ||
-         is_directed_child_replica_layout(layout_norm) || is_directed_seed_replica_layout(layout_norm))
+         is_directed_child_replica_layout(layout_norm) || is_directed_seed_replica_layout(layout_norm) ||
+         diskann::is_directed_seed_replica_benefit_layout(layout_norm) ||
+         diskann::is_directed_seed_replica_budget_layout(layout_norm) ||
+         diskann::is_directed_seed_core_unique_fill_layout(layout_norm))
             ? &seed_groups
             : nullptr;
     if (build_merit_disk_node_list(profile_prefix, max_nodes, rank_skip, k_hops, layout, node_list, seed_groups_ptr) !=

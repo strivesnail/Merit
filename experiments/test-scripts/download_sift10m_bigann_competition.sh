@@ -1,36 +1,32 @@
 #!/usr/bin/env bash
-# SIFT 100M — same as DiskANN / Big-ANN Benchmarks (bigann-100M):
-#   https://github.com/harsha-simhadri/big-ann-benchmarks/blob/main/benchmark/datasets.py
-#   BigANNDataset(nb_M=100): first 100M vectors of base.1B.u8bin + public query + GT_100M/bigann-100M
+# SIFT 10M — Big-ANN Benchmarks bigann-10M (first 10M of base.1B.u8bin).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-DATA_DIR="${DATA_DIR:-${REPO_ROOT}/data/sift100m}"
-NB="${NB:-100000000}"
+DATA_DIR="${DATA_DIR:-${REPO_ROOT}/data/sift10m}"
+NB="${NB:-10000000}"
 DIM="${DIM:-128}"
 ORIG_NB="${ORIG_NB:-1000000000}"
 
 BASE_URL="https://dl.fbaipublicfiles.com/billion-scale-ann-benchmarks/bigann"
-GT_URL="https://dl.fbaipublicfiles.com/billion-scale-ann-benchmarks/GT_100M/bigann-100M"
+GT_URL="https://dl.fbaipublicfiles.com/billion-scale-ann-benchmarks/GT_10M/bigann-10M"
 
 DS_FN="base.1B.u8bin"
 QS_FN="query.public.10K.u8bin"
 CROP_FN="${DS_FN}.crop_nb_${NB}"
 
-# DiskANN build/search paths (uint8 competition format)
 BASE_OUT="${DATA_DIR}/sift_base.u8bin"
 QUERY_OUT="${DATA_DIR}/sift_query.u8bin"
 GT_OUT="${DATA_DIR}/sift_groundtruth.bin"
-
-LOG="${DATA_DIR}/download_bigann100m.log"
+LOG="${DATA_DIR}/download_bigann10m.log"
 
 mkdir -p "${DATA_DIR}"
 
 crop_bytes() {
   python3 - <<PY
 nb, dim = int(${NB}), int(${DIM})
-print(8 + nb * dim)  # uint8 u8bin header + payload
+print(8 + nb * dim)
 PY
 }
 
@@ -55,7 +51,7 @@ download_crop_base() {
   if [[ -f "${crop_path}" ]] && [[ "$(stat -c%s "${crop_path}")" -eq "${need}" ]]; then
     echo "Cropped base already present: ${crop_path}"
   else
-    echo "=== Download cropped base (~$((need / 1024 / 1024 / 1024)) GiB) via HTTP range ==="
+    echo "=== Download cropped base (~$((need / 1024 / 1024)) MiB) via HTTP range ==="
     rm -f "${crop_path}.partial"
     # wget --quota is unreliable on large files; use curl byte range instead.
     curl -L --retry 5 --retry-delay 3 \
@@ -79,21 +75,18 @@ download_small() {
 }
 
 {
-  echo "download_sift100m_bigann_competition $(date -Is)"
+  echo "download_sift10m_bigann_competition $(date -Is)"
   echo "DATA_DIR=${DATA_DIR} NB=${NB}"
-  echo "Ref: big-ann-benchmarks BigANNDataset(100) / DiskANN T2 BIGANN"
 
   download_small "${BASE_URL}/${QS_FN}" "${DATA_DIR}/${QS_FN}" "query"
   ln -sf "${QS_FN}" "${QUERY_OUT}"
 
-  download_small "${GT_URL}" "${DATA_DIR}/bigann-100M" "ground truth"
-  ln -sf "bigann-100M" "${GT_OUT}"
+  download_small "${GT_URL}" "${DATA_DIR}/bigann-10M" "ground truth"
+  ln -sf "bigann-10M" "${GT_OUT}"
 
   download_crop_base
 
-  echo ""
   echo "Done $(date -Is)"
-  ls -lh "${DATA_DIR}/${CROP_FN}" "${DATA_DIR}/${QS_FN}" "${DATA_DIR}/bigann-100M"
+  ls -lh "${DATA_DIR}/${CROP_FN}" "${DATA_DIR}/${QS_FN}" "${DATA_DIR}/bigann-10M"
   echo "Use: --data_type uint8 --dist_fn l2"
-  echo "  base=${BASE_OUT} query=${QUERY_OUT} gt=${GT_OUT}"
 } 2>&1 | tee -a "${LOG}"
