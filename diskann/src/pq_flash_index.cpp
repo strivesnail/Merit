@@ -4207,6 +4207,8 @@ void PQFlashIndex<T, LabelT>::merit_dyn_clear_ready_pair_unlocked(uint32_t inser
     auto pair_it = _merit_ready_pairs.find(insertion_slot);
     if (pair_it == _merit_ready_pairs.end())
         return;
+    if (restore_states && pair_it->second.committing)
+        return;
 
     MeritReadyPair pair = std::move(pair_it->second);
     _merit_ready_pairs.erase(pair_it);
@@ -4423,60 +4425,82 @@ template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::merit_dyn_m
 
 template <typename T, typename LabelT> bool PQFlashIndex<T, LabelT>::merit_dyn_commit_ready_pair(uint32_t insertion_slot)
 {
-    MeritTimedMutexGuard score_lock(_merit_score_mu, MeritLockKind::Score);
-    MeritTimedMutexGuard hlock(_merit_heap_mu, MeritLockKind::Heap);
-    const auto pair_it = _merit_ready_pairs.find(insertion_slot);
-    if (pair_it == _merit_ready_pairs.end())
-        return false;
-
-    const MeritReadyPair pair = pair_it->second;
-    const uint32_t ins = pair.insertion_id;
-    const uint32_t del = pair.deletion_id;
-    const uint32_t ins_slot = pair.insertion_slot;
-    const uint32_t del_slot = pair.deletion_slot;
-    const float insertion_score = _merit_mcache.score_at(ins_slot);
-    if (_merit_mcache.node_at(ins_slot) != ins ||
-        (del != std::numeric_limits<uint32_t>::max() && _merit_mcache.node_at(del_slot) != del))
     {
-        merit_dyn_clear_ready_pair_unlocked(insertion_slot);
-        return false;
-    }
-    if (del != std::numeric_limits<uint32_t>::max() && insertion_score <= _merit_mcache.score_at(del_slot))
-    {
-        merit_dyn_clear_ready_pair_unlocked(insertion_slot);
-        return false;
+        MeritTimedMutexGuard score_lock(_merit_score_mu, MeritLockKind::Score);
+        MeritTimedMutexGuard hlock(_merit_heap_mu, MeritLockKind::Heap);
+        auto pair_it = _merit_ready_pairs.find(insertion_slot);
+        if (pair_it == _merit_ready_pairs.end() || pair_it->second.committing)
+            return false;
+        const MeritReadyPair &candidate = pair_it->second;
+        const float insertion_score = _merit_mcache.score_at(candidate.insertion_slot);
+        if (_merit_mcache.node_at(candidate.insertion_slot) != candidate.insertion_id ||
+            (candidate.deletion_id != std::numeric_limits<uint32_t>::max() &&
+             _merit_mcache.node_at(candidate.deletion_slot) != candidate.deletion_id))
+        {
+            merit_dyn_clear_ready_pair_unlocked(insertion_slot);
+            return false;
+        }
+        if (candidate.deletion_id != std::numeric_limits<uint32_t>::max() &&
+            insertion_score <= _merit_mcache.score_at(candidate.deletion_slot))
+        {
+            merit_dyn_clear_ready_pair_unlocked(insertion_slot);
+            return false;
+        }
+        pair_it.value().committing = true;
     }
 
+    MeritReadyPair pair;
+    {
+        MeritTimedMutexGuard hlock(_merit_heap_mu, MeritLockKind::Heap);
+        const auto pair_it = _merit_ready_pairs.find(insertion_slot);
+        if (pair_it == _merit_ready_pairs.end() || !pair_it->second.committing)
+            return false;
+        pair = pair_it->second;
+    }
     MeritPendingFlush pf = pair.snap;
-    const bool wrote = merit_dyn_commit_one(pf, del);
-    if (!wrote)
-    {
-        merit_dyn_clear_ready_pair_unlocked(insertion_slot);
-        return false;
-    }
+    const bool wrote = merit_dyn_commit_one(pf, pair.deletion_id);
 
-    merit_dyn_clear_ready_pair_unlocked(ins_slot, false);
-    if (del == std::numeric_limits<uint32_t>::max() && merit_dyn_disk_is_full())
     {
-        std::vector<uint32_t> surplus_free_pairs;
-        surplus_free_pairs.reserve(_merit_ready_pairs.size());
-        for (const auto &kv : _merit_ready_pairs)
-            if (kv.second.deletion_slot == MeritMetadataCache::kInvalid)
-                surplus_free_pairs.push_back(kv.first);
-        for (uint32_t slot_id : surplus_free_pairs)
-            merit_dyn_clear_ready_pair_unlocked(slot_id);
+        MeritTimedMutexGuard score_lock(_merit_score_mu, MeritLockKind::Score);
+        MeritTimedMutexGuard hlock(_merit_heap_mu, MeritLockKind::Heap);
+        auto pair_it = _merit_ready_pairs.find(insertion_slot);
+        if (pair_it == _merit_ready_pairs.end())
+            return false;
+        if (!wrote)
+        {
+            pair_it.value().committing = false;
+            merit_dyn_clear_ready_pair_unlocked(insertion_slot);
+            return false;
+        }
+
+        const uint32_t ins = pair.insertion_id;
+        const uint32_t del = pair.deletion_id;
+        const uint32_t ins_slot = pair.insertion_slot;
+        const uint32_t del_slot = pair.deletion_slot;
+        const float insertion_score = _merit_mcache.score_at(ins_slot);
+        merit_dyn_clear_ready_pair_unlocked(ins_slot, false);
+        if (del == std::numeric_limits<uint32_t>::max() && merit_dyn_disk_is_full())
+        {
+            std::vector<uint32_t> surplus_free_pairs;
+            surplus_free_pairs.reserve(_merit_ready_pairs.size());
+            for (const auto &kv : _merit_ready_pairs)
+                if (kv.second.deletion_slot == MeritMetadataCache::kInvalid)
+                    surplus_free_pairs.push_back(kv.first);
+            for (uint32_t slot_id : surplus_free_pairs)
+                merit_dyn_clear_ready_pair_unlocked(slot_id);
+        }
+        if (del != std::numeric_limits<uint32_t>::max())
+        {
+            merit_dyn_set_state_unlocked(del, del_slot, MeritNodeState::NonSeed);
+            merit_dyn_heap_upsert_unlocked(del_slot, _merit_mcache.score_at(del_slot));
+            _merit_heap_deletes++;
+            g_dyn_probe.delete_ok++;
+        }
+        merit_dyn_set_state_unlocked(ins, ins_slot, MeritNodeState::Seed);
+        merit_dyn_heap_upsert_unlocked(ins_slot, insertion_score);
+        _merit_heap_writes++;
+        g_dyn_probe.write_ok++;
     }
-    if (del != std::numeric_limits<uint32_t>::max())
-    {
-        merit_dyn_set_state_unlocked(del, del_slot, MeritNodeState::NonSeed);
-        merit_dyn_heap_upsert_unlocked(del_slot, _merit_mcache.score_at(del_slot));
-        _merit_heap_deletes++;
-        g_dyn_probe.delete_ok++;
-    }
-    merit_dyn_set_state_unlocked(ins, ins_slot, MeritNodeState::Seed);
-    merit_dyn_heap_upsert_unlocked(ins_slot, insertion_score);
-    _merit_heap_writes++;
-    g_dyn_probe.write_ok++;
     return true;
 }
 
@@ -4778,22 +4802,26 @@ bool PQFlashIndex<T, LabelT>::merit_dyn_commit_one(MeritPendingFlush &pf, uint32
             write_merit_dc_seed_tail(slot_dst, _max_node_len, _disk_bytes_per_point, nnbrs, 1);
     }
 
-    MeritTimedSharedMutexGuard lock(_merit_dyn_mu, MeritLockKind::DynamicUnique, true);
-    auto existing = _merit_seed_dir.find(pf.seed_id);
-    if (existing != _merit_seed_dir.end() && !existing.value().page_members.empty() &&
-        !merit_dyn_hotter_mismatch(existing.value().page_members, pf.member_ids))
-        return false;
-
-    if (replacement_seed == MERIT_DYN_INVALID_PAGE && _merit_page_to_seed.size() >= _merit_dyn_page_cap)
-        return false;
-    if (replacement_seed != MERIT_DYN_INVALID_PAGE)
+    uint32_t page_idx = MERIT_DYN_INVALID_PAGE;
+    uint32_t expected_victim_page = MERIT_DYN_INVALID_PAGE;
     {
-        const auto victim = _merit_seed_dir.find(replacement_seed);
-        if (victim == _merit_seed_dir.end() || victim->second.page_id == MERIT_DYN_INVALID_PAGE ||
-            victim->second.page_members.empty())
+        MeritTimedSharedMutexGuard lock(_merit_dyn_mu, MeritLockKind::DynamicUnique, true);
+        const auto existing = _merit_seed_dir.find(pf.seed_id);
+        if (existing != _merit_seed_dir.end() && !existing->second.page_members.empty() &&
+            !merit_dyn_hotter_mismatch(existing->second.page_members, pf.member_ids))
             return false;
+        if (replacement_seed == MERIT_DYN_INVALID_PAGE && _merit_page_to_seed.size() >= _merit_dyn_page_cap)
+            return false;
+        if (replacement_seed != MERIT_DYN_INVALID_PAGE)
+        {
+            const auto victim = _merit_seed_dir.find(replacement_seed);
+            if (victim == _merit_seed_dir.end() || victim->second.page_id == MERIT_DYN_INVALID_PAGE ||
+                victim->second.page_members.empty())
+                return false;
+            expected_victim_page = victim->second.page_id;
+        }
+        page_idx = merit_dyn_alloc_page_unlocked();
     }
-    const uint32_t page_idx = merit_dyn_alloc_page_unlocked();
     if (page_idx == MERIT_DYN_INVALID_PAGE)
         return false;
     bool write_ok = false;
@@ -4812,6 +4840,7 @@ bool PQFlashIndex<T, LabelT>::merit_dyn_commit_one(MeritPendingFlush &pf, uint32
         aligned_free(aligned_page);
         write_ok = written == static_cast<ssize_t>(defaults::SECTOR_LEN);
 #else
+        std::lock_guard<std::mutex> writer_lock(_merit_dyn_writer_mu);
         _merit_dyn_write_stream.clear();
         _merit_dyn_write_stream.seekp(static_cast<std::streamoff>(page_idx) * defaults::SECTOR_LEN);
         _merit_dyn_write_stream.write(buf.data(), static_cast<std::streamsize>(defaults::SECTOR_LEN));
@@ -4821,32 +4850,55 @@ bool PQFlashIndex<T, LabelT>::merit_dyn_commit_one(MeritPendingFlush &pf, uint32
     }
     if (!write_ok)
     {
+        MeritTimedSharedMutexGuard lock(_merit_dyn_mu, MeritLockKind::DynamicUnique, true);
         _merit_dyn_free.push_back(page_idx);
         return false;
     }
-    // Copy-on-write: publish the new physical page before retiring the old one.
-    if (replacement_seed != MERIT_DYN_INVALID_PAGE)
-        merit_dyn_invalidate_seed_page(replacement_seed);
-
-    const uint32_t sector = MERIT_DYN_SECTOR_BASE + page_idx;
-    for (size_t mi = 0; mi < pf.member_ids.size(); mi++)
     {
-        MeritDiskLoc loc;
-        loc.sector = sector;
-        loc.slot = static_cast<uint16_t>(mi);
-        loc.nsectors = 1;
-        const uint32_t mid = pf.member_ids[mi];
-        _merit_dc_map[mid].push_back(loc);
-        _merit_dc_seed_member_loc[pf.seed_id][mid] = loc;
-        if (mid == pf.seed_id)
-            _merit_dc_seed_canonical_loc[pf.seed_id] = loc;
-    }
+        MeritTimedSharedMutexGuard lock(_merit_dyn_mu, MeritLockKind::DynamicUnique, true);
+        bool valid = true;
+        const auto existing = _merit_seed_dir.find(pf.seed_id);
+        if (existing != _merit_seed_dir.end() && !existing->second.page_members.empty() &&
+            !merit_dyn_hotter_mismatch(existing->second.page_members, pf.member_ids))
+            valid = false;
+        if (replacement_seed == MERIT_DYN_INVALID_PAGE)
+            valid = valid && _merit_page_to_seed.size() < _merit_dyn_page_cap;
+        else
+        {
+            const auto victim = _merit_seed_dir.find(replacement_seed);
+            valid = valid && victim != _merit_seed_dir.end() &&
+                    victim->second.page_id == expected_victim_page && !victim->second.page_members.empty();
+        }
+        if (!valid)
+        {
+            _merit_dyn_free.push_back(page_idx);
+            return false;
+        }
 
-    auto &dir = _merit_seed_dir[pf.seed_id];
-    dir.page_members = pf.member_ids;
-    dir.page_id = page_idx;
-    _merit_page_to_seed[page_idx] = pf.seed_id;
-    _merit_dyn_flush_count++;
+        // Copy-on-write: publish the new physical page before retiring the old one.
+        if (replacement_seed != MERIT_DYN_INVALID_PAGE)
+            merit_dyn_invalidate_seed_page(replacement_seed);
+
+        const uint32_t sector = MERIT_DYN_SECTOR_BASE + page_idx;
+        for (size_t mi = 0; mi < pf.member_ids.size(); mi++)
+        {
+            MeritDiskLoc loc;
+            loc.sector = sector;
+            loc.slot = static_cast<uint16_t>(mi);
+            loc.nsectors = 1;
+            const uint32_t mid = pf.member_ids[mi];
+            _merit_dc_map[mid].push_back(loc);
+            _merit_dc_seed_member_loc[pf.seed_id][mid] = loc;
+            if (mid == pf.seed_id)
+                _merit_dc_seed_canonical_loc[pf.seed_id] = loc;
+        }
+
+        auto &dir = _merit_seed_dir[pf.seed_id];
+        dir.page_members = pf.member_ids;
+        dir.page_id = page_idx;
+        _merit_page_to_seed[page_idx] = pf.seed_id;
+        _merit_dyn_flush_count++;
+    }
     return true;
 }
 

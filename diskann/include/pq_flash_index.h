@@ -382,6 +382,7 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
         uint32_t insertion_slot = MeritMetadataCache::kInvalid;
         uint32_t deletion_slot = MeritMetadataCache::kInvalid;
         MeritPendingFlush snap;
+        bool committing = false;
     };
 
     struct MeritPayloadStashEntry
@@ -405,6 +406,7 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
     std::shared_ptr<AlignedFileReader> _merit_dyn_reader;
     int _merit_dyn_write_fd = -1;
     std::fstream _merit_dyn_write_stream;
+    std::mutex _merit_dyn_writer_mu;
     uint64_t _merit_dyn_flush_count = 0;
     using MeritHeapKey = std::pair<float, uint32_t>; // (score, m-cache slot)
     std::set<MeritHeapKey> _merit_max_heap;          // eligible non-seed slots
