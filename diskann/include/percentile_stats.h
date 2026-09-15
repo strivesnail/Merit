@@ -40,6 +40,9 @@ struct QueryStats
     unsigned n_disk_reads = 0;        // actual disk read operations (frontier misses)
     unsigned n_merit_dc_hits = 0;     // nodes served from MERIT disk-cache file
     unsigned n_merit_mem_evictions = 0; // runtime evictions from MERIT memory pool
+    unsigned n_merit_dyn_hits = 0;      // nodes served from runtime-flushed d-cache pages
+    unsigned n_merit_dyn_flushes = 0;   // seed pages written at query end / n-cache evict
+    unsigned n_merit_dyn_pages = 0;     // committed dynamic d-cache pages after this query
     unsigned n_merit_multiread_ios = 0;   // disk reads spanning nsectors>1 (pct80 seed groups)
     unsigned n_merit_io_avoided = 0;      // continuation sectors not re-read (grouped under multiread)
     unsigned n_merit_setcover_grouped = 0; // nodes pulled into set-cover via multiread span

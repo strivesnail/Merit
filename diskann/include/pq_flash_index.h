@@ -3,6 +3,11 @@
 
 #pragma once
 #include "common_includes.h"
+#include <limits>
+#include <list>
+#include <mutex>
+#include <set>
+#include <shared_mutex>
 
 #include "aligned_file_reader.h"
 #include "concurrent_queue.h"
@@ -14,6 +19,7 @@
 #include "windows_customizations.h"
 #include "hotness_profiler.h"
 #include "merit_memory_pool.h"
+#include "merit_metadata_cache.h"
 #include "scratch.h"
 #include "relayout_utils.h"
 #include "tsl/robin_map.h"
@@ -116,6 +122,7 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
     DISKANN_DLLEXPORT uint64_t get_max_degree();
 
     DISKANN_DLLEXPORT void enable_access_profile(bool enable);
+    DISKANN_DLLEXPORT void reset_access_profile();
     DISKANN_DLLEXPORT void enable_query_sector_cache(bool enable);
     DISKANN_DLLEXPORT void enable_base_frontier_recording(bool enable);
     DISKANN_DLLEXPORT void enable_hop_frontier_recording(bool enable);
@@ -152,6 +159,13 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
     DISKANN_DLLEXPORT int load_merit_memory_pool(const std::string &profile_prefix,
                                                   std::vector<uint32_t> &node_list);
     DISKANN_DLLEXPORT void enable_merit_memory_runtime_admit(bool enable);
+    // Runtime n-cache LRU + m-cache + d-cache seed flush (MERIT_DYNAMIC_3CACHE).
+    DISKANN_DLLEXPORT void enable_merit_dynamic_3cache(bool enable, const std::string &flush_prefix = "");
+    DISKANN_DLLEXPORT bool merit_dynamic_3cache_enabled() const;
+    DISKANN_DLLEXPORT void print_merit_dynamic_3cache_stats() const;
+    DISKANN_DLLEXPORT uint64_t merit_dynamic_flush_count() const;
+    DISKANN_DLLEXPORT uint64_t merit_dynamic_clean_seeds() const;
+    DISKANN_DLLEXPORT uint64_t merit_dynamic_partial_seeds() const;
     // Shrink/grow memory cache; evicted = nodes removed vs previous load.
     DISKANN_DLLEXPORT int reload_merit_memory_cache(const std::string &profile_prefix, double merit_memory_gb,
                                                     double host_memory_gb, double reserve_gb, uint32_t num_threads,
@@ -332,6 +346,125 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
     bool _merit_seed_only_expand = false;
     bool _merit_seed_first_lookup = false;
     bool _merit_child_only_layout = false;
+
+    static constexpr uint32_t MERIT_DYN_SECTOR_BASE = 0x80000000u;
+    static constexpr uint32_t MERIT_DYN_INVALID_PAGE = std::numeric_limits<uint32_t>::max();
+
+    struct MeritSeedDirEntry
+    {
+        std::vector<uint32_t> page_members;
+        uint32_t page_id = MERIT_DYN_INVALID_PAGE;
+    };
+
+    enum class MeritNodeState : uint8_t
+    {
+        NonSeed = 0,
+        ReadyToInsertion = 1,
+        Seed = 2,
+        ReadyToDeletion = 3
+    };
+
+    struct MeritPendingFlush
+    {
+        uint32_t seed_id = 0;
+        MeritMetadataCache::Snapshot snap;
+        std::vector<uint32_t> member_ids;
+        std::vector<std::vector<T>> member_coords;
+        std::vector<std::vector<uint32_t>> member_nbrs;
+    };
+
+    struct MeritReadyPair
+    {
+        uint32_t insertion_id = std::numeric_limits<uint32_t>::max();
+        uint32_t deletion_id = std::numeric_limits<uint32_t>::max();
+        uint32_t insertion_slot = MeritMetadataCache::kInvalid;
+        uint32_t deletion_slot = MeritMetadataCache::kInvalid;
+        MeritPendingFlush snap;
+    };
+
+    struct MeritPayloadStashEntry
+    {
+        std::vector<T> coords;
+        std::vector<uint32_t> nbrs;
+        std::list<uint32_t>::iterator lru_it;
+    };
+
+    bool _merit_dyn_enabled = false;
+    MeritMetadataCache _merit_mcache;
+    tsl::robin_map<uint32_t, MeritSeedDirEntry> _merit_seed_dir;
+    std::vector<std::vector<char>> _merit_dyn_pages;
+    std::vector<uint32_t> _merit_dyn_free;
+    tsl::robin_map<uint32_t, uint32_t> _merit_page_to_seed;
+    uint64_t _merit_dyn_page_cap = 4096;
+    std::string _merit_dyn_path;
+    uint64_t _merit_dyn_flush_count = 0;
+    using MeritHeapKey = std::pair<float, uint32_t>; // (score, m-cache slot)
+    std::set<MeritHeapKey> _merit_max_heap;          // eligible non-seed slots
+    std::set<MeritHeapKey> _merit_min_heap;          // disk-cache seed slots
+    tsl::robin_map<uint32_t, float> _merit_heap_score;
+    tsl::robin_map<uint32_t, MeritNodeState> _merit_node_state;
+    tsl::robin_map<uint32_t, MeritReadyPair> _merit_ready_pairs; // insertion slot -> pair
+    tsl::robin_map<uint32_t, std::vector<uint32_t>> _merit_member_to_pending;
+    tsl::robin_map<uint32_t, uint32_t> _merit_deletion_to_pending;
+    uint64_t _merit_reserved_free_pages = 0;
+    static constexpr size_t MERIT_PENDING_PAIR_CAP = 4096;
+    std::atomic<float> _merit_score_unit{1.0f};
+    uint32_t _merit_score_stage = 0;
+    uint32_t _merit_queries_in_stage = 0;
+    bool _merit_decay_started = false;
+    static constexpr uint32_t MERIT_QUERIES_PER_SCORE_STAGE = 1000;
+    static constexpr uint32_t MERIT_SCORE_STAGES_PER_CYCLE = 100;
+    static constexpr float MERIT_SCORE_CYCLE_MAX = 16.0f;
+    uint64_t _merit_pair_refresh = 0;
+    uint64_t _merit_heap_writes = 0;
+    uint64_t _merit_heap_deletes = 0;
+    uint64_t _merit_ncache_write_trig = 0;
+    mutable std::mutex _merit_score_mu; // score update/decay/commit ordering
+    mutable std::mutex _merit_heap_mu;
+    static constexpr uint32_t MERIT_FETCHED_PER_PARENT = 8;
+    uint64_t _merit_stash_cap = 16384;
+    tsl::robin_map<uint32_t, MeritPayloadStashEntry> _merit_payload_stash;
+    std::list<uint32_t> _merit_stash_lru;
+    tsl::robin_map<uint32_t, std::vector<uint32_t>> _merit_parent_fetched;
+    mutable std::mutex _merit_stash_mu;
+    // Reader-writer lock (std::shared_mutex). Lookup/copy take shared; page
+    // install takes exclusive. Not a spin/seqlock: robin_map rehash is not
+    // safe to read mid-write. 4KB memcpy is done outside this lock.
+    mutable std::shared_mutex _merit_dyn_mu;
+
+    bool merit_dyn_is_sector(uint32_t sector) const
+    {
+        return sector >= MERIT_DYN_SECTOR_BASE;
+    }
+    bool merit_dyn_copy_page(uint32_t sector, char *dst) const;
+    std::vector<uint32_t> merit_dyn_now_page_ids(uint32_t seed_id, const MeritMetadataCache::Snapshot &snap) const;
+    bool merit_dyn_hotter_mismatch(const std::vector<uint32_t> &page_members,
+                                   const std::vector<uint32_t> &now_ids) const;
+    void merit_dyn_invalidate_seed_page(uint32_t seed_id);
+    uint32_t merit_dyn_alloc_page_unlocked();
+    void merit_dyn_maybe_mark_seed(uint32_t node_id);
+    void merit_dyn_note_touch(const MeritMetadataCache::TouchResult &tr);
+    void merit_dyn_on_mcache_evict(uint32_t node_id, uint32_t slot_id);
+    void merit_dyn_heap_erase_unlocked(uint32_t slot_id);
+    void merit_dyn_heap_upsert_unlocked(uint32_t slot_id, float score);
+    MeritNodeState merit_dyn_state_unlocked(uint32_t slot_id) const;
+    void merit_dyn_set_state_unlocked(uint32_t node_id, uint32_t slot_id, MeritNodeState st);
+    void merit_dyn_clear_ready_pair_unlocked(uint32_t insertion_slot, bool restore_states = true);
+    bool merit_dyn_disk_is_full() const;
+    bool merit_dyn_build_pending_flush(uint32_t seed_id, const MeritMetadataCache::Snapshot &snap,
+                                       MeritPendingFlush &pf) const;
+    void merit_dyn_maybe_refresh_pair();
+    bool merit_dyn_commit_ready_pair(uint32_t insertion_slot);
+    uint32_t merit_dyn_admit_node(uint32_t node_id, const char *node_disk_buf, QueryStats *stats);
+    void merit_dyn_note_base_load(uint32_t node_id, uint32_t parent, const char *node_disk_buf);
+    bool merit_dyn_has_payload(uint32_t node_id) const;
+    bool merit_dyn_copy_member_payload(uint32_t node_id, std::vector<T> &coords, std::vector<uint32_t> &nbrs) const;
+    bool merit_dyn_extract_overlay_payload(uint32_t node_id, std::vector<T> &coords,
+                                           std::vector<uint32_t> &nbrs) const;
+    void merit_dyn_stash_evict_unlocked();
+    void merit_dyn_on_ncache_evict(uint32_t node_id, QueryStats *stats);
+    void merit_dyn_on_query_end(QueryStats *stats);
+    bool merit_dyn_commit_one(MeritPendingFlush &pf, uint32_t replacement_seed = MERIT_DYN_INVALID_PAGE);
 
     void merit_get_expand_neighbors(uint32_t expand_id, char *node_disk_buf, const uint32_t *&out_nbrs,
                                     uint64_t &out_nnbrs) const;
