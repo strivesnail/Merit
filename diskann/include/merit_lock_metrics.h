@@ -18,6 +18,8 @@ enum class MeritLockKind : size_t
     Metadata,
     DynamicShared,
     DynamicUnique,
+    DirectoryShared,
+    DirectoryUnique,
     CommitIo,
     Count
 };

@@ -3,6 +3,7 @@
 
 #pragma once
 #include "common_includes.h"
+#include <array>
 #include <limits>
 #include <list>
 #include <fstream>
@@ -395,6 +396,14 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
 
     bool _merit_dyn_enabled = false;
     MeritMetadataCache _merit_mcache;
+    static constexpr size_t MERIT_DYN_DIR_SHARDS = 64;
+    struct MeritDynDirectoryShard
+    {
+        mutable std::shared_mutex mu;
+        tsl::robin_map<uint32_t, std::vector<MeritDiskLoc>> node_locs;
+    };
+    std::array<MeritDynDirectoryShard, MERIT_DYN_DIR_SHARDS> _merit_dyn_directory;
+    std::atomic<uint64_t> _merit_dyn_directory_nodes{0};
     tsl::robin_map<uint32_t, MeritSeedDirEntry> _merit_seed_dir;
     std::vector<uint32_t> _merit_dyn_free;
     tsl::robin_set<uint32_t> _merit_dyn_retired;
@@ -503,6 +512,11 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
                                            std::vector<uint32_t> &nbrs) const;
     void merit_dyn_stash_evict_unlocked();
     void merit_dyn_release_page_pin(uint32_t sector);
+    void merit_dyn_directory_clear();
+    void merit_dyn_directory_add(uint32_t node_id, const MeritDiskLoc &loc);
+    void merit_dyn_directory_remove(uint32_t node_id, uint32_t sector);
+    bool merit_dyn_directory_lookup_and_pin(uint32_t node_id, SSDQueryScratch<T> *query_scratch,
+                                           MeritDiskLoc &loc) const;
     void merit_dyn_on_ncache_evict(uint32_t node_id, QueryStats *stats);
     void merit_dyn_on_query_end(QueryStats *stats, SSDQueryScratch<T> *query_scratch);
     bool merit_dyn_commit_one(MeritPendingFlush &pf, uint32_t replacement_seed = MERIT_DYN_INVALID_PAGE);
