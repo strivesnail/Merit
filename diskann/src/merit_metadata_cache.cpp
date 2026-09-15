@@ -1,4 +1,5 @@
 #include "merit_metadata_cache.h"
+#include "merit_lock_metrics.h"
 
 #include <algorithm>
 #include <random>
@@ -8,7 +9,7 @@ namespace diskann
 
 void MeritMetadataCache::clear()
 {
-    std::lock_guard<std::mutex> lock(_mu);
+    MeritTimedMutexGuard lock(_mu, MeritLockKind::Metadata);
     _entries.clear();
     _global_lru.clear();
     _nonseed_lru.clear();
@@ -22,7 +23,7 @@ void MeritMetadataCache::clear()
 void MeritMetadataCache::init(uint64_t capacity, uint32_t edge_k, uint8_t sig_threshold)
 {
     clear();
-    std::lock_guard<std::mutex> lock(_mu);
+    MeritTimedMutexGuard lock(_mu, MeritLockKind::Metadata);
     _capacity = std::min<uint64_t>(capacity, static_cast<uint64_t>(kInvalid));
     _edge_k = edge_k;
     _sig_t = sig_threshold == 0 ? kDefaultSigT : sig_threshold;
@@ -35,13 +36,13 @@ void MeritMetadataCache::init(uint64_t capacity, uint32_t edge_k, uint8_t sig_th
 
 uint64_t MeritMetadataCache::size() const
 {
-    std::lock_guard<std::mutex> lock(_mu);
+    MeritTimedMutexGuard lock(_mu, MeritLockKind::Metadata);
     return _entries.size();
 }
 
 uint64_t MeritMetadataCache::evictable_size() const
 {
-    std::lock_guard<std::mutex> lock(_mu);
+    MeritTimedMutexGuard lock(_mu, MeritLockKind::Metadata);
     return _nonseed_lru.size();
 }
 
@@ -134,7 +135,7 @@ MeritMetadataCache::TouchResult MeritMetadataCache::touch_or_insert_unlocked(uin
 
 MeritMetadataCache::TouchResult MeritMetadataCache::on_expand(uint32_t node_id, float score_unit)
 {
-    std::lock_guard<std::mutex> lock(_mu);
+    MeritTimedMutexGuard lock(_mu, MeritLockKind::Metadata);
     return touch_or_insert_unlocked(node_id, score_unit);
 }
 
@@ -145,7 +146,7 @@ MeritMetadataCache::TouchResult MeritMetadataCache::on_edge(uint32_t parent, uin
     if ((rng() % 10u) != 0u)
         return r;
 
-    std::lock_guard<std::mutex> lock(_mu);
+    MeritTimedMutexGuard lock(_mu, MeritLockKind::Metadata);
     // Edge heat and node heat are independent. Expanding parent already added
     // its node score; this call only ensures the parent metadata is resident.
     r = touch_or_insert_unlocked(parent, 0.0f);
@@ -182,33 +183,33 @@ MeritMetadataCache::TouchResult MeritMetadataCache::on_edge(uint32_t parent, uin
 
 bool MeritMetadataCache::contains(uint32_t node_id) const
 {
-    std::lock_guard<std::mutex> lock(_mu);
+    MeritTimedMutexGuard lock(_mu, MeritLockKind::Metadata);
     return _entries.find(node_id) != _entries.end();
 }
 
 uint32_t MeritMetadataCache::slot_of(uint32_t node_id) const
 {
-    std::lock_guard<std::mutex> lock(_mu);
+    MeritTimedMutexGuard lock(_mu, MeritLockKind::Metadata);
     const auto it = _entries.find(node_id);
     return it == _entries.end() ? kInvalid : it.value().slot_id;
 }
 
 uint32_t MeritMetadataCache::node_at(uint32_t slot_id) const
 {
-    std::lock_guard<std::mutex> lock(_mu);
+    MeritTimedMutexGuard lock(_mu, MeritLockKind::Metadata);
     return slot_id < _slot_to_node.size() ? _slot_to_node[slot_id] : kInvalid;
 }
 
 float MeritMetadataCache::score(uint32_t node_id) const
 {
-    std::lock_guard<std::mutex> lock(_mu);
+    MeritTimedMutexGuard lock(_mu, MeritLockKind::Metadata);
     const auto it = _entries.find(node_id);
     return it == _entries.end() ? 0.0f : _scores[it.value().slot_id];
 }
 
 float MeritMetadataCache::score_at(uint32_t slot_id) const
 {
-    std::lock_guard<std::mutex> lock(_mu);
+    MeritTimedMutexGuard lock(_mu, MeritLockKind::Metadata);
     if (slot_id >= _slot_to_node.size() || _slot_to_node[slot_id] == kInvalid)
         return 0.0f;
     return _scores[slot_id];
@@ -216,7 +217,7 @@ float MeritMetadataCache::score_at(uint32_t slot_id) const
 
 bool MeritMetadataCache::set_evictable(uint32_t node_id, bool evictable)
 {
-    std::lock_guard<std::mutex> lock(_mu);
+    MeritTimedMutexGuard lock(_mu, MeritLockKind::Metadata);
     auto it = _entries.find(node_id);
     if (it == _entries.end())
         return false;
@@ -238,7 +239,7 @@ bool MeritMetadataCache::set_evictable(uint32_t node_id, bool evictable)
 
 void MeritMetadataCache::scale_scores(float factor, std::vector<std::pair<uint32_t, float>> &scaled)
 {
-    std::lock_guard<std::mutex> lock(_mu);
+    MeritTimedMutexGuard lock(_mu, MeritLockKind::Metadata);
     scaled.clear();
     scaled.reserve(_entries.size());
     for (auto it = _entries.begin(); it != _entries.end(); ++it)
@@ -251,7 +252,7 @@ void MeritMetadataCache::scale_scores(float factor, std::vector<std::pair<uint32
 
 bool MeritMetadataCache::snapshot(uint32_t node_id, Snapshot &out) const
 {
-    std::lock_guard<std::mutex> lock(_mu);
+    MeritTimedMutexGuard lock(_mu, MeritLockKind::Metadata);
     const auto it = _entries.find(node_id);
     if (it == _entries.end())
         return false;

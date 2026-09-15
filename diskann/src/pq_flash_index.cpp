@@ -22,6 +22,7 @@
 #include "cosine_similarity.h"
 #include "defaults.h"
 #include "relayout_utils.h"
+#include "merit_lock_metrics.h"
 
 #ifdef _WINDOWS
 #include "windows_aligned_file_reader.h"
@@ -1766,7 +1767,7 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
         if (this->_merit_dyn_enabled)
         {
             {
-                std::lock_guard<std::mutex> score_lock(this->_merit_score_mu);
+                MeritTimedMutexGuard score_lock(this->_merit_score_mu, MeritLockKind::Score);
                 const auto tr = this->_merit_mcache.on_expand(node_id, this->_merit_score_unit.load());
                 this->merit_dyn_note_touch(tr);
             }
@@ -1786,7 +1787,7 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
         {
             bool touched = false;
             {
-                std::lock_guard<std::mutex> score_lock(this->_merit_score_mu);
+                MeritTimedMutexGuard score_lock(this->_merit_score_mu, MeritLockKind::Score);
                 const auto tr = this->_merit_mcache.on_edge(parent, id);
                 touched = tr.present;
                 if (touched)
@@ -3727,7 +3728,7 @@ void PQFlashIndex<T, LabelT>::enable_merit_dynamic_3cache(bool enable, const std
     const uint8_t sig_t = static_cast<uint8_t>(merit_env_u64("MERIT_SEED_T", MeritMetadataCache::kDefaultSigT));
     _merit_mcache.init(mcache_cap, edge_k, sig_t);
     {
-        std::lock_guard<std::mutex> hlock(_merit_heap_mu);
+        MeritTimedMutexGuard hlock(_merit_heap_mu, MeritLockKind::Heap);
         _merit_max_heap.clear();
         _merit_min_heap.clear();
         _merit_heap_score.clear();
@@ -3782,7 +3783,7 @@ template <typename T, typename LabelT> uint64_t PQFlashIndex<T, LabelT>::merit_d
 
 template <typename T, typename LabelT> uint64_t PQFlashIndex<T, LabelT>::merit_dynamic_clean_seeds() const
 {
-    std::shared_lock<std::shared_mutex> lock(_merit_dyn_mu);
+    MeritTimedSharedMutexGuard lock(_merit_dyn_mu, MeritLockKind::DynamicShared, false);
     const uint64_t nps = (_nnodes_per_sector > 0) ? _nnodes_per_sector : 1;
     uint64_t n = 0;
     for (const auto &kv : _merit_seed_dir)
@@ -3793,7 +3794,7 @@ template <typename T, typename LabelT> uint64_t PQFlashIndex<T, LabelT>::merit_d
 
 template <typename T, typename LabelT> uint64_t PQFlashIndex<T, LabelT>::merit_dynamic_partial_seeds() const
 {
-    std::shared_lock<std::shared_mutex> lock(_merit_dyn_mu);
+    MeritTimedSharedMutexGuard lock(_merit_dyn_mu, MeritLockKind::DynamicShared, false);
     const uint64_t nps = (_nnodes_per_sector > 0) ? _nnodes_per_sector : 1;
     uint64_t n = 0;
     for (const auto &kv : _merit_seed_dir)
@@ -3831,7 +3832,7 @@ template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::print_merit
     bool decay_started = false;
     float score_unit = 1.0f;
     {
-        std::lock_guard<std::mutex> hlock(_merit_heap_mu);
+        MeritTimedMutexGuard hlock(_merit_heap_mu, MeritLockKind::Heap);
         if (!_merit_max_heap.empty())
         {
             max_c = _merit_max_heap.rbegin()->first;
@@ -3871,6 +3872,22 @@ template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::print_merit
                   << " skip_on_disk=" << g_dyn_probe.pair_skip_max_on_disk
                   << " skip_count=" << g_dyn_probe.pair_skip_count << " write_trig=" << g_dyn_probe.write_trig
                   << " write_ok=" << g_dyn_probe.write_ok << " delete_ok=" << g_dyn_probe.delete_ok << std::endl;
+    static constexpr const char *lock_names[] = {"score", "heap", "mcache", "dyn_shared", "dyn_unique",
+                                                 "commit_io"};
+    diskann::cout << "MERIT lock sample=1/1024:";
+    auto &lock_metrics = merit_lock_metrics();
+    for (size_t i = 0; i < static_cast<size_t>(MeritLockKind::Count); ++i)
+    {
+        const uint64_t samples = lock_metrics[i].samples.load(std::memory_order_relaxed);
+        const double wait_us =
+            samples == 0 ? 0.0 : static_cast<double>(lock_metrics[i].wait_ns.load(std::memory_order_relaxed)) /
+                                         static_cast<double>(samples) / 1000.0;
+        const double hold_us =
+            samples == 0 ? 0.0 : static_cast<double>(lock_metrics[i].hold_ns.load(std::memory_order_relaxed)) /
+                                         static_cast<double>(samples) / 1000.0;
+        diskann::cout << " " << lock_names[i] << "=" << wait_us << "/" << hold_us << "us(" << samples << ")";
+    }
+    diskann::cout << std::endl;
 }
 
 template <typename T, typename LabelT>
@@ -3881,7 +3898,7 @@ bool PQFlashIndex<T, LabelT>::merit_dyn_copy_page(uint32_t sector, char *dst) co
     const uint32_t idx = sector - MERIT_DYN_SECTOR_BASE;
     const char *src = nullptr;
     {
-        std::shared_lock<std::shared_mutex> lock(_merit_dyn_mu);
+        MeritTimedSharedMutexGuard lock(_merit_dyn_mu, MeritLockKind::DynamicShared, false);
         if (idx >= _merit_dyn_pages.size() || _merit_dyn_pages[idx].size() < defaults::SECTOR_LEN)
             return false;
         // Inner 4KB buffer stays valid if the outer vector relocates (move steals the pointer).
@@ -3930,7 +3947,7 @@ std::vector<uint32_t> PQFlashIndex<T, LabelT>::merit_dyn_now_page_ids(uint32_t s
 
     std::vector<uint32_t> old_members;
     {
-        std::shared_lock<std::shared_mutex> lock(_merit_dyn_mu);
+        MeritTimedSharedMutexGuard lock(_merit_dyn_mu, MeritLockKind::DynamicShared, false);
         const auto dit = _merit_seed_dir.find(seed_id);
         if (dit != _merit_seed_dir.end())
             old_members = dit.value().page_members;
@@ -4035,7 +4052,7 @@ void PQFlashIndex<T, LabelT>::merit_dyn_note_touch(const MeritMetadataCache::Tou
     if (tr.evicted_id != MeritMetadataCache::kInvalid)
         merit_dyn_on_mcache_evict(tr.evicted_id, tr.evicted_slot);
     {
-        std::lock_guard<std::mutex> hlock(_merit_heap_mu);
+        MeritTimedMutexGuard hlock(_merit_heap_mu, MeritLockKind::Heap);
         if (_merit_mcache.node_at(tr.slot_id) != tr.node_id)
             return;
         const float current_score = _merit_mcache.score_at(tr.slot_id);
@@ -4146,7 +4163,7 @@ void PQFlashIndex<T, LabelT>::merit_dyn_clear_ready_pair_unlocked(uint32_t inser
 
 template <typename T, typename LabelT> bool PQFlashIndex<T, LabelT>::merit_dyn_disk_is_full() const
 {
-    std::shared_lock<std::shared_mutex> lock(_merit_dyn_mu);
+    MeritTimedSharedMutexGuard lock(_merit_dyn_mu, MeritLockKind::DynamicShared, false);
     return _merit_page_to_seed.size() >= _merit_dyn_page_cap;
 }
 
@@ -4156,7 +4173,7 @@ void PQFlashIndex<T, LabelT>::merit_dyn_on_mcache_evict(uint32_t node_id, uint32
     if (node_id == MeritMetadataCache::kInvalid)
         return;
     {
-        std::lock_guard<std::mutex> hlock(_merit_heap_mu);
+        MeritTimedMutexGuard hlock(_merit_heap_mu, MeritLockKind::Heap);
         const auto st = merit_dyn_state_unlocked(slot_id);
         if (st == MeritNodeState::ReadyToInsertion)
             merit_dyn_clear_ready_pair_unlocked(slot_id);
@@ -4172,7 +4189,7 @@ void PQFlashIndex<T, LabelT>::merit_dyn_on_mcache_evict(uint32_t node_id, uint32
             return;
     }
     {
-        std::unique_lock<std::shared_mutex> lock(_merit_dyn_mu);
+        MeritTimedSharedMutexGuard lock(_merit_dyn_mu, MeritLockKind::DynamicUnique, true);
         merit_dyn_invalidate_seed_page(node_id);
     }
     _merit_heap_deletes++;
@@ -4222,8 +4239,8 @@ template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::merit_dyn_m
     uint32_t cand_ins_slot = MeritMetadataCache::kInvalid;
     uint32_t cand_del_slot = MeritMetadataCache::kInvalid;
     {
-        std::lock_guard<std::mutex> hlock(_merit_heap_mu);
-        std::shared_lock<std::shared_mutex> dlock(_merit_dyn_mu);
+        MeritTimedMutexGuard hlock(_merit_heap_mu, MeritLockKind::Heap);
+        MeritTimedSharedMutexGuard dlock(_merit_dyn_mu, MeritLockKind::DynamicShared, false);
         if (_merit_ready_pairs.size() >= MERIT_PENDING_PAIR_CAP)
             return;
         const uint64_t committed_pages = _merit_page_to_seed.size();
@@ -4270,7 +4287,7 @@ template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::merit_dyn_m
     MeritPendingFlush pf;
     if (!merit_dyn_build_pending_flush(cand_ins, snap, pf))
     {
-        std::lock_guard<std::mutex> hlock(_merit_heap_mu);
+        MeritTimedMutexGuard hlock(_merit_heap_mu, MeritLockKind::Heap);
         if (!_merit_max_heap.empty() && _merit_max_heap.rbegin()->second == cand_ins_slot &&
             _merit_mcache.node_at(cand_ins_slot) == cand_ins)
             merit_dyn_heap_erase_unlocked(cand_ins_slot);
@@ -4278,8 +4295,8 @@ template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::merit_dyn_m
     }
 
     {
-        std::lock_guard<std::mutex> hlock(_merit_heap_mu);
-        std::shared_lock<std::shared_mutex> dlock(_merit_dyn_mu);
+        MeritTimedMutexGuard hlock(_merit_heap_mu, MeritLockKind::Heap);
+        MeritTimedSharedMutexGuard dlock(_merit_dyn_mu, MeritLockKind::DynamicShared, false);
         if (_merit_ready_pairs.size() >= MERIT_PENDING_PAIR_CAP)
             return;
         const uint64_t committed_pages = _merit_page_to_seed.size();
@@ -4324,8 +4341,8 @@ template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::merit_dyn_m
 
 template <typename T, typename LabelT> bool PQFlashIndex<T, LabelT>::merit_dyn_commit_ready_pair(uint32_t insertion_slot)
 {
-    std::lock_guard<std::mutex> score_lock(_merit_score_mu);
-    std::lock_guard<std::mutex> hlock(_merit_heap_mu);
+    MeritTimedMutexGuard score_lock(_merit_score_mu, MeritLockKind::Score);
+    MeritTimedMutexGuard hlock(_merit_heap_mu, MeritLockKind::Heap);
     const auto pair_it = _merit_ready_pairs.find(insertion_slot);
     if (pair_it == _merit_ready_pairs.end())
         return false;
@@ -4400,7 +4417,7 @@ uint32_t PQFlashIndex<T, LabelT>::merit_dyn_admit_node(uint32_t node_id, const c
         stats->n_merit_mem_evictions++;
     if (_merit_dyn_enabled && _merit_mem_pool->contains(node_id) && _merit_mcache.contains(node_id))
     {
-        std::lock_guard<std::mutex> hlock(_merit_heap_mu);
+        MeritTimedMutexGuard hlock(_merit_heap_mu, MeritLockKind::Heap);
         const uint32_t slot_id = _merit_mcache.slot_of(node_id);
         merit_dyn_heap_upsert_unlocked(slot_id, _merit_mcache.score_at(slot_id));
     }
@@ -4466,7 +4483,7 @@ void PQFlashIndex<T, LabelT>::merit_dyn_note_base_load(uint32_t node_id, uint32_
 
     if (parent != std::numeric_limits<uint32_t>::max())
     {
-        std::lock_guard<std::mutex> hlock(_merit_heap_mu);
+        MeritTimedMutexGuard hlock(_merit_heap_mu, MeritLockKind::Heap);
         const uint32_t parent_slot = _merit_mcache.slot_of(parent);
         if (parent_slot != MeritMetadataCache::kInvalid &&
             merit_dyn_state_unlocked(parent_slot) == MeritNodeState::NonSeed)
@@ -4486,7 +4503,7 @@ bool PQFlashIndex<T, LabelT>::merit_dyn_has_payload(uint32_t node_id) const
         if (_merit_payload_stash.find(node_id) != _merit_payload_stash.end())
             return true;
     }
-    std::shared_lock<std::shared_mutex> lock(_merit_dyn_mu);
+    MeritTimedSharedMutexGuard lock(_merit_dyn_mu, MeritLockKind::DynamicShared, false);
     const auto map_it = _merit_dc_map.find(node_id);
     if (map_it == _merit_dc_map.end())
         return false;
@@ -4505,7 +4522,7 @@ template <typename T, typename LabelT>
 bool PQFlashIndex<T, LabelT>::merit_dyn_extract_overlay_payload(uint32_t node_id, std::vector<T> &coords,
                                                                std::vector<uint32_t> &nbrs) const
 {
-    std::shared_lock<std::shared_mutex> lock(_merit_dyn_mu);
+    MeritTimedSharedMutexGuard lock(_merit_dyn_mu, MeritLockKind::DynamicShared, false);
     const auto map_it = _merit_dc_map.find(node_id);
     if (map_it == _merit_dc_map.end())
         return false;
@@ -4557,7 +4574,7 @@ void PQFlashIndex<T, LabelT>::merit_dyn_on_ncache_evict(uint32_t node_id, QueryS
 
     std::vector<uint32_t> pending_slots;
     {
-        std::lock_guard<std::mutex> hlock(_merit_heap_mu);
+        MeritTimedMutexGuard hlock(_merit_heap_mu, MeritLockKind::Heap);
         const auto member_it = _merit_member_to_pending.find(node_id);
         if (member_it != _merit_member_to_pending.end())
             pending_slots = member_it->second;
@@ -4566,7 +4583,7 @@ void PQFlashIndex<T, LabelT>::merit_dyn_on_ncache_evict(uint32_t node_id, QueryS
     {
         g_dyn_probe.write_trig += pending_slots.size();
         {
-            std::lock_guard<std::mutex> hlock(_merit_heap_mu);
+            MeritTimedMutexGuard hlock(_merit_heap_mu, MeritLockKind::Heap);
             _merit_ncache_write_trig += pending_slots.size();
         }
         for (uint32_t insertion_slot : pending_slots)
@@ -4575,7 +4592,7 @@ void PQFlashIndex<T, LabelT>::merit_dyn_on_ncache_evict(uint32_t node_id, QueryS
                 stats->n_merit_dyn_flushes++;
         }
         {
-            std::lock_guard<std::mutex> hlock(_merit_heap_mu);
+            MeritTimedMutexGuard hlock(_merit_heap_mu, MeritLockKind::Heap);
             const uint32_t slot_id = _merit_mcache.slot_of(node_id);
             if (slot_id != MeritMetadataCache::kInvalid &&
                 merit_dyn_state_unlocked(slot_id) == MeritNodeState::NonSeed)
@@ -4586,7 +4603,7 @@ void PQFlashIndex<T, LabelT>::merit_dyn_on_ncache_evict(uint32_t node_id, QueryS
     }
 
     {
-        std::lock_guard<std::mutex> hlock(_merit_heap_mu);
+        MeritTimedMutexGuard hlock(_merit_heap_mu, MeritLockKind::Heap);
         const uint32_t slot_id = _merit_mcache.slot_of(node_id);
         if (slot_id != MeritMetadataCache::kInvalid &&
             merit_dyn_state_unlocked(slot_id) == MeritNodeState::NonSeed)
@@ -4599,15 +4616,15 @@ template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::merit_dyn_o
 {
     uint64_t page_count = 0;
     {
-        std::shared_lock<std::shared_mutex> lock(_merit_dyn_mu);
+        MeritTimedSharedMutexGuard lock(_merit_dyn_mu, MeritLockKind::DynamicShared, false);
         page_count = _merit_page_to_seed.size();
     }
     if (stats != nullptr)
         stats->n_merit_dyn_pages = static_cast<unsigned>(
             std::min<uint64_t>(page_count, static_cast<uint64_t>(std::numeric_limits<unsigned>::max())));
     const bool disk_full = page_count >= _merit_dyn_page_cap;
-    std::lock_guard<std::mutex> score_lock(_merit_score_mu);
-    std::lock_guard<std::mutex> hlock(_merit_heap_mu);
+    MeritTimedMutexGuard score_lock(_merit_score_mu, MeritLockKind::Score);
+    MeritTimedMutexGuard hlock(_merit_heap_mu, MeritLockKind::Heap);
     if (!_merit_decay_started)
     {
         if (!disk_full)
@@ -4672,6 +4689,7 @@ bool PQFlashIndex<T, LabelT>::merit_dyn_commit_one(MeritPendingFlush &pf, uint32
 
     if (!_merit_dyn_path.empty())
     {
+        MeritTimedRegion commit_io(MeritLockKind::CommitIo);
         std::ofstream out(_merit_dyn_path, std::ios::binary | std::ios::app);
         if (!out.is_open())
             return false;
@@ -4681,7 +4699,7 @@ bool PQFlashIndex<T, LabelT>::merit_dyn_commit_one(MeritPendingFlush &pf, uint32
             return false;
     }
 
-    std::unique_lock<std::shared_mutex> lock(_merit_dyn_mu);
+    MeritTimedSharedMutexGuard lock(_merit_dyn_mu, MeritLockKind::DynamicUnique, true);
     auto existing = _merit_seed_dir.find(pf.seed_id);
     if (existing != _merit_seed_dir.end() && !existing.value().page_members.empty() &&
         !merit_dyn_hotter_mismatch(existing.value().page_members, pf.member_ids))
@@ -5579,7 +5597,7 @@ bool PQFlashIndex<T, LabelT>::merit_resolve_disk_cache_loc(uint32_t node_id,
                                                            const SSDQueryScratch<T> *query_scratch,
                                                            MeritDiskLoc &out_loc) const
 {
-    std::shared_lock<std::shared_mutex> lock(_merit_dyn_mu);
+    MeritTimedSharedMutexGuard lock(_merit_dyn_mu, MeritLockKind::DynamicShared, false);
     if (_merit_dyn_enabled)
     {
         g_dyn_probe.resolve_call++;
@@ -5764,7 +5782,7 @@ bool PQFlashIndex<T, LabelT>::merit_disk_cache_lookup_hit(uint32_t node_id,
         return merit_resolve_disk_cache_loc(node_id, query_scratch, loc);
     }
 
-    std::shared_lock<std::shared_mutex> lock(_merit_dyn_mu);
+    MeritTimedSharedMutexGuard lock(_merit_dyn_mu, MeritLockKind::DynamicShared, false);
     const auto it = _merit_dc_map.find(node_id);
     return it != _merit_dc_map.end() && !it->second.empty();
 }
@@ -6099,7 +6117,7 @@ void PQFlashIndex<T, LabelT>::prepare_merit_disk_cache_io(
 
     std::unordered_set<uint32_t> need_ids(unresolved.begin(), unresolved.end());
 
-    std::shared_lock<std::shared_mutex> loc_lock(_merit_dyn_mu);
+    MeritTimedSharedMutexGuard loc_lock(_merit_dyn_mu, MeritLockKind::DynamicShared, false);
     while (!need_ids.empty())
     {
         std::unordered_map<uint32_t, std::vector<std::pair<uint32_t, size_t>>> sector_hits;
