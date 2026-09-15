@@ -2,9 +2,13 @@
 
 #include "tsl/robin_map.h"
 
+#include <array>
+#include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <list>
+#include <memory>
 #include <mutex>
 #include <vector>
 
@@ -12,11 +16,12 @@ namespace diskann
 {
 
 // Runtime m-cache: float node scores + directed-edge weights.
-// All entries share one recency LRU. Non-seeds are also linked into a filtered
-// LRU, so the globally coldest evictable non-seed is found in O(1).
+// Entries are partitioned into fixed shards by node id. Each shard owns its
+// storage and recency lists, accepting approximate rather than global LRU.
 class MeritMetadataCache
 {
   public:
+    static constexpr size_t kShardCount = 64;
     static constexpr uint8_t kDefaultSigT = 2;
     static constexpr uint32_t kDefaultEdgeK = 0;
     static constexpr uint32_t kInvalid = std::numeric_limits<uint32_t>::max();
@@ -38,27 +43,33 @@ class MeritMetadataCache
         bool present = false;
     };
 
-    MeritMetadataCache() = default;
+    MeritMetadataCache();
 
     void clear();
     void init(uint64_t capacity, uint32_t edge_k = kDefaultEdgeK, uint8_t sig_threshold = kDefaultSigT);
 
     bool active() const
     {
-        return _capacity > 0;
+        return _capacity.load(std::memory_order_relaxed) > 0;
     }
 
     uint64_t capacity() const
     {
-        return _capacity;
+        return _capacity.load(std::memory_order_relaxed);
+    }
+
+    uint64_t slot_capacity() const
+    {
+        return static_cast<uint64_t>(_slot_stride.load(std::memory_order_relaxed)) * kShardCount;
     }
 
     uint64_t size() const;
+    uint64_t edge_count() const;
     uint64_t evictable_size() const;
 
     uint8_t sig_threshold() const
     {
-        return _sig_t;
+        return _sig_t.load(std::memory_order_relaxed);
     }
 
     TouchResult on_expand(uint32_t node_id, float score_unit);
@@ -84,6 +95,7 @@ class MeritMetadataCache
     {
         uint32_t node_id = 0;
         uint32_t slot_id = kInvalid;
+        uint32_t local_slot = kInvalid;
         uint64_t tick = 0;
         std::list<Edge> edges;
         tsl::robin_map<uint32_t, std::list<Edge>::iterator> edge_ix;
@@ -92,22 +104,32 @@ class MeritMetadataCache
         bool evictable = true;
     };
 
-    void touch_unlocked(Entry &entry);
-    uint32_t evict_one_unlocked();
-    TouchResult touch_or_insert_unlocked(uint32_t node_id, float score_delta);
+    struct Shard
+    {
+        mutable std::mutex mu;
+        uint64_t capacity = 0;
+        uint64_t tick = 0;
+        std::list<uint32_t> global_lru;  // all entries; front = MRU
+        std::list<uint32_t> nonseed_lru; // evictable entries; front = MRU
+        std::vector<float> scores;
+        std::vector<uint32_t> slot_to_node;
+        std::vector<uint32_t> free_slots;
+        tsl::robin_map<uint32_t, Entry> entries;
+    };
 
-    uint64_t _capacity = 0;
-    uint32_t _edge_k = 0;
-    uint8_t _sig_t = kDefaultSigT;
-    uint64_t _tick = 0;
+    static size_t shard_index(uint32_t node_id);
+    void touch_unlocked(Shard &shard, Entry &entry);
+    uint32_t evict_one_unlocked(Shard &shard, uint32_t &evicted_slot);
+    TouchResult touch_or_insert_unlocked(Shard &shard, size_t shard_id, uint32_t node_id, float score_delta);
 
-    std::list<uint32_t> _global_lru;  // all entries; front = MRU
-    std::list<uint32_t> _nonseed_lru; // evictable entries in global recency order
-    std::vector<float> _scores;        // contiguous float32 score[slot]
-    std::vector<uint32_t> _slot_to_node;
-    std::vector<uint32_t> _free_slots;
-    tsl::robin_map<uint32_t, Entry> _entries;
-    mutable std::mutex _mu;
+    std::array<std::unique_ptr<Shard>, kShardCount> _shards;
+    std::atomic<uint64_t> _capacity{0};
+    std::atomic<uint64_t> _total_size{0};
+    std::atomic<uint64_t> _total_edges{0};
+    std::atomic<uint64_t> _total_evictable{0};
+    std::atomic<uint32_t> _slot_stride{0};
+    std::atomic<uint32_t> _edge_k{0};
+    std::atomic<uint8_t> _sig_t{kDefaultSigT};
 };
 
 } // namespace diskann

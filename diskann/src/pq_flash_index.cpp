@@ -3757,7 +3757,7 @@ void PQFlashIndex<T, LabelT>::enable_merit_dynamic_3cache(bool enable, const std
         MeritTimedMutexGuard hlock(_merit_heap_mu, MeritLockKind::Heap);
         _merit_max_heap = decltype(_merit_max_heap)();
         _merit_min_heap = decltype(_merit_min_heap)();
-        _merit_heap_generation.assign(static_cast<size_t>(mcache_cap), 0);
+        _merit_heap_generation.assign(static_cast<size_t>(_merit_mcache.slot_capacity()), 0);
         _merit_heap_score.clear();
         _merit_node_state.clear();
         _merit_ready_pairs.clear();
