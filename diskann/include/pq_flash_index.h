@@ -443,9 +443,10 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
     std::atomic<bool> _merit_refresh_running{false};
     static constexpr size_t MERIT_PENDING_PAIR_CAP = 4096;
     std::atomic<float> _merit_score_unit{1.0f};
-    uint32_t _merit_score_stage = 0;
-    uint32_t _merit_queries_in_stage = 0;
-    bool _merit_decay_started = false;
+    std::atomic<float> _merit_score_scale{1.0f};
+    std::atomic<uint64_t> _merit_decay_query_count{0};
+    std::atomic<uint32_t> _merit_score_stage{0};
+    std::atomic<bool> _merit_decay_started{false};
     static constexpr uint32_t MERIT_QUERIES_PER_SCORE_STAGE = 1000;
     static constexpr uint32_t MERIT_SCORE_STAGES_PER_CYCLE = 100;
     static constexpr float MERIT_SCORE_CYCLE_MAX = 16.0f;
@@ -453,7 +454,6 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
     uint64_t _merit_heap_writes = 0;
     uint64_t _merit_heap_deletes = 0;
     uint64_t _merit_ncache_write_trig = 0;
-    mutable std::mutex _merit_score_mu; // score update/decay/commit ordering
     mutable std::mutex _merit_heap_mu;
     static constexpr uint32_t MERIT_FETCHED_PER_PARENT = 8;
     uint64_t _merit_stash_cap = 16384;
