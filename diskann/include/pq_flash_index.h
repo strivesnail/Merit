@@ -417,6 +417,9 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
     tsl::robin_map<uint32_t, std::vector<uint32_t>> _merit_member_to_pending;
     tsl::robin_map<uint32_t, uint32_t> _merit_deletion_to_pending;
     uint64_t _merit_reserved_free_pages = 0;
+    std::atomic<uint32_t> _merit_pending_pair_count{0};
+    std::atomic<bool> _merit_refresh_needed{false};
+    std::atomic<bool> _merit_refresh_running{false};
     static constexpr size_t MERIT_PENDING_PAIR_CAP = 4096;
     std::atomic<float> _merit_score_unit{1.0f};
     uint32_t _merit_score_stage = 0;
@@ -463,6 +466,7 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
     bool merit_dyn_build_pending_flush(uint32_t seed_id, const MeritMetadataCache::Snapshot &snap,
                                        MeritPendingFlush &pf) const;
     void merit_dyn_maybe_refresh_pair();
+    void merit_dyn_request_refresh();
     bool merit_dyn_commit_ready_pair(uint32_t insertion_slot);
     uint32_t merit_dyn_admit_node(uint32_t node_id, const char *node_disk_buf, QueryStats *stats);
     void merit_dyn_note_base_load(uint32_t node_id, uint32_t parent, const char *node_disk_buf);
