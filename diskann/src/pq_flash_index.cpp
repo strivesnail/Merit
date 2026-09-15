@@ -3752,6 +3752,20 @@ void PQFlashIndex<T, LabelT>::enable_merit_dynamic_3cache(bool enable, const std
     const uint64_t mcache_cap = std::max<uint64_t>(requested_mcache_cap, _merit_dyn_page_cap * 2ULL);
     const uint32_t edge_k = static_cast<uint32_t>(merit_env_u64("MERIT_MCACHE_EDGE_K", 0));
     const uint8_t sig_t = static_cast<uint8_t>(merit_env_u64("MERIT_SEED_T", MeritMetadataCache::kDefaultSigT));
+    _merit_score_stage_queries = std::max<uint64_t>(1, merit_env_u64("MERIT_SCORE_STAGE_QUERIES", 1000));
+    _merit_score_half_life_queries =
+        std::max<uint64_t>(1, merit_env_u64("MERIT_SCORE_HALF_LIFE_QUERIES", 25000));
+    const uint64_t cycle_queries =
+        _merit_score_half_life_queries > std::numeric_limits<uint64_t>::max() / 4
+            ? std::numeric_limits<uint64_t>::max()
+            : _merit_score_half_life_queries * 4;
+    const uint64_t stages =
+        std::max<uint64_t>(1, cycle_queries / _merit_score_stage_queries +
+                                 (cycle_queries % _merit_score_stage_queries != 0 ? 1 : 0));
+    _merit_score_stages_per_cycle =
+        static_cast<uint32_t>(std::min<uint64_t>(stages, std::numeric_limits<uint32_t>::max()));
+    _merit_replacement_margin =
+        std::max(0.0f, merit_env_f("MERIT_REPLACEMENT_MARGIN_PCT", 0.0f)) / 100.0f;
     _merit_mcache.init(mcache_cap, edge_k, sig_t);
     {
         MeritTimedMutexGuard hlock(_merit_heap_mu, MeritLockKind::Heap);
@@ -3848,12 +3862,14 @@ void PQFlashIndex<T, LabelT>::enable_merit_dynamic_3cache(bool enable, const std
         _merit_stash_lru.clear();
         _merit_parent_fetched.clear();
     }
-    diskann::cout << "MERIT dynamic 3-cache: m-cache cap=" << mcache_cap << " (2x seed cap) "
+    diskann::cout << "MERIT dynamic 3-cache: m-cache cap=" << mcache_cap << " "
                   << "edge_k=" << (edge_k == 0 ? "unlimited" : std::to_string(edge_k)) << " T=" << (int)sig_t
                   << " heap+delay-write nps=" << nps << " d-cache pages<=" << _merit_dyn_page_cap
                   << " (~20% of base " << base_pages << " pages)"
                   << " file=" << _merit_dyn_path << " physical_pages=" << _merit_dyn_physical_cap
-                  << " score=float32 unit=1..16/100x1k-query" << std::endl;
+                  << " score=float32 half_life=" << _merit_score_half_life_queries
+                  << " stage_queries=" << _merit_score_stage_queries
+                  << " replacement_margin=" << (_merit_replacement_margin * 100.0f) << "%" << std::endl;
 }
 
 template <typename T, typename LabelT> bool PQFlashIndex<T, LabelT>::merit_dynamic_3cache_enabled() const
@@ -3957,7 +3973,7 @@ template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::print_merit
                 ++max_n;
         const uint64_t decay_queries = _merit_decay_query_count.load(std::memory_order_relaxed);
         score_stage = _merit_score_stage.load(std::memory_order_relaxed);
-        score_stage_queries = static_cast<uint32_t>(decay_queries % MERIT_QUERIES_PER_SCORE_STAGE);
+        score_stage_queries = static_cast<uint32_t>(decay_queries % _merit_score_stage_queries);
         decay_started = _merit_decay_started.load(std::memory_order_relaxed);
         score_unit = _merit_score_unit.load();
         score_scale = _merit_score_scale.load(std::memory_order_relaxed);
@@ -3968,8 +3984,10 @@ template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::print_merit
                   << " trig=" << trig << " pair_refresh=" << refresh << std::endl;
     diskann::cout << "MERIT score: raw_unit=" << score_unit << " scale=" << score_scale << " stage=" << score_stage
                   << "/"
-                  << MERIT_SCORE_STAGES_PER_CYCLE << " stage_queries=" << score_stage_queries << "/"
-                  << MERIT_QUERIES_PER_SCORE_STAGE << " decay=" << (decay_started ? "on" : "off")
+                  << _merit_score_stages_per_cycle << " stage_queries=" << score_stage_queries << "/"
+                  << _merit_score_stage_queries << " half_life=" << _merit_score_half_life_queries
+                  << " replacement_margin=" << (_merit_replacement_margin * 100.0f)
+                  << "% decay=" << (decay_started ? "on" : "off")
                   << " mcache_evictable=" << _merit_mcache.evictable_size()
                   << " probe pair_set=" << g_dyn_probe.pair_set
                   << " skip_on_disk=" << g_dyn_probe.pair_skip_max_on_disk
@@ -4082,6 +4100,12 @@ bool PQFlashIndex<T, LabelT>::merit_dyn_hotter_mismatch(const std::vector<uint32
         return false;
     (void)all_now_on_page;
     return true;
+}
+
+template <typename T, typename LabelT>
+bool PQFlashIndex<T, LabelT>::merit_dyn_replacement_worth(float insertion_score, float deletion_score) const
+{
+    return insertion_score > deletion_score * (1.0f + _merit_replacement_margin);
 }
 
 template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::merit_dyn_invalidate_seed_page(uint32_t seed_id)
@@ -4270,7 +4294,7 @@ void PQFlashIndex<T, LabelT>::merit_dyn_flush_dirty_heap(SSDQueryScratch<T> *que
             if (pending_it != _merit_deletion_to_pending.end())
             {
                 const uint32_t insertion_slot = pending_it->second;
-                if (current_score >= _merit_mcache.score_at(insertion_slot))
+                if (!merit_dyn_replacement_worth(_merit_mcache.score_at(insertion_slot), current_score))
                     merit_dyn_clear_ready_pair_unlocked(insertion_slot);
             }
         }
@@ -4442,7 +4466,7 @@ template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::merit_dyn_m
                 return;
             }
             const float min_c = _merit_min_heap.top().score;
-            if (max_c <= min_c || cand_ins == cand_del)
+            if (!merit_dyn_replacement_worth(max_c, min_c) || cand_ins == cand_del)
             {
                 g_dyn_probe.pair_skip_count++;
                 return;
@@ -4483,7 +4507,7 @@ template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::merit_dyn_m
             if (_merit_min_heap.empty() || _merit_min_heap.top().slot_id != cand_del_slot ||
                 _merit_mcache.node_at(cand_del_slot) != cand_del)
                 return;
-            if (_merit_max_heap.top().score <= _merit_min_heap.top().score)
+            if (!merit_dyn_replacement_worth(_merit_max_heap.top().score, _merit_min_heap.top().score))
                 return;
         }
         MeritReadyPair pair;
@@ -4564,7 +4588,7 @@ template <typename T, typename LabelT> bool PQFlashIndex<T, LabelT>::merit_dyn_c
             return false;
         }
         if (candidate.deletion_id != std::numeric_limits<uint32_t>::max() &&
-            insertion_score <= _merit_mcache.score_at(candidate.deletion_slot))
+            !merit_dyn_replacement_worth(insertion_score, _merit_mcache.score_at(candidate.deletion_slot)))
         {
             merit_dyn_clear_ready_pair_unlocked(insertion_slot);
             return false;
@@ -4873,20 +4897,20 @@ void PQFlashIndex<T, LabelT>::merit_dyn_on_query_end(QueryStats *stats, SSDQuery
     }
 
     const uint64_t query_count = _merit_decay_query_count.fetch_add(1, std::memory_order_acq_rel) + 1;
-    if (query_count % MERIT_QUERIES_PER_SCORE_STAGE != 0)
+    if (query_count % _merit_score_stage_queries != 0)
         return;
 
     const uint32_t stage =
-        static_cast<uint32_t>((query_count / MERIT_QUERIES_PER_SCORE_STAGE) % MERIT_SCORE_STAGES_PER_CYCLE);
+        static_cast<uint32_t>((query_count / _merit_score_stage_queries) % _merit_score_stages_per_cycle);
     float scale = _merit_score_scale.load(std::memory_order_relaxed);
     if (stage == 0)
     {
-        scale /= MERIT_SCORE_CYCLE_MAX;
+        scale /= _merit_score_cycle_max;
         _merit_score_scale.store(scale, std::memory_order_release);
     }
     _merit_score_stage.store(stage, std::memory_order_release);
-    const float exponent = static_cast<float>(stage) / static_cast<float>(MERIT_SCORE_STAGES_PER_CYCLE);
-    const float effective_unit = std::pow(MERIT_SCORE_CYCLE_MAX, exponent);
+    const float exponent = static_cast<float>(stage) / static_cast<float>(_merit_score_stages_per_cycle);
+    const float effective_unit = std::pow(_merit_score_cycle_max, exponent);
     _merit_score_unit.store(effective_unit / scale, std::memory_order_release);
 }
 

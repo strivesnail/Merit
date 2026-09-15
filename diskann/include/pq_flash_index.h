@@ -447,9 +447,11 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
     std::atomic<uint64_t> _merit_decay_query_count{0};
     std::atomic<uint32_t> _merit_score_stage{0};
     std::atomic<bool> _merit_decay_started{false};
-    static constexpr uint32_t MERIT_QUERIES_PER_SCORE_STAGE = 1000;
-    static constexpr uint32_t MERIT_SCORE_STAGES_PER_CYCLE = 100;
-    static constexpr float MERIT_SCORE_CYCLE_MAX = 16.0f;
+    uint64_t _merit_score_stage_queries = 1000;
+    uint32_t _merit_score_stages_per_cycle = 100;
+    uint64_t _merit_score_half_life_queries = 25000;
+    float _merit_score_cycle_max = 16.0f;
+    float _merit_replacement_margin = 0.0f;
     uint64_t _merit_pair_refresh = 0;
     uint64_t _merit_heap_writes = 0;
     uint64_t _merit_heap_deletes = 0;
@@ -473,6 +475,7 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
     std::vector<uint32_t> merit_dyn_now_page_ids(uint32_t seed_id, const MeritMetadataCache::Snapshot &snap) const;
     bool merit_dyn_hotter_mismatch(const std::vector<uint32_t> &page_members,
                                    const std::vector<uint32_t> &now_ids) const;
+    bool merit_dyn_replacement_worth(float insertion_score, float deletion_score) const;
     void merit_dyn_invalidate_seed_page(uint32_t seed_id);
     uint32_t merit_dyn_alloc_page_unlocked();
     void merit_dyn_maybe_mark_seed(uint32_t node_id);
