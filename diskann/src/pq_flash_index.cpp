@@ -3794,7 +3794,6 @@ void PQFlashIndex<T, LabelT>::enable_merit_dynamic_3cache(bool enable, const std
     }
     if (_merit_dyn_write_stream.is_open())
         _merit_dyn_write_stream.close();
-    merit_dyn_directory_clear();
     {
         MeritTimedSharedMutexGuard lock(_merit_dyn_mu, MeritLockKind::DynamicUnique, true);
         _merit_seed_dir.clear();
@@ -3976,8 +3975,8 @@ template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::print_merit
                   << " skip_on_disk=" << g_dyn_probe.pair_skip_max_on_disk
                   << " skip_count=" << g_dyn_probe.pair_skip_count << " write_trig=" << g_dyn_probe.write_trig
                   << " write_ok=" << g_dyn_probe.write_ok << " delete_ok=" << g_dyn_probe.delete_ok << std::endl;
-    static constexpr const char *lock_names[] = {"score",      "heap",       "mcache",   "dyn_shared",
-                                                 "dyn_unique", "dir_shared", "dir_unique", "commit_io"};
+    static constexpr const char *lock_names[] = {"score", "heap", "mcache", "dyn_shared", "dyn_unique",
+                                                 "commit_io"};
     diskann::cout << "MERIT lock sample=1/1024:";
     auto &lock_metrics = merit_lock_metrics();
     for (size_t i = 0; i < static_cast<size_t>(MeritLockKind::Count); ++i)
@@ -4095,7 +4094,17 @@ template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::merit_dyn_i
         page_idx == MERIT_DYN_INVALID_PAGE ? 0 : static_cast<uint32_t>(MERIT_DYN_SECTOR_BASE + page_idx);
 
     for (uint32_t mid : dir_it.value().page_members)
-        merit_dyn_directory_remove(mid, old_sector);
+    {
+        auto map_it = _merit_dc_map.find(mid);
+        if (map_it == _merit_dc_map.end())
+            continue;
+        auto &locs = map_it.value();
+        locs.erase(std::remove_if(locs.begin(), locs.end(),
+                                  [old_sector](const MeritDiskLoc &loc) { return loc.sector == old_sector; }),
+                   locs.end());
+        if (locs.empty())
+            _merit_dc_map.erase(mid);
+    }
     _merit_dc_seed_member_loc.erase(seed_id);
     _merit_dc_seed_canonical_loc.erase(seed_id);
     if (page_idx != MERIT_DYN_INVALID_PAGE)
@@ -4122,98 +4131,6 @@ template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::merit_dyn_r
     MeritTimedSharedMutexGuard lock(_merit_dyn_mu, MeritLockKind::DynamicUnique, true);
     if (_merit_dyn_retired.erase(page_idx) != 0)
         _merit_dyn_free.push_back(page_idx);
-}
-
-template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::merit_dyn_directory_clear()
-{
-    for (MeritDynDirectoryShard &shard : _merit_dyn_directory)
-    {
-        MeritTimedSharedMutexGuard lock(shard.mu, MeritLockKind::DirectoryUnique, true);
-        shard.node_locs.clear();
-    }
-    _merit_dyn_directory_nodes.store(0, std::memory_order_relaxed);
-}
-
-template <typename T, typename LabelT>
-void PQFlashIndex<T, LabelT>::merit_dyn_directory_add(uint32_t node_id, const MeritDiskLoc &loc)
-{
-    MeritDynDirectoryShard &shard = _merit_dyn_directory[node_id % MERIT_DYN_DIR_SHARDS];
-    MeritTimedSharedMutexGuard lock(shard.mu, MeritLockKind::DirectoryUnique, true);
-    auto it = shard.node_locs.find(node_id);
-    if (it == shard.node_locs.end())
-    {
-        shard.node_locs[node_id].push_back(loc);
-        _merit_dyn_directory_nodes.fetch_add(1, std::memory_order_relaxed);
-    }
-    else
-    {
-        it.value().push_back(loc);
-    }
-}
-
-template <typename T, typename LabelT>
-void PQFlashIndex<T, LabelT>::merit_dyn_directory_remove(uint32_t node_id, uint32_t sector)
-{
-    MeritDynDirectoryShard &shard = _merit_dyn_directory[node_id % MERIT_DYN_DIR_SHARDS];
-    MeritTimedSharedMutexGuard lock(shard.mu, MeritLockKind::DirectoryUnique, true);
-    auto it = shard.node_locs.find(node_id);
-    if (it == shard.node_locs.end())
-        return;
-    auto &locs = it.value();
-    locs.erase(std::remove_if(locs.begin(), locs.end(),
-                              [sector](const MeritDiskLoc &loc) { return loc.sector == sector; }),
-               locs.end());
-    if (locs.empty())
-    {
-        shard.node_locs.erase(it);
-        _merit_dyn_directory_nodes.fetch_sub(1, std::memory_order_relaxed);
-    }
-}
-
-template <typename T, typename LabelT>
-bool PQFlashIndex<T, LabelT>::merit_dyn_directory_lookup_and_pin(uint32_t node_id,
-                                                                SSDQueryScratch<T> *query_scratch,
-                                                                MeritDiskLoc &loc) const
-{
-    if (query_scratch == nullptr || _merit_dyn_page_readers == nullptr)
-        return false;
-    const auto cached = query_scratch->merit_dyn_resolved_locs.find(node_id);
-    if (cached != query_scratch->merit_dyn_resolved_locs.end())
-    {
-        const uint64_t packed = cached->second;
-        loc.sector = static_cast<uint32_t>(packed >> 32);
-        loc.slot = static_cast<uint16_t>((packed >> 16) & 0xFFFFu);
-        loc.nsectors = static_cast<uint16_t>(packed & 0xFFFFu);
-        return true;
-    }
-    const MeritDynDirectoryShard &shard = _merit_dyn_directory[node_id % MERIT_DYN_DIR_SHARDS];
-    MeritTimedSharedMutexGuard lock(shard.mu, MeritLockKind::DirectoryShared, false);
-    const auto it = shard.node_locs.find(node_id);
-    if (it == shard.node_locs.end() || it->second.empty())
-        return false;
-    loc = it->second.front();
-    if (_query_sector_cache_enabled)
-    {
-        for (const MeritDiskLoc &candidate : it->second)
-        {
-            if (query_scratch->merit_sector_cache.find(candidate.sector) !=
-                query_scratch->merit_sector_cache.end())
-            {
-                loc = candidate;
-                break;
-            }
-        }
-    }
-    if (!merit_dyn_is_sector(loc.sector))
-        return false;
-    const uint32_t page_idx = loc.sector - MERIT_DYN_SECTOR_BASE;
-    if (page_idx >= _merit_dyn_physical_cap)
-        return false;
-    _merit_dyn_page_readers[page_idx].fetch_add(1, std::memory_order_acq_rel);
-    query_scratch->merit_dyn_pinned_sectors.push_back(loc.sector);
-    query_scratch->merit_dyn_resolved_locs[node_id] =
-        (static_cast<uint64_t>(loc.sector) << 32) | (static_cast<uint64_t>(loc.slot) << 16) | loc.nsectors;
-    return true;
 }
 
 template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::merit_dyn_maybe_mark_seed(uint32_t node_id)
@@ -4815,13 +4732,6 @@ bool PQFlashIndex<T, LabelT>::merit_dyn_has_payload(uint32_t node_id) const
         if (_merit_payload_stash.find(node_id) != _merit_payload_stash.end())
             return true;
     }
-    if (_merit_dyn_enabled)
-    {
-        const MeritDynDirectoryShard &shard = _merit_dyn_directory[node_id % MERIT_DYN_DIR_SHARDS];
-        MeritTimedSharedMutexGuard lock(shard.mu, MeritLockKind::DirectoryShared, false);
-        const auto it = shard.node_locs.find(node_id);
-        return it != shard.node_locs.end() && !it->second.empty();
-    }
     MeritTimedSharedMutexGuard lock(_merit_dyn_mu, MeritLockKind::DynamicShared, false);
     const auto map_it = _merit_dc_map.find(node_id);
     if (map_it == _merit_dc_map.end())
@@ -4841,39 +4751,6 @@ template <typename T, typename LabelT>
 bool PQFlashIndex<T, LabelT>::merit_dyn_extract_overlay_payload(uint32_t node_id, std::vector<T> &coords,
                                                                std::vector<uint32_t> &nbrs) const
 {
-    if (_merit_dyn_enabled)
-    {
-        const MeritDynDirectoryShard &shard = _merit_dyn_directory[node_id % MERIT_DYN_DIR_SHARDS];
-        MeritTimedSharedMutexGuard lock(shard.mu, MeritLockKind::DirectoryShared, false);
-        const auto map_it = shard.node_locs.find(node_id);
-        if (map_it == shard.node_locs.end() || _merit_dyn_reader == nullptr)
-            return false;
-        for (const MeritDiskLoc &loc : map_it->second)
-        {
-            if (!merit_dyn_is_sector(loc.sector))
-                continue;
-            const uint32_t idx = loc.sector - MERIT_DYN_SECTOR_BASE;
-            char *page = nullptr;
-            alloc_aligned(reinterpret_cast<void **>(&page), defaults::SECTOR_LEN, defaults::SECTOR_LEN);
-            std::vector<AlignedRead> reads;
-            reads.emplace_back(static_cast<uint64_t>(idx) * defaults::SECTOR_LEN, defaults::SECTOR_LEN, page);
-            _merit_dyn_reader->read(reads, _merit_dyn_reader->get_ctx());
-            const char *slot = page + static_cast<uint64_t>(loc.slot) * _max_node_len;
-            const T *coord_src = reinterpret_cast<const T *>(slot);
-            const uint32_t *nhood = reinterpret_cast<const uint32_t *>(slot + _disk_bytes_per_point);
-            const uint32_t nnbrs = nhood[0];
-            if (nnbrs <= _max_degree)
-            {
-                const size_t ncoords = _disk_bytes_per_point / sizeof(T);
-                coords.assign(coord_src, coord_src + ncoords);
-                nbrs.assign(nhood + 1, nhood + 1 + nnbrs);
-                aligned_free(page);
-                return true;
-            }
-            aligned_free(page);
-        }
-        return false;
-    }
     MeritTimedSharedMutexGuard lock(_merit_dyn_mu, MeritLockKind::DynamicShared, false);
     const auto map_it = _merit_dc_map.find(node_id);
     if (map_it == _merit_dc_map.end())
@@ -5130,7 +5007,7 @@ bool PQFlashIndex<T, LabelT>::merit_dyn_commit_one(MeritPendingFlush &pf, uint32
             loc.slot = static_cast<uint16_t>(mi);
             loc.nsectors = 1;
             const uint32_t mid = pf.member_ids[mi];
-            merit_dyn_directory_add(mid, loc);
+            _merit_dc_map[mid].push_back(loc);
             _merit_dc_seed_member_loc[pf.seed_id][mid] = loc;
             if (mid == pf.seed_id)
                 _merit_dc_seed_canonical_loc[pf.seed_id] = loc;
@@ -5990,18 +5867,74 @@ bool PQFlashIndex<T, LabelT>::merit_resolve_disk_cache_loc(uint32_t node_id,
                                                            const SSDQueryScratch<T> *query_scratch,
                                                            MeritDiskLoc &out_loc) const
 {
+    MeritTimedSharedMutexGuard lock(_merit_dyn_mu, MeritLockKind::DynamicShared, false);
     if (_merit_dyn_enabled)
     {
         g_dyn_probe.resolve_call++;
-        if (merit_dyn_directory_lookup_and_pin(node_id, const_cast<SSDQueryScratch<T> *>(query_scratch), out_loc))
+        auto loc_from_dir = [&](uint32_t seed, uint32_t member) -> bool {
+            const auto dir_it = _merit_seed_dir.find(seed);
+            if (dir_it == _merit_seed_dir.end() || dir_it.value().page_members.empty() ||
+                dir_it.value().page_id == MERIT_DYN_INVALID_PAGE)
+                return false;
+            for (size_t k = 0; k < dir_it.value().page_members.size(); k++)
+            {
+                if (dir_it.value().page_members[k] != member)
+                    continue;
+                out_loc.sector = MERIT_DYN_SECTOR_BASE + dir_it.value().page_id;
+                out_loc.slot = static_cast<uint16_t>(k);
+                out_loc.nsectors = 1;
+                return true;
+            }
+            return false;
+        };
+        if (query_scratch != nullptr)
         {
-            g_dyn_probe.map_hit++;
+            const auto parent_it = query_scratch->profile_parent.find(node_id);
+            if (parent_it == query_scratch->profile_parent.end())
+                g_dyn_probe.parent_absent++;
+            else if (loc_from_dir(parent_it->second, node_id))
+            {
+                g_dyn_probe.parent_hit++;
+                return true;
+            }
+            else
+            {
+                const auto dir_it = _merit_seed_dir.find(parent_it->second);
+                if (dir_it == _merit_seed_dir.end() || dir_it.value().page_members.empty() ||
+                    dir_it.value().page_id == MERIT_DYN_INVALID_PAGE)
+                    g_dyn_probe.parent_no_page++;
+                else
+                    g_dyn_probe.parent_not_member++;
+            }
+        }
+        else
+            g_dyn_probe.parent_absent++;
+        if (loc_from_dir(node_id, node_id))
+        {
+            g_dyn_probe.self_hit++;
             return true;
         }
+        const auto map_it = _merit_dc_map.find(node_id);
+        if (map_it != _merit_dc_map.end())
+        {
+            for (const MeritDiskLoc &loc : map_it->second)
+            {
+                if (!merit_dyn_is_sector(loc.sector))
+                    continue;
+                const uint32_t idx = loc.sector - MERIT_DYN_SECTOR_BASE;
+                if (_merit_page_to_seed.find(idx) != _merit_page_to_seed.end())
+                {
+                    out_loc = loc;
+                    g_dyn_probe.map_hit++;
+                    return true;
+                }
+            }
+        }
         g_dyn_probe.resolve_miss++;
+        if (map_it != _merit_dc_map.end() && !map_it->second.empty())
+            g_dyn_probe.miss_but_in_map++;
         return false;
     }
-    MeritTimedSharedMutexGuard lock(_merit_dyn_mu, MeritLockKind::DynamicShared, false);
     if (_merit_dc_seed_member_loc.empty())
         return false;
 
@@ -6212,17 +6145,7 @@ void PQFlashIndex<T, LabelT>::prepare_merit_disk_cache_io(
     std::vector<uint32_t> unresolved;
     unresolved.reserve(merit_ids.size());
 
-    if (_merit_dyn_enabled)
-    {
-        for (uint32_t id : merit_ids)
-        {
-            MeritDiskLoc loc;
-            if (!merit_resolve_disk_cache_loc(id, query_scratch, loc) || !chosen_ids.insert(id).second)
-                continue;
-            choices.push_back({id, 0, loc, loc.sector, 1, true});
-        }
-    }
-    else if (_merit_seed_first_lookup)
+    if (_merit_seed_first_lookup)
     {
         const bool cache_replica_fallback =
             (std::getenv("MERIT_CACHE_REPLICA_FALLBACK") != nullptr &&
@@ -6465,10 +6388,7 @@ void PQFlashIndex<T, LabelT>::prepare_merit_disk_cache_io(
 
     std::unordered_set<uint32_t> need_ids(unresolved.begin(), unresolved.end());
 
-    std::unique_ptr<MeritTimedSharedMutexGuard> loc_lock;
-    if (!_merit_dyn_enabled)
-        loc_lock.reset(
-            new MeritTimedSharedMutexGuard(_merit_dyn_mu, MeritLockKind::DynamicShared, false));
+    MeritTimedSharedMutexGuard loc_lock(_merit_dyn_mu, MeritLockKind::DynamicShared, false);
     while (!need_ids.empty())
     {
         std::unordered_map<uint32_t, std::vector<std::pair<uint32_t, size_t>>> sector_hits;
@@ -6578,8 +6498,6 @@ void PQFlashIndex<T, LabelT>::prepare_merit_disk_cache_io(
                                  [&](PendingChoice &pc) {
                                      if (!merit_dyn_is_sector(pc.loc.sector))
                                          return false;
-                                     if (_merit_dyn_enabled)
-                                         return false;
                                      const uint32_t page_idx = pc.loc.sector - MERIT_DYN_SECTOR_BASE;
                                      if (page_idx >= _merit_dyn_physical_cap ||
                                          _merit_page_to_seed.find(page_idx) == _merit_page_to_seed.end())
@@ -6601,8 +6519,7 @@ void PQFlashIndex<T, LabelT>::prepare_merit_disk_cache_io(
                                      return false;
                                  }),
                   choices.end());
-    if (loc_lock)
-        loc_lock->unlock();
+    loc_lock.unlock();
 
     struct MultireadSpan
     {
