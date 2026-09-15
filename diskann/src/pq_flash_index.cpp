@@ -1793,7 +1793,7 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
             {
                 MeritTimedMutexGuard score_lock(this->_merit_score_mu, MeritLockKind::Score);
                 const auto tr = this->_merit_mcache.on_expand(node_id, this->_merit_score_unit.load());
-                this->merit_dyn_note_touch(tr);
+                this->merit_dyn_note_touch(tr, query_scratch);
             }
         }
         if (!this->_hotness_profiler.enabled())
@@ -1814,7 +1814,7 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
                 const auto tr = this->_merit_mcache.on_edge(parent, id);
                 touched = tr.present;
                 if (touched)
-                    this->merit_dyn_note_touch(tr);
+                    this->merit_dyn_note_touch(tr, query_scratch);
             }
             if (touched)
                 this->_merit_refresh_needed.store(true, std::memory_order_release);
@@ -2425,14 +2425,14 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
             if (_merit_mem_pool != nullptr && _merit_mem_pool->active() &&
                 (_merit_mem_runtime_admit || _merit_dyn_enabled))
             {
-                this->merit_dyn_admit_node(frontier_nhood.first, node_disk_buf, stats);
+                this->merit_dyn_admit_node(frontier_nhood.first, node_disk_buf, stats, query_scratch);
                 if (this->_merit_dyn_enabled)
                 {
                     uint32_t parent = std::numeric_limits<uint32_t>::max();
                     const auto pit = query_scratch->profile_parent.find(frontier_nhood.first);
                     if (pit != query_scratch->profile_parent.end())
                         parent = pit->second;
-                    this->merit_dyn_note_base_load(frontier_nhood.first, parent, node_disk_buf);
+                    this->merit_dyn_note_base_load(frontier_nhood.first, parent, node_disk_buf, query_scratch);
                 }
             }
             uint32_t *node_buf = offset_to_node_nhood(node_disk_buf);
@@ -2565,14 +2565,14 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
                 if (_merit_mem_pool != nullptr && _merit_mem_pool->active() &&
                     (_merit_mem_runtime_admit || _merit_dyn_enabled))
                 {
-                    this->merit_dyn_admit_node(expand_id, node_disk_buf, stats);
+                    this->merit_dyn_admit_node(expand_id, node_disk_buf, stats, query_scratch);
                     if (this->_merit_dyn_enabled)
                     {
                         uint32_t parent = std::numeric_limits<uint32_t>::max();
                         const auto pit = query_scratch->profile_parent.find(expand_id);
                         if (pit != query_scratch->profile_parent.end())
                             parent = pit->second;
-                        this->merit_dyn_note_base_load(expand_id, parent, node_disk_buf);
+                        this->merit_dyn_note_base_load(expand_id, parent, node_disk_buf, query_scratch);
                     }
                 }
                 uint32_t *node_buf = offset_to_node_nhood(node_disk_buf);
@@ -2638,7 +2638,7 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
         for (uint32_t sector : query_scratch->merit_dyn_pinned_sectors)
             merit_dyn_release_page_pin(sector);
         query_scratch->merit_dyn_pinned_sectors.clear();
-        merit_dyn_on_query_end(stats);
+        merit_dyn_on_query_end(stats, query_scratch);
     }
 
     // re-sort by distance
@@ -3757,8 +3757,9 @@ void PQFlashIndex<T, LabelT>::enable_merit_dynamic_3cache(bool enable, const std
     _merit_mcache.init(mcache_cap, edge_k, sig_t);
     {
         MeritTimedMutexGuard hlock(_merit_heap_mu, MeritLockKind::Heap);
-        _merit_max_heap.clear();
-        _merit_min_heap.clear();
+        _merit_max_heap = decltype(_merit_max_heap)();
+        _merit_min_heap = decltype(_merit_min_heap)();
+        _merit_heap_generation.assign(static_cast<size_t>(mcache_cap), 0);
         _merit_heap_score.clear();
         _merit_node_state.clear();
         _merit_ready_pairs.clear();
@@ -3923,16 +3924,23 @@ template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::print_merit
     float score_unit = 1.0f;
     {
         MeritTimedMutexGuard hlock(_merit_heap_mu, MeritLockKind::Heap);
-        if (!_merit_max_heap.empty())
+        min_c = std::numeric_limits<float>::max();
+        for (const auto &kv : _merit_heap_score)
         {
-            max_c = _merit_max_heap.rbegin()->first;
-            max_id = _merit_mcache.node_at(_merit_max_heap.rbegin()->second);
+            const MeritNodeState state = merit_dyn_state_unlocked(kv.first);
+            if (state == MeritNodeState::Seed && kv.second < min_c)
+            {
+                min_c = kv.second;
+                min_id = _merit_mcache.node_at(kv.first);
+            }
+            else if (state == MeritNodeState::NonSeed && kv.second > max_c)
+            {
+                max_c = kv.second;
+                max_id = _merit_mcache.node_at(kv.first);
+            }
         }
-        if (!_merit_min_heap.empty())
-        {
-            min_c = _merit_min_heap.begin()->first;
-            min_id = _merit_mcache.node_at(_merit_min_heap.begin()->second);
-        }
+        if (min_id == std::numeric_limits<uint32_t>::max())
+            min_c = 0.0f;
         pair_n = _merit_ready_pairs.size();
         if (!_merit_ready_pairs.empty())
         {
@@ -3943,8 +3951,11 @@ template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::print_merit
         deletes = _merit_heap_deletes;
         trig = _merit_ncache_write_trig;
         refresh = _merit_pair_refresh;
-        max_n = _merit_max_heap.size();
-        min_n = _merit_min_heap.size();
+        for (const auto &kv : _merit_heap_score)
+            if (merit_dyn_state_unlocked(kv.first) == MeritNodeState::Seed)
+                ++min_n;
+            else if (merit_dyn_state_unlocked(kv.first) == MeritNodeState::NonSeed)
+                ++max_n;
         score_stage = _merit_score_stage;
         score_stage_queries = _merit_queries_in_stage;
         decay_started = _merit_decay_started;
@@ -4129,27 +4140,17 @@ template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::merit_dyn_m
 }
 
 template <typename T, typename LabelT>
-void PQFlashIndex<T, LabelT>::merit_dyn_note_touch(const MeritMetadataCache::TouchResult &tr)
+void PQFlashIndex<T, LabelT>::merit_dyn_note_touch(const MeritMetadataCache::TouchResult &tr,
+                                                   SSDQueryScratch<T> *query_scratch)
 {
     if (!_merit_dyn_enabled || !tr.present)
         return;
     if (tr.evicted_id != MeritMetadataCache::kInvalid)
         merit_dyn_on_mcache_evict(tr.evicted_id, tr.evicted_slot);
-    {
-        MeritTimedMutexGuard hlock(_merit_heap_mu, MeritLockKind::Heap);
-        if (_merit_mcache.node_at(tr.slot_id) != tr.node_id)
-            return;
-        const float current_score = _merit_mcache.score_at(tr.slot_id);
-        merit_dyn_heap_upsert_unlocked(tr.slot_id, current_score);
-        const auto pending_it = _merit_deletion_to_pending.find(tr.slot_id);
-        if (pending_it != _merit_deletion_to_pending.end())
-        {
-            const uint32_t insertion_slot = pending_it->second;
-            const float insertion_score = _merit_mcache.score_at(insertion_slot);
-            if (current_score >= insertion_score)
-                merit_dyn_clear_ready_pair_unlocked(insertion_slot);
-        }
-    }
+    if (_merit_mcache.node_at(tr.slot_id) != tr.node_id || query_scratch == nullptr)
+        return;
+    if (query_scratch->merit_heap_dirty_set.insert(tr.slot_id).second)
+        query_scratch->merit_heap_dirty_slots.push_back(tr.slot_id);
     _merit_refresh_needed.store(true, std::memory_order_release);
 }
 
@@ -4173,35 +4174,110 @@ void PQFlashIndex<T, LabelT>::merit_dyn_set_state_unlocked(uint32_t node_id, uin
 template <typename T, typename LabelT>
 void PQFlashIndex<T, LabelT>::merit_dyn_heap_erase_unlocked(uint32_t slot_id)
 {
-    const auto cit = _merit_heap_score.find(slot_id);
-    if (cit == _merit_heap_score.end())
-        return;
-    const MeritHeapKey key{cit->second, slot_id};
-    _merit_max_heap.erase(key);
-    _merit_min_heap.erase(key);
-    _merit_heap_score.erase(cit);
+    if (slot_id < _merit_heap_generation.size())
+        ++_merit_heap_generation[slot_id];
+    _merit_heap_score.erase(slot_id);
 }
 
 template <typename T, typename LabelT>
 void PQFlashIndex<T, LabelT>::merit_dyn_heap_upsert_unlocked(uint32_t slot_id, float score)
 {
     merit_dyn_heap_erase_unlocked(slot_id);
+    if (slot_id >= _merit_heap_generation.size())
+        return;
     const uint32_t node_id = _merit_mcache.node_at(slot_id);
     if (node_id == MeritMetadataCache::kInvalid)
         return;
-    const MeritHeapKey key{score, slot_id};
+    const MeritHeapEntry entry{score, slot_id, _merit_heap_generation[slot_id]};
     const auto st = merit_dyn_state_unlocked(slot_id);
     if (st == MeritNodeState::Seed)
     {
         _merit_heap_score[slot_id] = score;
-        _merit_min_heap.insert(key);
+        _merit_min_heap.push(entry);
     }
     else if (st == MeritNodeState::NonSeed && _merit_mem_pool != nullptr && _merit_mem_pool->active() &&
              _merit_mem_pool->contains(node_id) && !_merit_mem_pool->is_pinned(node_id))
     {
         _merit_heap_score[slot_id] = score;
-        _merit_max_heap.insert(key);
+        _merit_max_heap.push(entry);
     }
+}
+
+template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::merit_dyn_clean_max_heap_unlocked()
+{
+    while (!_merit_max_heap.empty())
+    {
+        const MeritHeapEntry &entry = _merit_max_heap.top();
+        const auto score_it = _merit_heap_score.find(entry.slot_id);
+        const uint32_t node_id = _merit_mcache.node_at(entry.slot_id);
+        if (entry.slot_id < _merit_heap_generation.size() &&
+            entry.generation == _merit_heap_generation[entry.slot_id] && score_it != _merit_heap_score.end() &&
+            score_it->second == entry.score && merit_dyn_state_unlocked(entry.slot_id) == MeritNodeState::NonSeed &&
+            node_id != MeritMetadataCache::kInvalid && _merit_mem_pool != nullptr && _merit_mem_pool->active() &&
+            _merit_mem_pool->contains(node_id) && !_merit_mem_pool->is_pinned(node_id))
+            break;
+        _merit_max_heap.pop();
+    }
+}
+
+template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::merit_dyn_clean_min_heap_unlocked()
+{
+    while (!_merit_min_heap.empty())
+    {
+        const MeritHeapEntry &entry = _merit_min_heap.top();
+        const auto score_it = _merit_heap_score.find(entry.slot_id);
+        if (entry.slot_id < _merit_heap_generation.size() &&
+            entry.generation == _merit_heap_generation[entry.slot_id] && score_it != _merit_heap_score.end() &&
+            score_it->second == entry.score && merit_dyn_state_unlocked(entry.slot_id) == MeritNodeState::Seed &&
+            _merit_mcache.node_at(entry.slot_id) != MeritMetadataCache::kInvalid)
+            break;
+        _merit_min_heap.pop();
+    }
+}
+
+template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::merit_dyn_rebuild_heaps_unlocked()
+{
+    _merit_max_heap = decltype(_merit_max_heap)();
+    _merit_min_heap = decltype(_merit_min_heap)();
+    for (const auto &kv : _merit_heap_score)
+    {
+        if (kv.first >= _merit_heap_generation.size())
+            continue;
+        const MeritHeapEntry entry{kv.second, kv.first, _merit_heap_generation[kv.first]};
+        if (merit_dyn_state_unlocked(kv.first) == MeritNodeState::Seed)
+            _merit_min_heap.push(entry);
+        else if (merit_dyn_state_unlocked(kv.first) == MeritNodeState::NonSeed)
+            _merit_max_heap.push(entry);
+    }
+}
+
+template <typename T, typename LabelT>
+void PQFlashIndex<T, LabelT>::merit_dyn_flush_dirty_heap(SSDQueryScratch<T> *query_scratch)
+{
+    if (query_scratch == nullptr || query_scratch->merit_heap_dirty_slots.empty())
+        return;
+    {
+        MeritTimedMutexGuard hlock(_merit_heap_mu, MeritLockKind::Heap);
+        for (uint32_t slot_id : query_scratch->merit_heap_dirty_slots)
+        {
+            if (_merit_mcache.node_at(slot_id) == MeritMetadataCache::kInvalid)
+                continue;
+            const float current_score = _merit_mcache.score_at(slot_id);
+            merit_dyn_heap_upsert_unlocked(slot_id, current_score);
+            const auto pending_it = _merit_deletion_to_pending.find(slot_id);
+            if (pending_it != _merit_deletion_to_pending.end())
+            {
+                const uint32_t insertion_slot = pending_it->second;
+                if (current_score >= _merit_mcache.score_at(insertion_slot))
+                    merit_dyn_clear_ready_pair_unlocked(insertion_slot);
+            }
+        }
+        const size_t active = _merit_heap_score.size();
+        if (_merit_max_heap.size() + _merit_min_heap.size() > std::max<size_t>(10000, active * 8))
+            merit_dyn_rebuild_heaps_unlocked();
+    }
+    query_scratch->merit_heap_dirty_slots.clear();
+    query_scratch->merit_heap_dirty_set.clear();
 }
 
 template <typename T, typename LabelT>
@@ -4334,16 +4410,17 @@ template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::merit_dyn_m
             return;
         const uint64_t committed_pages = _merit_page_to_seed.size();
         full = committed_pages >= _merit_dyn_page_cap;
+        merit_dyn_clean_max_heap_unlocked();
         if (_merit_max_heap.empty())
             return;
-        cand_ins_slot = _merit_max_heap.rbegin()->second;
+        cand_ins_slot = _merit_max_heap.top().slot_id;
         cand_ins = _merit_mcache.node_at(cand_ins_slot);
         if (cand_ins == MeritMetadataCache::kInvalid)
         {
             merit_dyn_heap_erase_unlocked(cand_ins_slot);
             return;
         }
-        const float max_c = _merit_max_heap.rbegin()->first;
+        const float max_c = _merit_max_heap.top().score;
         const auto ins_st = merit_dyn_state_unlocked(cand_ins_slot);
         if (ins_st == MeritNodeState::Seed || ins_st == MeritNodeState::ReadyToDeletion)
         {
@@ -4352,16 +4429,17 @@ template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::merit_dyn_m
         }
         if (full)
         {
+            merit_dyn_clean_min_heap_unlocked();
             if (_merit_min_heap.empty())
                 return;
-            cand_del_slot = _merit_min_heap.begin()->second;
+            cand_del_slot = _merit_min_heap.top().slot_id;
             cand_del = _merit_mcache.node_at(cand_del_slot);
             if (cand_del == MeritMetadataCache::kInvalid)
             {
                 merit_dyn_heap_erase_unlocked(cand_del_slot);
                 return;
             }
-            const float min_c = _merit_min_heap.begin()->first;
+            const float min_c = _merit_min_heap.top().score;
             if (max_c <= min_c || cand_ins == cand_del)
             {
                 g_dyn_probe.pair_skip_count++;
@@ -4377,7 +4455,8 @@ template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::merit_dyn_m
     if (!merit_dyn_build_pending_flush(cand_ins, snap, pf))
     {
         MeritTimedMutexGuard hlock(_merit_heap_mu, MeritLockKind::Heap);
-        if (!_merit_max_heap.empty() && _merit_max_heap.rbegin()->second == cand_ins_slot &&
+        merit_dyn_clean_max_heap_unlocked();
+        if (!_merit_max_heap.empty() && _merit_max_heap.top().slot_id == cand_ins_slot &&
             _merit_mcache.node_at(cand_ins_slot) == cand_ins)
             merit_dyn_heap_erase_unlocked(cand_ins_slot);
         return;
@@ -4392,15 +4471,17 @@ template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::merit_dyn_m
         const bool now_full = committed_pages >= _merit_dyn_page_cap;
         if (now_full != full)
             return;
-        if (_merit_max_heap.empty() || _merit_max_heap.rbegin()->second != cand_ins_slot ||
+        merit_dyn_clean_max_heap_unlocked();
+        if (_merit_max_heap.empty() || _merit_max_heap.top().slot_id != cand_ins_slot ||
             _merit_mcache.node_at(cand_ins_slot) != cand_ins)
             return;
         if (full)
         {
-            if (_merit_min_heap.empty() || _merit_min_heap.begin()->second != cand_del_slot ||
+            merit_dyn_clean_min_heap_unlocked();
+            if (_merit_min_heap.empty() || _merit_min_heap.top().slot_id != cand_del_slot ||
                 _merit_mcache.node_at(cand_del_slot) != cand_del)
                 return;
-            if (_merit_max_heap.rbegin()->first <= _merit_min_heap.begin()->first)
+            if (_merit_max_heap.top().score <= _merit_min_heap.top().score)
                 return;
         }
         MeritReadyPair pair;
@@ -4546,7 +4627,8 @@ template <typename T, typename LabelT> bool PQFlashIndex<T, LabelT>::merit_dyn_c
 }
 
 template <typename T, typename LabelT>
-uint32_t PQFlashIndex<T, LabelT>::merit_dyn_admit_node(uint32_t node_id, const char *node_disk_buf, QueryStats *stats)
+uint32_t PQFlashIndex<T, LabelT>::merit_dyn_admit_node(uint32_t node_id, const char *node_disk_buf, QueryStats *stats,
+                                                      SSDQueryScratch<T> *query_scratch)
 {
     if (_merit_mem_pool == nullptr || !_merit_mem_pool->active() ||
         !(_merit_mem_runtime_admit || _merit_dyn_enabled))
@@ -4562,11 +4644,11 @@ uint32_t PQFlashIndex<T, LabelT>::merit_dyn_admit_node(uint32_t node_id, const c
         _merit_mem_pool->try_admit(node_id, node_disk_buf, _disk_bytes_per_point, _max_node_len);
     if (stats != nullptr && evicted != MeritMemoryPool<T>::INVALID_NODE)
         stats->n_merit_mem_evictions++;
-    if (_merit_dyn_enabled && _merit_mem_pool->contains(node_id) && _merit_mcache.contains(node_id))
+    if (_merit_dyn_enabled && _merit_mem_pool->contains(node_id) && query_scratch != nullptr)
     {
-        MeritTimedMutexGuard hlock(_merit_heap_mu, MeritLockKind::Heap);
         const uint32_t slot_id = _merit_mcache.slot_of(node_id);
-        merit_dyn_heap_upsert_unlocked(slot_id, _merit_mcache.score_at(slot_id));
+        if (slot_id != MeritMetadataCache::kInvalid && query_scratch->merit_heap_dirty_set.insert(slot_id).second)
+            query_scratch->merit_heap_dirty_slots.push_back(slot_id);
     }
     return evicted;
 }
@@ -4582,7 +4664,8 @@ template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::merit_dyn_s
 }
 
 template <typename T, typename LabelT>
-void PQFlashIndex<T, LabelT>::merit_dyn_note_base_load(uint32_t node_id, uint32_t parent, const char *node_disk_buf)
+void PQFlashIndex<T, LabelT>::merit_dyn_note_base_load(uint32_t node_id, uint32_t parent, const char *node_disk_buf,
+                                                       SSDQueryScratch<T> *query_scratch)
 {
     if (!_merit_dyn_enabled || node_disk_buf == nullptr)
         return;
@@ -4628,13 +4711,12 @@ void PQFlashIndex<T, LabelT>::merit_dyn_note_base_load(uint32_t node_id, uint32_
         }
     }
 
-    if (parent != std::numeric_limits<uint32_t>::max())
+    if (parent != std::numeric_limits<uint32_t>::max() && query_scratch != nullptr)
     {
-        MeritTimedMutexGuard hlock(_merit_heap_mu, MeritLockKind::Heap);
         const uint32_t parent_slot = _merit_mcache.slot_of(parent);
         if (parent_slot != MeritMetadataCache::kInvalid &&
-            merit_dyn_state_unlocked(parent_slot) == MeritNodeState::NonSeed)
-            merit_dyn_heap_upsert_unlocked(parent_slot, _merit_mcache.score_at(parent_slot));
+            query_scratch->merit_heap_dirty_set.insert(parent_slot).second)
+            query_scratch->merit_heap_dirty_slots.push_back(parent_slot);
     }
     if (parent != std::numeric_limits<uint32_t>::max())
         merit_dyn_maybe_mark_seed(parent);
@@ -4768,8 +4850,10 @@ void PQFlashIndex<T, LabelT>::merit_dyn_on_ncache_evict(uint32_t node_id, QueryS
     merit_dyn_request_refresh();
 }
 
-template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::merit_dyn_on_query_end(QueryStats *stats)
+template <typename T, typename LabelT>
+void PQFlashIndex<T, LabelT>::merit_dyn_on_query_end(QueryStats *stats, SSDQueryScratch<T> *query_scratch)
 {
+    merit_dyn_flush_dirty_heap(query_scratch);
     uint64_t page_count = 0;
     {
         MeritTimedSharedMutexGuard lock(_merit_dyn_mu, MeritLockKind::DynamicShared, false);
@@ -4805,8 +4889,8 @@ template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::merit_dyn_o
     _merit_mcache.scale_scores(1.0f / MERIT_SCORE_CYCLE_MAX, scaled);
     _merit_score_stage = 0;
     _merit_score_unit.store(1.0f);
-    _merit_max_heap.clear();
-    _merit_min_heap.clear();
+    _merit_max_heap = decltype(_merit_max_heap)();
+    _merit_min_heap = decltype(_merit_min_heap)();
     _merit_heap_score.clear();
     for (const auto &item : scaled)
         merit_dyn_heap_upsert_unlocked(item.first, item.second);

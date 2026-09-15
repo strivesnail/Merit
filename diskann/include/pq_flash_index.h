@@ -7,6 +7,7 @@
 #include <list>
 #include <fstream>
 #include <mutex>
+#include <queue>
 #include <set>
 #include <shared_mutex>
 
@@ -408,9 +409,29 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
     std::fstream _merit_dyn_write_stream;
     std::mutex _merit_dyn_writer_mu;
     uint64_t _merit_dyn_flush_count = 0;
-    using MeritHeapKey = std::pair<float, uint32_t>; // (score, m-cache slot)
-    std::set<MeritHeapKey> _merit_max_heap;          // eligible non-seed slots
-    std::set<MeritHeapKey> _merit_min_heap;          // disk-cache seed slots
+    struct MeritHeapEntry
+    {
+        float score = 0;
+        uint32_t slot_id = MeritMetadataCache::kInvalid;
+        uint32_t generation = 0;
+    };
+    struct MeritMaxHeapCmp
+    {
+        bool operator()(const MeritHeapEntry &a, const MeritHeapEntry &b) const
+        {
+            return a.score != b.score ? a.score < b.score : a.slot_id < b.slot_id;
+        }
+    };
+    struct MeritMinHeapCmp
+    {
+        bool operator()(const MeritHeapEntry &a, const MeritHeapEntry &b) const
+        {
+            return a.score != b.score ? a.score > b.score : a.slot_id > b.slot_id;
+        }
+    };
+    std::priority_queue<MeritHeapEntry, std::vector<MeritHeapEntry>, MeritMaxHeapCmp> _merit_max_heap;
+    std::priority_queue<MeritHeapEntry, std::vector<MeritHeapEntry>, MeritMinHeapCmp> _merit_min_heap;
+    std::vector<uint32_t> _merit_heap_generation;
     tsl::robin_map<uint32_t, float> _merit_heap_score;
     tsl::robin_map<uint32_t, MeritNodeState> _merit_node_state;
     tsl::robin_map<uint32_t, MeritReadyPair> _merit_ready_pairs; // insertion slot -> pair
@@ -455,10 +476,14 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
     void merit_dyn_invalidate_seed_page(uint32_t seed_id);
     uint32_t merit_dyn_alloc_page_unlocked();
     void merit_dyn_maybe_mark_seed(uint32_t node_id);
-    void merit_dyn_note_touch(const MeritMetadataCache::TouchResult &tr);
+    void merit_dyn_note_touch(const MeritMetadataCache::TouchResult &tr, SSDQueryScratch<T> *query_scratch);
     void merit_dyn_on_mcache_evict(uint32_t node_id, uint32_t slot_id);
     void merit_dyn_heap_erase_unlocked(uint32_t slot_id);
     void merit_dyn_heap_upsert_unlocked(uint32_t slot_id, float score);
+    void merit_dyn_clean_max_heap_unlocked();
+    void merit_dyn_clean_min_heap_unlocked();
+    void merit_dyn_rebuild_heaps_unlocked();
+    void merit_dyn_flush_dirty_heap(SSDQueryScratch<T> *query_scratch);
     MeritNodeState merit_dyn_state_unlocked(uint32_t slot_id) const;
     void merit_dyn_set_state_unlocked(uint32_t node_id, uint32_t slot_id, MeritNodeState st);
     void merit_dyn_clear_ready_pair_unlocked(uint32_t insertion_slot, bool restore_states = true);
@@ -468,8 +493,10 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
     void merit_dyn_maybe_refresh_pair();
     void merit_dyn_request_refresh();
     bool merit_dyn_commit_ready_pair(uint32_t insertion_slot);
-    uint32_t merit_dyn_admit_node(uint32_t node_id, const char *node_disk_buf, QueryStats *stats);
-    void merit_dyn_note_base_load(uint32_t node_id, uint32_t parent, const char *node_disk_buf);
+    uint32_t merit_dyn_admit_node(uint32_t node_id, const char *node_disk_buf, QueryStats *stats,
+                                  SSDQueryScratch<T> *query_scratch);
+    void merit_dyn_note_base_load(uint32_t node_id, uint32_t parent, const char *node_disk_buf,
+                                  SSDQueryScratch<T> *query_scratch);
     bool merit_dyn_has_payload(uint32_t node_id) const;
     bool merit_dyn_copy_member_payload(uint32_t node_id, std::vector<T> &coords, std::vector<uint32_t> &nbrs) const;
     bool merit_dyn_extract_overlay_payload(uint32_t node_id, std::vector<T> &coords,
@@ -477,7 +504,7 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
     void merit_dyn_stash_evict_unlocked();
     void merit_dyn_release_page_pin(uint32_t sector);
     void merit_dyn_on_ncache_evict(uint32_t node_id, QueryStats *stats);
-    void merit_dyn_on_query_end(QueryStats *stats);
+    void merit_dyn_on_query_end(QueryStats *stats, SSDQueryScratch<T> *query_scratch);
     bool merit_dyn_commit_one(MeritPendingFlush &pf, uint32_t replacement_seed = MERIT_DYN_INVALID_PAGE);
 
     void merit_get_expand_neighbors(uint32_t expand_id, char *node_disk_buf, const uint32_t *&out_nbrs,
