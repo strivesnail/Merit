@@ -706,7 +706,7 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
             {
                 qout << "query_id,total_us,io_us,cpu_us,n_ios,n_base_pages,n_disk_cache_pages,n_merit_hits,"
                         "n_mem_hits,n_disk_reads,n_sector_cache_hits,n_hops,max_sector_jump,"
-                        "n_merit_dyn_hits,n_merit_dyn_flushes,n_merit_dyn_pages\n";
+                        "n_merit_dyn_hits,n_merit_dyn_flushes,n_merit_dyn_pages,n_merit_dyn_disk_reads\n";
                 for (size_t qi = 0; qi < query_num; qi++)
                 {
                     const auto &s = stats[qi];
@@ -714,7 +714,8 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
                          << s.n_unique_sectors << ',' << s.n_unique_merit_sectors << ',' << s.n_merit_dc_hits << ','
                          << s.n_cache_hits << ',' << s.n_disk_reads << ',' << s.n_sector_cache_hits << ','
                          << s.n_hops << ',' << s.max_sector_jump << ',' << s.n_merit_dyn_hits << ','
-                         << s.n_merit_dyn_flushes << ',' << s.n_merit_dyn_pages << '\n';
+                         << s.n_merit_dyn_flushes << ',' << s.n_merit_dyn_pages << ','
+                         << s.n_merit_dyn_disk_reads << '\n';
                 }
                 qout.close();
                 diskann::cout << "      per-query stats written to " << dump_query_stats_path << std::endl;

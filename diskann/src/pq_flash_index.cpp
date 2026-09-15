@@ -28,6 +28,9 @@
 #include "windows_aligned_file_reader.h"
 #else
 #include "linux_aligned_file_reader.h"
+#include <cerrno>
+#include <fcntl.h>
+#include <unistd.h>
 #endif
 
 namespace
@@ -476,6 +479,27 @@ template <typename T, typename LabelT> PQFlashIndex<T, LabelT>::~PQFlashIndex()
         _merit_disk_reader->close();
         _merit_disk_reader.reset();
     }
+    if (_merit_dyn_reader)
+    {
+        _merit_dyn_reader->close();
+        _merit_dyn_reader.reset();
+    }
+    if (_merit_dyn_write_stream.is_open())
+        _merit_dyn_write_stream.close();
+#ifndef _WINDOWS
+    if (_merit_dyn_write_fd >= 0)
+    {
+        ::close(_merit_dyn_write_fd);
+        _merit_dyn_write_fd = -1;
+    }
+#endif
+#ifndef _WINDOWS
+    if (_merit_dyn_write_fd >= 0)
+    {
+        ::close(_merit_dyn_write_fd);
+        _merit_dyn_write_fd = -1;
+    }
+#endif
     _merit_dc_map.clear();
 
     if (_load_flag)
@@ -2238,7 +2262,7 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
                 {
                     if (stats != nullptr)
                         stats->n_hops++;
-                    const float batch_us = issue_merit_and_base_disk_reads(reader, _merit_disk_reader, ctx, merit_io,
+                    const float batch_us = issue_merit_and_base_disk_reads(reader, (_merit_dyn_enabled ? _merit_dyn_reader : _merit_disk_reader), ctx, merit_io,
                                                                            frontier_read_reqs, io_timer, stats);
                     if (stats != nullptr && !frontier_read_reqs.empty())
                     {
@@ -2293,7 +2317,7 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
                 {
                     if (stats != nullptr)
                         stats->n_hops++;
-                    issue_merit_and_base_disk_reads(reader, _merit_disk_reader, ctx, merit_io, frontier_read_reqs,
+                    issue_merit_and_base_disk_reads(reader, (_merit_dyn_enabled ? _merit_dyn_reader : _merit_disk_reader), ctx, merit_io, frontier_read_reqs,
                                                     io_timer, stats);
                     complete_merit_disk_cache_io(query_scratch, merit_pending, merit_disk_fanout);
                 }
@@ -2303,7 +2327,7 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
             {
                 if (stats != nullptr)
                     stats->n_hops++;
-                issue_merit_and_base_disk_reads(reader, _merit_disk_reader, ctx, merit_io, frontier_read_reqs, io_timer,
+                issue_merit_and_base_disk_reads(reader, (_merit_dyn_enabled ? _merit_dyn_reader : _merit_disk_reader), ctx, merit_io, frontier_read_reqs, io_timer,
                                                 stats);
                 complete_merit_disk_cache_io(query_scratch, merit_pending, merit_disk_fanout);
             }
@@ -2611,7 +2635,12 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
     }
 
     if (_merit_dyn_enabled)
+    {
+        for (uint32_t sector : query_scratch->merit_dyn_pinned_sectors)
+            merit_dyn_release_page_pin(sector);
+        query_scratch->merit_dyn_pinned_sectors.clear();
         merit_dyn_on_query_end(stats);
+    }
 
     // re-sort by distance
     std::sort(full_retset.begin(), full_retset.end());
@@ -3754,6 +3783,60 @@ void PQFlashIndex<T, LabelT>::enable_merit_dynamic_3cache(bool enable, const std
     }
 
     _merit_dyn_path = flush_prefix.empty() ? std::string() : (flush_prefix + "_merit_dc.dyn.data");
+    if (_merit_dyn_path.empty())
+        throw ANNException("Dynamic 3-cache requires a disk-cache file path.", -1, __FUNCSIG__, __FILE__, __LINE__);
+    if (_merit_dyn_reader)
+    {
+        _merit_dyn_reader->close();
+        _merit_dyn_reader.reset();
+    }
+    if (_merit_dyn_write_stream.is_open())
+        _merit_dyn_write_stream.close();
+    {
+        MeritTimedSharedMutexGuard lock(_merit_dyn_mu, MeritLockKind::DynamicUnique, true);
+        _merit_seed_dir.clear();
+        _merit_dc_map.clear();
+        _merit_dc_seed_member_loc.clear();
+        _merit_dc_seed_canonical_loc.clear();
+        _merit_dyn_free.clear();
+        _merit_dyn_retired.clear();
+        _merit_page_to_seed.clear();
+        _merit_dyn_next_page = 0;
+        _merit_dyn_physical_cap = _merit_dyn_page_cap + std::max<uint64_t>(_max_nthreads, 1) + 1;
+        _merit_dyn_page_readers.reset(new std::atomic<uint32_t>[_merit_dyn_physical_cap]);
+        for (uint64_t i = 0; i < _merit_dyn_physical_cap; ++i)
+            _merit_dyn_page_readers[i].store(0, std::memory_order_relaxed);
+    }
+    const uint64_t dyn_file_bytes = _merit_dyn_physical_cap * defaults::SECTOR_LEN;
+#ifndef _WINDOWS
+    _merit_dyn_write_fd =
+        ::open(_merit_dyn_path.c_str(), O_CREAT | O_TRUNC | O_RDWR | O_DIRECT | O_LARGEFILE, 0644);
+    if (_merit_dyn_write_fd < 0 || ::ftruncate(_merit_dyn_write_fd, static_cast<off_t>(dyn_file_bytes)) != 0)
+        throw ANNException("Failed to create dynamic disk-cache file.", -1, __FUNCSIG__, __FILE__, __LINE__);
+#else
+    _merit_dyn_write_stream.open(_merit_dyn_path,
+                                 std::ios::binary | std::ios::in | std::ios::out | std::ios::trunc);
+    if (!_merit_dyn_write_stream.is_open())
+        throw ANNException("Failed to create dynamic disk-cache file.", -1, __FUNCSIG__, __FILE__, __LINE__);
+    _merit_dyn_write_stream.seekp(static_cast<std::streamoff>(dyn_file_bytes - 1));
+    const char zero = 0;
+    _merit_dyn_write_stream.write(&zero, 1);
+    _merit_dyn_write_stream.flush();
+    if (!_merit_dyn_write_stream.good())
+        throw ANNException("Failed to preallocate dynamic disk-cache file.", -1, __FUNCSIG__, __FILE__, __LINE__);
+#endif
+#ifndef _WINDOWS
+    _merit_dyn_reader.reset(new LinuxAlignedFileReader());
+#else
+    _merit_dyn_reader.reset(new WindowsAlignedFileReader());
+#endif
+    _merit_dyn_reader->open(_merit_dyn_path);
+#pragma omp parallel for num_threads((int)_max_nthreads)
+    for (int64_t thread = 0; thread < static_cast<int64_t>(_max_nthreads); ++thread)
+    {
+#pragma omp critical
+        { _merit_dyn_reader->register_thread(); }
+    }
     _merit_mem_runtime_admit = true;
     _merit_seed_first_lookup = true;
     _merit_stash_cap = merit_env_u64("MERIT_STASH_CAP", ncache_n > 0 ? std::max<uint64_t>(ncache_n * 2ULL, 4096) : 16384);
@@ -3767,7 +3850,7 @@ void PQFlashIndex<T, LabelT>::enable_merit_dynamic_3cache(bool enable, const std
                   << "edge_k=" << (edge_k == 0 ? "unlimited" : std::to_string(edge_k)) << " T=" << (int)sig_t
                   << " heap+delay-write nps=" << nps << " d-cache pages<=" << _merit_dyn_page_cap
                   << " (~20% of base " << base_pages << " pages)"
-                  << " flush=" << (_merit_dyn_path.empty() ? "(ram-only)" : _merit_dyn_path)
+                  << " file=" << _merit_dyn_path << " physical_pages=" << _merit_dyn_physical_cap
                   << " score=float32 unit=1..16/100x1k-query" << std::endl;
 }
 
@@ -3807,12 +3890,17 @@ template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::print_merit
 {
     if (!_merit_dyn_enabled)
         return;
+    uint64_t dynamic_pages = 0;
+    {
+        MeritTimedSharedMutexGuard lock(_merit_dyn_mu, MeritLockKind::DynamicShared, false);
+        dynamic_pages = _merit_page_to_seed.size();
+    }
     diskann::cout << "MERIT dynamic 3-cache stats: m-cache=" << _merit_mcache.size() << "/" << _merit_mcache.capacity()
                   << " n-cache="
                   << ((_merit_mem_pool && _merit_mem_pool->active()) ? _merit_mem_pool->size() : 0) << "/"
                   << ((_merit_mem_pool && _merit_mem_pool->active()) ? _merit_mem_pool->capacity() : 0)
                   << " flushes=" << _merit_dyn_flush_count << " clean=" << merit_dynamic_clean_seeds()
-                  << " partial=" << merit_dynamic_partial_seeds() << " dyn_pages=" << _merit_dyn_pages.size()
+                  << " partial=" << merit_dynamic_partial_seeds() << " dyn_pages=" << dynamic_pages
                   << std::endl;
     diskann::cout << "MERIT dyn probe: ncache_hit=" << g_dyn_probe.ncache_hit
                   << " ncache_miss=" << g_dyn_probe.ncache_miss << " resolve=" << g_dyn_probe.resolve_call
@@ -3890,24 +3978,6 @@ template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::print_merit
     diskann::cout << std::endl;
 }
 
-template <typename T, typename LabelT>
-bool PQFlashIndex<T, LabelT>::merit_dyn_copy_page(uint32_t sector, char *dst) const
-{
-    if (dst == nullptr || !merit_dyn_is_sector(sector))
-        return false;
-    const uint32_t idx = sector - MERIT_DYN_SECTOR_BASE;
-    const char *src = nullptr;
-    {
-        MeritTimedSharedMutexGuard lock(_merit_dyn_mu, MeritLockKind::DynamicShared, false);
-        if (idx >= _merit_dyn_pages.size() || _merit_dyn_pages[idx].size() < defaults::SECTOR_LEN)
-            return false;
-        // Inner 4KB buffer stays valid if the outer vector relocates (move steals the pointer).
-        src = _merit_dyn_pages[idx].data();
-    }
-    memcpy(dst, src, defaults::SECTOR_LEN);
-    return true;
-}
-
 template <typename T, typename LabelT> uint32_t PQFlashIndex<T, LabelT>::merit_dyn_alloc_page_unlocked()
 {
     if (!_merit_dyn_free.empty())
@@ -3916,11 +3986,8 @@ template <typename T, typename LabelT> uint32_t PQFlashIndex<T, LabelT>::merit_d
         _merit_dyn_free.pop_back();
         return idx;
     }
-    if (_merit_dyn_pages.size() < _merit_dyn_page_cap)
-    {
-        _merit_dyn_pages.emplace_back();
-        return static_cast<uint32_t>(_merit_dyn_pages.size() - 1);
-    }
+    if (_merit_dyn_next_page < _merit_dyn_physical_cap)
+        return _merit_dyn_next_page++;
     return MERIT_DYN_INVALID_PAGE;
 }
 
@@ -4007,10 +4074,9 @@ template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::merit_dyn_i
     auto dir_it = _merit_seed_dir.find(seed_id);
     if (dir_it == _merit_seed_dir.end() || dir_it.value().page_members.empty())
         return;
-    uint32_t old_sector = 0;
-    const auto canon = _merit_dc_seed_canonical_loc.find(seed_id);
-    if (canon != _merit_dc_seed_canonical_loc.end())
-        old_sector = canon->second.sector;
+    const uint32_t page_idx = dir_it.value().page_id;
+    const uint32_t old_sector =
+        page_idx == MERIT_DYN_INVALID_PAGE ? 0 : static_cast<uint32_t>(MERIT_DYN_SECTOR_BASE + page_idx);
 
     for (uint32_t mid : dir_it.value().page_members)
     {
@@ -4026,14 +4092,30 @@ template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::merit_dyn_i
     }
     _merit_dc_seed_member_loc.erase(seed_id);
     _merit_dc_seed_canonical_loc.erase(seed_id);
-    const uint32_t page_idx = dir_it.value().page_id;
     if (page_idx != MERIT_DYN_INVALID_PAGE)
     {
         _merit_page_to_seed.erase(page_idx);
-        _merit_dyn_free.push_back(page_idx);
+        if (_merit_dyn_page_readers[page_idx].load(std::memory_order_acquire) == 0)
+            _merit_dyn_free.push_back(page_idx);
+        else
+            _merit_dyn_retired.insert(page_idx);
     }
     dir_it.value().page_members.clear();
     dir_it.value().page_id = MERIT_DYN_INVALID_PAGE;
+}
+
+template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::merit_dyn_release_page_pin(uint32_t sector)
+{
+    if (!merit_dyn_is_sector(sector) || _merit_dyn_page_readers == nullptr)
+        return;
+    const uint32_t page_idx = sector - MERIT_DYN_SECTOR_BASE;
+    if (page_idx >= _merit_dyn_physical_cap)
+        return;
+    if (_merit_dyn_page_readers[page_idx].fetch_sub(1, std::memory_order_acq_rel) != 1)
+        return;
+    MeritTimedSharedMutexGuard lock(_merit_dyn_mu, MeritLockKind::DynamicUnique, true);
+    if (_merit_dyn_retired.erase(page_idx) != 0)
+        _merit_dyn_free.push_back(page_idx);
 }
 
 template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::merit_dyn_maybe_mark_seed(uint32_t node_id)
@@ -4512,7 +4594,7 @@ bool PQFlashIndex<T, LabelT>::merit_dyn_has_payload(uint32_t node_id) const
         if (!merit_dyn_is_sector(loc.sector))
             continue;
         const uint32_t idx = loc.sector - MERIT_DYN_SECTOR_BASE;
-        if (idx < _merit_dyn_pages.size() && _merit_dyn_pages[idx].size() >= defaults::SECTOR_LEN)
+        if (_merit_page_to_seed.find(idx) != _merit_page_to_seed.end())
             return true;
     }
     return false;
@@ -4531,17 +4613,26 @@ bool PQFlashIndex<T, LabelT>::merit_dyn_extract_overlay_payload(uint32_t node_id
         if (!merit_dyn_is_sector(loc.sector))
             continue;
         const uint32_t idx = loc.sector - MERIT_DYN_SECTOR_BASE;
-        if (idx >= _merit_dyn_pages.size() || _merit_dyn_pages[idx].size() < defaults::SECTOR_LEN)
+        if (_merit_page_to_seed.find(idx) == _merit_page_to_seed.end() || _merit_dyn_reader == nullptr)
             continue;
-        const char *slot = _merit_dyn_pages[idx].data() + static_cast<uint64_t>(loc.slot) * _max_node_len;
+        char *page = nullptr;
+        alloc_aligned(reinterpret_cast<void **>(&page), defaults::SECTOR_LEN, defaults::SECTOR_LEN);
+        std::vector<AlignedRead> reads;
+        reads.emplace_back(static_cast<uint64_t>(idx) * defaults::SECTOR_LEN, defaults::SECTOR_LEN, page);
+        _merit_dyn_reader->read(reads, _merit_dyn_reader->get_ctx());
+        const char *slot = page + static_cast<uint64_t>(loc.slot) * _max_node_len;
         const T *coord_src = reinterpret_cast<const T *>(slot);
         const uint32_t *nhood = reinterpret_cast<const uint32_t *>(slot + _disk_bytes_per_point);
         const uint32_t nnbrs = nhood[0];
         if (nnbrs > _max_degree)
+        {
+            aligned_free(page);
             continue;
+        }
         const size_t ncoords = _disk_bytes_per_point / sizeof(T);
         coords.assign(coord_src, coord_src + ncoords);
         nbrs.assign(nhood + 1, nhood + 1 + nnbrs);
+        aligned_free(page);
         return true;
     }
     return false;
@@ -4687,48 +4778,55 @@ bool PQFlashIndex<T, LabelT>::merit_dyn_commit_one(MeritPendingFlush &pf, uint32
             write_merit_dc_seed_tail(slot_dst, _max_node_len, _disk_bytes_per_point, nnbrs, 1);
     }
 
-    if (!_merit_dyn_path.empty())
-    {
-        MeritTimedRegion commit_io(MeritLockKind::CommitIo);
-        std::ofstream out(_merit_dyn_path, std::ios::binary | std::ios::app);
-        if (!out.is_open())
-            return false;
-        out.write(buf.data(), static_cast<std::streamsize>(defaults::SECTOR_LEN));
-        out.flush();
-        if (!out.good())
-            return false;
-    }
-
     MeritTimedSharedMutexGuard lock(_merit_dyn_mu, MeritLockKind::DynamicUnique, true);
     auto existing = _merit_seed_dir.find(pf.seed_id);
     if (existing != _merit_seed_dir.end() && !existing.value().page_members.empty() &&
         !merit_dyn_hotter_mismatch(existing.value().page_members, pf.member_ids))
         return false;
 
-    uint32_t page_idx = MERIT_DYN_INVALID_PAGE;
+    if (replacement_seed == MERIT_DYN_INVALID_PAGE && _merit_page_to_seed.size() >= _merit_dyn_page_cap)
+        return false;
     if (replacement_seed != MERIT_DYN_INVALID_PAGE)
     {
         const auto victim = _merit_seed_dir.find(replacement_seed);
         if (victim == _merit_seed_dir.end() || victim->second.page_id == MERIT_DYN_INVALID_PAGE ||
             victim->second.page_members.empty())
             return false;
-        page_idx = victim->second.page_id;
-        // New bytes are complete and durable before the old directory entry is
-        // removed. Readers see the old or new mapping under the same lock.
-        merit_dyn_invalidate_seed_page(replacement_seed);
-        auto free_it = std::find(_merit_dyn_free.begin(), _merit_dyn_free.end(), page_idx);
-        if (free_it != _merit_dyn_free.end())
-            _merit_dyn_free.erase(free_it);
     }
-    else
-    {
-        page_idx = merit_dyn_alloc_page_unlocked();
-    }
+    const uint32_t page_idx = merit_dyn_alloc_page_unlocked();
     if (page_idx == MERIT_DYN_INVALID_PAGE)
         return false;
-    if (page_idx >= _merit_dyn_pages.size())
-        _merit_dyn_pages.resize(static_cast<size_t>(page_idx) + 1);
-    _merit_dyn_pages[page_idx] = std::move(buf);
+    bool write_ok = false;
+    {
+        MeritTimedRegion commit_io(MeritLockKind::CommitIo);
+#ifndef _WINDOWS
+        char *aligned_page = nullptr;
+        alloc_aligned(reinterpret_cast<void **>(&aligned_page), defaults::SECTOR_LEN, defaults::SECTOR_LEN);
+        memcpy(aligned_page, buf.data(), defaults::SECTOR_LEN);
+        ssize_t written = -1;
+        do
+        {
+            written = ::pwrite(_merit_dyn_write_fd, aligned_page, defaults::SECTOR_LEN,
+                               static_cast<off_t>(page_idx) * defaults::SECTOR_LEN);
+        } while (written < 0 && errno == EINTR);
+        aligned_free(aligned_page);
+        write_ok = written == static_cast<ssize_t>(defaults::SECTOR_LEN);
+#else
+        _merit_dyn_write_stream.clear();
+        _merit_dyn_write_stream.seekp(static_cast<std::streamoff>(page_idx) * defaults::SECTOR_LEN);
+        _merit_dyn_write_stream.write(buf.data(), static_cast<std::streamsize>(defaults::SECTOR_LEN));
+        _merit_dyn_write_stream.flush();
+        write_ok = _merit_dyn_write_stream.good();
+#endif
+    }
+    if (!write_ok)
+    {
+        _merit_dyn_free.push_back(page_idx);
+        return false;
+    }
+    // Copy-on-write: publish the new physical page before retiring the old one.
+    if (replacement_seed != MERIT_DYN_INVALID_PAGE)
+        merit_dyn_invalidate_seed_page(replacement_seed);
 
     const uint32_t sector = MERIT_DYN_SECTOR_BASE + page_idx;
     for (size_t mi = 0; mi < pf.member_ids.size(); mi++)
@@ -5652,7 +5750,7 @@ bool PQFlashIndex<T, LabelT>::merit_resolve_disk_cache_loc(uint32_t node_id,
                 if (!merit_dyn_is_sector(loc.sector))
                     continue;
                 const uint32_t idx = loc.sector - MERIT_DYN_SECTOR_BASE;
-                if (idx < _merit_dyn_pages.size() && _merit_dyn_pages[idx].size() >= defaults::SECTOR_LEN)
+                if (_merit_page_to_seed.find(idx) != _merit_page_to_seed.end())
                 {
                     out_loc = loc;
                     g_dyn_probe.map_hit++;
@@ -5867,6 +5965,7 @@ void PQFlashIndex<T, LabelT>::prepare_merit_disk_cache_io(
         MeritDiskLoc loc;
         uint32_t io_base_sector = 0;
         uint16_t io_nsectors = 1;
+        bool dynamic_page_pinned = false;
     };
     std::vector<PendingChoice> choices;
     choices.reserve(merit_ids.size());
@@ -6223,6 +6322,31 @@ void PQFlashIndex<T, LabelT>::prepare_merit_disk_cache_io(
             }
         }
     }
+    choices.erase(std::remove_if(choices.begin(), choices.end(),
+                                 [&](PendingChoice &pc) {
+                                     if (!merit_dyn_is_sector(pc.loc.sector))
+                                         return false;
+                                     const uint32_t page_idx = pc.loc.sector - MERIT_DYN_SECTOR_BASE;
+                                     if (page_idx >= _merit_dyn_physical_cap ||
+                                         _merit_page_to_seed.find(page_idx) == _merit_page_to_seed.end())
+                                         return true;
+                                     const auto map_it = _merit_dc_map.find(pc.id);
+                                     if (map_it == _merit_dc_map.end() ||
+                                         std::none_of(map_it->second.begin(), map_it->second.end(),
+                                                      [&](const MeritDiskLoc &loc) {
+                                                          return loc.sector == pc.loc.sector &&
+                                                                 loc.slot == pc.loc.slot;
+                                                      }))
+                                         return true;
+                                     if (!merit_loc_in_query_cache(query_scratch, pc.loc.sector, 1))
+                                     {
+                                         _merit_dyn_page_readers[page_idx].fetch_add(1, std::memory_order_acq_rel);
+                                         query_scratch->merit_dyn_pinned_sectors.push_back(pc.loc.sector);
+                                         pc.dynamic_page_pinned = true;
+                                     }
+                                     return false;
+                                 }),
+                  choices.end());
     loc_lock.unlock();
 
     struct MultireadSpan
@@ -6254,33 +6378,18 @@ void PQFlashIndex<T, LabelT>::prepare_merit_disk_cache_io(
     for (const PendingChoice &pc : choices)
     {
         const MeritDiskLoc loc = pc.loc;
+        const bool dynamic_page = merit_dyn_is_sector(loc.sector);
         const uint32_t io_base =
-            disable_multiread ? loc.sector : multiread_root_for_sector(pc.io_base_sector);
+            dynamic_page || disable_multiread ? loc.sector : multiread_root_for_sector(pc.io_base_sector);
         query_scratch->read_merit_disk_cache_sectors.insert(loc.sector);
-        pending.push_back({pc.id, nullptr, loc, io_base, disable_multiread ? uint16_t{1} : pc.io_nsectors});
+        pending.push_back({pc.id, nullptr, loc, io_base,
+                           dynamic_page || disable_multiread ? uint16_t{1} : pc.io_nsectors,
+                           pc.dynamic_page_pinned});
         const size_t pidx = pending.size() - 1;
+        if (stats != nullptr && merit_dyn_is_sector(loc.sector))
+            stats->n_merit_dyn_hits++;
 
         bool served = false;
-        if (_merit_dyn_enabled && merit_dyn_is_sector(loc.sector))
-        {
-            char *read_buf = sector_scratch + sector_scratch_idx * defaults::SECTOR_LEN;
-            if (merit_dyn_copy_page(loc.sector, read_buf))
-            {
-                sector_scratch_idx += 1;
-                pending[pidx].sec_buf = read_buf;
-                pending[pidx].io_base_sector = loc.sector;
-                pending[pidx].io_nsectors = 1;
-                served = true;
-                if (stats != nullptr)
-                {
-                    stats->n_merit_dc_hits++;
-                    stats->n_merit_dyn_hits++;
-                    stats->n_4k++;
-                    stats->n_ios++;
-                }
-                num_ios++;
-            }
-        }
         if (!served && _query_sector_cache_enabled)
         {
             const uint32_t cache_base = pc.io_base_sector;
@@ -6304,8 +6413,6 @@ void PQFlashIndex<T, LabelT>::prepare_merit_disk_cache_io(
         }
         if (!served)
         {
-            if (_merit_dyn_enabled && merit_dyn_is_sector(loc.sector))
-                continue;
             const uint32_t group_sec = io_base;
             if (group_sec != loc.sector && stats != nullptr)
                 stats->n_merit_io_avoided++;
@@ -6372,13 +6479,17 @@ void PQFlashIndex<T, LabelT>::prepare_merit_disk_cache_io(
             pending[idx].io_nsectors = group_nsectors;
         }
         const uint64_t byte_len = static_cast<uint64_t>(group_nsectors) * defaults::SECTOR_LEN;
-        const uint64_t off =
-            (_merit_unified_disk ? _merit_region_byte_offset : 0) +
-            static_cast<uint64_t>(disk_cache_sec) * defaults::SECTOR_LEN;
+        const uint64_t off = merit_dyn_is_sector(disk_cache_sec)
+                                 ? static_cast<uint64_t>(disk_cache_sec - MERIT_DYN_SECTOR_BASE) *
+                                       defaults::SECTOR_LEN
+                                 : (_merit_unified_disk ? _merit_region_byte_offset : 0) +
+                                       static_cast<uint64_t>(disk_cache_sec) * defaults::SECTOR_LEN;
         merit_io.emplace_back(off, byte_len, read_buf);
         if (stats != nullptr)
         {
             stats->n_disk_reads++;
+            if (merit_dyn_is_sector(disk_cache_sec))
+                stats->n_merit_dyn_disk_reads++;
             if (group_nsectors > 1)
                 stats->n_merit_multiread_ios++;
             if (_record_hop_frontier && !stats->hop_frontier_trace.empty())

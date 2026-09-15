@@ -157,6 +157,7 @@ template <typename T> class SSDQueryScratch : public AbstractScratch<T>
     tsl::robin_map<uint64_t, std::array<char, defaults::SECTOR_LEN>> sector_cache;
     // Per-query MERIT disk cache: key = disk cache sector id (not base sector)
     tsl::robin_map<uint32_t, std::array<char, defaults::SECTOR_LEN>> merit_sector_cache;
+    std::vector<uint32_t> merit_dyn_pinned_sectors;
     // Temporal order of sector ids for cache-miss disk reads (one query)
     std::vector<uint64_t> disk_read_sector_order;
 

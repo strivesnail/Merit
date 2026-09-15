@@ -5,6 +5,7 @@
 #include "common_includes.h"
 #include <limits>
 #include <list>
+#include <fstream>
 #include <mutex>
 #include <set>
 #include <shared_mutex>
@@ -232,6 +233,7 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
         uint32_t io_base_sector = 0;
         // Number of contiguous 4KB pages in the single physical IO.
         uint16_t io_nsectors = 1;
+        bool dynamic_page_pinned = false;
     };
 
     void prepare_merit_disk_cache_io(const std::vector<uint32_t> &merit_ids, SSDQueryScratch<T> *query_scratch,
@@ -392,11 +394,17 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
     bool _merit_dyn_enabled = false;
     MeritMetadataCache _merit_mcache;
     tsl::robin_map<uint32_t, MeritSeedDirEntry> _merit_seed_dir;
-    std::vector<std::vector<char>> _merit_dyn_pages;
     std::vector<uint32_t> _merit_dyn_free;
+    tsl::robin_set<uint32_t> _merit_dyn_retired;
     tsl::robin_map<uint32_t, uint32_t> _merit_page_to_seed;
     uint64_t _merit_dyn_page_cap = 4096;
+    uint64_t _merit_dyn_physical_cap = 0;
+    uint32_t _merit_dyn_next_page = 0;
+    std::unique_ptr<std::atomic<uint32_t>[]> _merit_dyn_page_readers;
     std::string _merit_dyn_path;
+    std::shared_ptr<AlignedFileReader> _merit_dyn_reader;
+    int _merit_dyn_write_fd = -1;
+    std::fstream _merit_dyn_write_stream;
     uint64_t _merit_dyn_flush_count = 0;
     using MeritHeapKey = std::pair<float, uint32_t>; // (score, m-cache slot)
     std::set<MeritHeapKey> _merit_max_heap;          // eligible non-seed slots
@@ -436,7 +444,6 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
     {
         return sector >= MERIT_DYN_SECTOR_BASE;
     }
-    bool merit_dyn_copy_page(uint32_t sector, char *dst) const;
     std::vector<uint32_t> merit_dyn_now_page_ids(uint32_t seed_id, const MeritMetadataCache::Snapshot &snap) const;
     bool merit_dyn_hotter_mismatch(const std::vector<uint32_t> &page_members,
                                    const std::vector<uint32_t> &now_ids) const;
@@ -462,6 +469,7 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
     bool merit_dyn_extract_overlay_payload(uint32_t node_id, std::vector<T> &coords,
                                            std::vector<uint32_t> &nbrs) const;
     void merit_dyn_stash_evict_unlocked();
+    void merit_dyn_release_page_pin(uint32_t sector);
     void merit_dyn_on_ncache_evict(uint32_t node_id, QueryStats *stats);
     void merit_dyn_on_query_end(QueryStats *stats);
     bool merit_dyn_commit_one(MeritPendingFlush &pf, uint32_t replacement_seed = MERIT_DYN_INVALID_PAGE);

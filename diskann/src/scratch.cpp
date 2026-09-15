@@ -94,6 +94,7 @@ template <typename T> void SSDQueryScratch<T>::reset()
     profile_parent.clear();
     read_sectors.clear();
     read_merit_disk_cache_sectors.clear();
+    merit_dyn_pinned_sectors.clear();
 }
 
 template <typename T> SSDQueryScratch<T>::SSDQueryScratch(size_t aligned_dim, size_t visited_reserve)
