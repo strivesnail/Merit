@@ -52,6 +52,55 @@ def single_configs() -> list[Config]:
     return configs
 
 
+def combination_configs() -> list[Config]:
+    """Combinations selected from the completed one-factor scan."""
+    high_ncache = 0.0762939454
+    low_mcache = 400_002
+    return [
+        Config("combo_nhi_m400", ncache_gb=high_ncache, mcache_nodes=low_mcache),
+        Config("combo_nhi_t4", ncache_gb=high_ncache, seed_t=4),
+        Config("combo_m400_t4", mcache_nodes=low_mcache, seed_t=4),
+        Config("combo_nhi_m400_t4", ncache_gb=high_ncache, mcache_nodes=low_mcache, seed_t=4),
+        Config("combo_nhi_m400_t3", ncache_gb=high_ncache, mcache_nodes=low_mcache, seed_t=3),
+        Config(
+            "combo_best3_half10",
+            ncache_gb=high_ncache,
+            mcache_nodes=low_mcache,
+            seed_t=4,
+            half_life_queries=10_000,
+        ),
+        Config(
+            "combo_best3_margin20",
+            ncache_gb=high_ncache,
+            mcache_nodes=low_mcache,
+            seed_t=4,
+            replacement_margin_pct=20.0,
+        ),
+        Config(
+            "combo_best3_half10_margin20",
+            ncache_gb=high_ncache,
+            mcache_nodes=low_mcache,
+            seed_t=4,
+            half_life_queries=10_000,
+            replacement_margin_pct=20.0,
+        ),
+        Config(
+            "combo_nhi_m400_t4_d100",
+            ncache_gb=high_ncache,
+            dcache_pages=100_001,
+            mcache_nodes=low_mcache,
+            seed_t=4,
+        ),
+        Config(
+            "combo_nhi_m800_t4_d400",
+            ncache_gb=high_ncache,
+            dcache_pages=400_001,
+            mcache_nodes=800_002,
+            seed_t=4,
+        ),
+    ]
+
+
 def summarize(qstats: Path, cfg: Config) -> dict:
     official_latency_us: list[float] = []
     official_reads: list[float] = []
@@ -221,16 +270,19 @@ def main() -> None:
         type=Path,
         default=repo / "data/sift10m/runs/dynamic_knob_sweep",
     )
+    parser.add_argument("--phase", choices=("singles", "combinations"), default="singles")
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
     args.data_dir = args.data_dir.resolve()
     args.search = args.search.resolve()
     args.output_dir = args.output_dir.resolve()
 
+    configs = single_configs() if args.phase == "singles" else combination_configs()
+    summary_name = "single_summary.json" if args.phase == "singles" else "combination_summary.json"
     results = []
-    for cfg in single_configs():
+    for cfg in configs:
         results.append(run_one(cfg, args))
-        (args.output_dir / "single_summary.json").write_text(json.dumps(results, indent=2) + "\n")
+        (args.output_dir / summary_name).write_text(json.dumps(results, indent=2) + "\n")
 
 
 if __name__ == "__main__":
