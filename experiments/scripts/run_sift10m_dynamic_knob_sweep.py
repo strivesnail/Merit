@@ -98,6 +98,37 @@ def combination_configs() -> list[Config]:
             mcache_nodes=800_002,
             seed_t=4,
         ),
+        Config(
+            "combo_nhi_m400_half10",
+            ncache_gb=high_ncache,
+            mcache_nodes=low_mcache,
+            half_life_queries=10_000,
+        ),
+        Config(
+            "combo_nhi_m400_margin20",
+            ncache_gb=high_ncache,
+            mcache_nodes=low_mcache,
+            replacement_margin_pct=20.0,
+        ),
+        Config(
+            "combo_nhi_m400_half10_margin20",
+            ncache_gb=high_ncache,
+            mcache_nodes=low_mcache,
+            half_life_queries=10_000,
+            replacement_margin_pct=20.0,
+        ),
+        Config(
+            "combo_nhi_m400_d100",
+            ncache_gb=high_ncache,
+            dcache_pages=100_001,
+            mcache_nodes=low_mcache,
+        ),
+        Config(
+            "combo_nhi_m800_d400",
+            ncache_gb=high_ncache,
+            dcache_pages=400_001,
+            mcache_nodes=800_002,
+        ),
     ]
 
 
