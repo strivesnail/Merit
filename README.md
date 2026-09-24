@@ -25,13 +25,15 @@ This tree is a **DiskANN fork** with MERIT integrated in `diskann/` plus reprodu
 
 The current runtime can learn directly from the live query stream; it does not need to know whether the workload is uniform or contains moving hotspots.
 
-- **N-cache** stores complete nodes in DRAM. It uses 128 lock shards by default, an atomic membership bitmap for lock-free misses, a reader-writer lock, and CLOCK replacement. Every 1,000 queries it measures hit rate, rejected-node reuse, and evictions. Twenty-five consecutive windows below 40% hit rate and above 30 evictions/query advance from normal admission to Hop-12, then to Hop-8. A medium-locality workload (40–75% hit rate and at least 40 evictions/query) enters Hop-8 directly. A node first encountered at or beyond the selected hop is recorded but not admitted; a second encounter admits it. Six windows above 85% hit rate and below 15 evictions/query, or above 10% rejected-node reuse, relax one step in the reverse direction.
+- **N-cache** stores complete nodes in DRAM. It uses 128 lock shards by default, an atomic membership bitmap for lock-free misses, a reader-writer lock, and CLOCK replacement. Adaptive mode samples nodes by ID (1/64 by default) and continuously simulates three independent shadow caches: normal MRU admission, Hop-12 reject-first, and Hop-8 reject-first. The shadow caches never serve queries. Every 25K queries, MERIT estimates each policy's cost from its predicted misses and admissions, the measured device I/O time, and sampled real admission time. It switches immediately when the predicted gain is at least 2%, or after the same policy wins three consecutive windows by at least 0.5%. Evaluation starts only after the active shadow cache is full, avoiding cold-start decisions. No workload label or hit-rate range is used.
 - **M-cache** stores node and edge hotness metadata. Every 1,000 queries it measures the current-window hit rate. Each run of 25 consecutive windows below 20% reduces updates one step from 100% to 10%, then from 10% to 1%; six windows above 40% restore one level at a time.
 - **D-cache** stores runtime-generated 4 KiB pages. It is controlled by net physical-I/O benefit, not hit rate alone. MERIT counts base-index pages avoided and D-cache pages read. Twenty-five consecutive 1,000-query windows saving less than 0.1 page/query disable M/D-cache maintenance. While disabled, 1% of queries remain full probes. Two consecutive 10,000-query probe windows with at least 0.25 net page saved/query and at least 1.25 avoided pages per D-cache page read re-enable maintenance.
 
 The D-cache net-benefit gate is enabled automatically when `MERIT_MCACHE_ADAPTIVE_UPDATE=1`; set `MERIT_DCACHE_NET_GATE=0` to disable it.
 
 Set `MERIT_NCACHE_GHOST_STATS=1` only for diagnostics to attribute later N-cache hits to second-encounter admissions. It is disabled by default because exact per-hit accounting adds atomic operations to the search path.
+
+The N-cache shadow controller is enabled automatically by `MERIT_NCACHE_ADMISSION=adaptive_hop_reject`. `MERIT_NCACHE_SHADOW_SAMPLE_SHIFT=6` selects 1/64 node sampling, `MERIT_NCACHE_SHADOW_MIN_GAIN=0.02` sets the immediate-switch margin, and `MERIT_NCACHE_SHADOW_CONTROL=0` disables shadow-based switching.
 
 Example:
 
@@ -67,19 +69,19 @@ Reproduced on SIFT100M with 2 million queries: ten cycles of 100K global-uniform
 - **Plain full MERIT:** 6,257.90 QPS, 50.90 reads/query, P99 8,580 us.
 - **DiskANN BFS:** 7,682.13 QPS, 99.23 reads/query, P99 5,289 us.
 - **Adaptive N-cache only:** 11,256.89 QPS, 51.05 reads/query, P99 6,637 us.
-- **Current adaptive full MERIT:** 11,458.95 QPS, 51.05 reads/query, P99 6,398 us.
-- Recall@1 is 99.99% for all four runs. The adaptive full mode is 83.1% faster than plain full MERIT and 49.2% faster than DiskANN BFS on this workload.
+- **General shadow-adaptive full MERIT:** 11,261.18 QPS, 51.20 reads/query, P99 5,851 us.
+- Recall@1 is 99.99% for all four runs. The general controller changes policy 25K queries after each uniform/hotspot boundary, with no workload-specific rule.
 
 With `MERIT_NCACHE_GHOST_STATS=1`, 979,234 nodes were admitted after a second encounter. Of these, 598,719 (61.14%) produced a later cache hit, contributing 70,637,091 of 133,952,593 total N-cache hits (52.73%). A same-build back-to-back comparison of 128 versus 32 shards measured 11,235.81 versus 11,124.77 QPS, 296.54 versus 314.00 CPU us/query, and 5,828 versus 6,644 us P99.
 
 ### SIFT100M moderate-skew result
 
-The moderate workload contains ten rounds of one million queries. Each round samples a different one-million-node global support with finite Zipf `alpha=0.8`; about 391K nodes occur per round, the ten hottest nodes account for 4.75% of queries, and the hottest 1% account for 36.8%.
+The moderate workload contains rounds of one million queries. Each round samples a different one-million-node global support with finite Zipf `alpha=0.8`; about 391K nodes occur per round, the ten hottest nodes account for 4.75% of queries, and the hottest 1% account for 36.8%.
 
 - **DiskANN BFS:** 7,143.60 QPS, 99.03 reads/query, P99 5,395 us.
-- **Previous adaptive MERIT:** 9,751.16 QPS, 61.30 reads/query, P99 5,681 us.
-- **Medium-aware adaptive MERIT:** 10,073.21 QPS, 60.66 reads/query, P99 5,408 us.
-- Recall@1 is 99.98%. The medium-aware transition improves QPS by 3.3%, reduces CPU time by 5.0%, and reduces N-cache evictions by 87.7% relative to the previous adaptive policy.
+- **Plain MRU MERIT, first 1M round:** 9,704 QPS.
+- **General shadow-adaptive MERIT, same 1M round:** 9,971 QPS, 59.68 reads/query, P99 5,819 us.
+- The controller selects Hop-12 at 225K queries and Hop-8 at 775K from measured costs. Recall@1 is 99.97%.
 
 ## Build
 

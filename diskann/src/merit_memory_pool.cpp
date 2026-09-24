@@ -3,6 +3,7 @@
 #include "common_includes.h"
 #include "utils.h"
 
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <cstdlib>
@@ -51,6 +52,42 @@ template <typename T> void MeritMemoryPool<T>::clear()
     _ghost_reused_admissions.store(0, std::memory_order_relaxed);
     _ghost_admission_evictions.store(0, std::memory_order_relaxed);
     _ghost_zero_hit_evictions.store(0, std::memory_order_relaxed);
+    _shadow_dropped_samples.store(0, std::memory_order_relaxed);
+    _shadow_real_admit_samples.store(0, std::memory_order_relaxed);
+    _shadow_real_admit_ns.store(0, std::memory_order_relaxed);
+    _shadow_query_disk_reads.store(0, std::memory_order_relaxed);
+    _shadow_query_io_ns.store(0, std::memory_order_relaxed);
+    _shadow_last_stats = {};
+    _shadow_last_real_admit_samples = 0;
+    _shadow_last_real_admit_ns = 0;
+    _shadow_last_query_disk_reads = 0;
+    _shadow_last_query_io_ns = 0;
+    _shadow_ewma_admit_ns = 0;
+    _shadow_controller_ready = false;
+    _shadow_candidate_mode = _shadow_models.size();
+    _shadow_candidate_windows = 0;
+    {
+        std::lock_guard<std::mutex> shadow_lock(_shadow_mu);
+        for (ShadowModel &model : _shadow_models)
+        {
+            model.slots.clear();
+            model.id_to_slot.clear();
+            model.ghost_ring.clear();
+            model.ghost_tokens.clear();
+            model.next_free_slot = 0;
+            model.clock_hand = 0;
+            model.ghost_cursor = 0;
+            model.ghost_sequence = 0;
+            model.accesses = 0;
+            model.hits = 0;
+            model.misses = 0;
+            model.admissions = 0;
+            model.rejections = 0;
+            model.second_hits = 0;
+            model.evictions = 0;
+            model.clock_second_chances = 0;
+        }
+    }
     _adaptive_query_count.store(0, std::memory_order_relaxed);
     _adaptive_reject_enabled.store(false, std::memory_order_relaxed);
     {
@@ -106,6 +143,20 @@ void MeritMemoryPool<T>::init(uint64_t capacity, uint64_t aligned_dim, uint64_t 
     const char *ghost_stats = std::getenv("MERIT_NCACHE_GHOST_STATS");
     _ghost_stats_enabled =
         ghost_stats != nullptr && std::strtoull(ghost_stats, nullptr, 10) != 0;
+    const char *shadow = std::getenv("MERIT_NCACHE_SHADOW");
+    const char *shadow_control = std::getenv("MERIT_NCACHE_SHADOW_CONTROL");
+    _shadow_control_enabled =
+        shadow_control != nullptr && std::strtoull(shadow_control, nullptr, 10) != 0;
+    const char *shadow_shift = std::getenv("MERIT_NCACHE_SHADOW_SAMPLE_SHIFT");
+    _shadow_sample_shift =
+        shadow_shift == nullptr
+            ? 6u
+            : std::min<uint32_t>(16u, static_cast<uint32_t>(std::strtoul(shadow_shift, nullptr, 10)));
+    const char *shadow_min_gain = std::getenv("MERIT_NCACHE_SHADOW_MIN_GAIN");
+    _shadow_min_gain =
+        shadow_min_gain == nullptr
+            ? 0.02
+            : std::clamp(std::strtod(shadow_min_gain, nullptr), 0.0, 0.50);
 
     _admission_policy = AdmissionPolicy::Mru;
     const char *admission = std::getenv("MERIT_NCACHE_ADMISSION");
@@ -124,6 +175,12 @@ void MeritMemoryPool<T>::init(uint64_t capacity, uint64_t aligned_dim, uint64_t 
         else if (std::strcmp(admission, "adaptive_hop_reject") == 0)
             _admission_policy = AdmissionPolicy::AdaptiveHopReject;
     }
+    if (shadow_control == nullptr &&
+        _admission_policy == AdmissionPolicy::AdaptiveHopReject)
+        _shadow_control_enabled = true;
+    _shadow_enabled =
+        (shadow != nullptr && std::strtoull(shadow, nullptr, 10) != 0) ||
+        _shadow_control_enabled;
     const char *hop_threshold = std::getenv("MERIT_NCACHE_HOP_THRESHOLD");
     const uint32_t default_hop_threshold =
         _admission_policy == AdmissionPolicy::AdaptiveHopReject ? 12u : 8u;
@@ -203,6 +260,32 @@ void MeritMemoryPool<T>::init(uint64_t capacity, uint64_t aligned_dim, uint64_t 
         {
             _shards[index].ghost_ring.resize(ghost_per_shard);
             _shards[index].ghost_tokens.reserve(ghost_per_shard);
+        }
+    }
+
+    if (_shadow_enabled)
+    {
+        const uint64_t sample_divisor = uint64_t{1} << _shadow_sample_shift;
+        const size_t shadow_capacity =
+            static_cast<size_t>(std::max<uint64_t>(1, capacity / sample_divisor));
+        const size_t shadow_ghost_capacity =
+            static_cast<size_t>(std::max<uint64_t>(
+                1, capacity * _ghost_percent / 100 / sample_divisor));
+        const std::array<const char *, 3> names = {"mru", "hop12", "hop8"};
+        const std::array<uint32_t, 3> thresholds = {0, 12, 8};
+        for (size_t index = 0; index < _shadow_models.size(); ++index)
+        {
+            ShadowModel &model = _shadow_models[index];
+            model.name = names[index];
+            model.hop_threshold = thresholds[index];
+            model.reject_first = index != 0;
+            model.slots.resize(shadow_capacity);
+            model.id_to_slot.reserve(shadow_capacity);
+            if (model.reject_first)
+            {
+                model.ghost_ring.resize(shadow_ghost_capacity);
+                model.ghost_tokens.reserve(shadow_ghost_capacity);
+            }
         }
     }
 }
@@ -443,6 +526,293 @@ bool MeritMemoryPool<T>::lookup(uint32_t node_id, T *&coords, std::pair<uint32_t
     return true;
 }
 
+template <typename T>
+void MeritMemoryPool<T>::shadow_model_access(ShadowModel &model, uint32_t node_id,
+                                             uint32_t search_hop)
+{
+    model.accesses++;
+    const auto found = model.id_to_slot.find(node_id);
+    if (found != model.id_to_slot.end())
+    {
+        model.hits++;
+        model.slots[found->second].recently_accessed = 1;
+        return;
+    }
+    model.misses++;
+
+    if (model.reject_first && search_hop >= model.hop_threshold)
+    {
+        const auto seen = model.ghost_tokens.find(node_id);
+        if (seen == model.ghost_tokens.end())
+        {
+            if (model.ghost_ring.empty())
+                return;
+            GhostEntry &entry = model.ghost_ring[model.ghost_cursor];
+            if (entry.node_id != INVALID_NODE)
+            {
+                const auto old = model.ghost_tokens.find(entry.node_id);
+                if (old != model.ghost_tokens.end() && old->second == entry.token)
+                    model.ghost_tokens.erase(old);
+            }
+            model.ghost_sequence++;
+            if (model.ghost_sequence == 0)
+                model.ghost_sequence++;
+            entry.node_id = node_id;
+            entry.token = model.ghost_sequence;
+            model.ghost_tokens[node_id] = entry.token;
+            model.ghost_cursor = (model.ghost_cursor + 1) % model.ghost_ring.size();
+            model.rejections++;
+            return;
+        }
+        model.ghost_tokens.erase(seen);
+        model.second_hits++;
+    }
+
+    if (model.slots.empty())
+        return;
+    uint32_t slot = INVALID_NODE;
+    if (model.next_free_slot < model.slots.size())
+    {
+        slot = model.next_free_slot++;
+    }
+    else
+    {
+        const size_t scan_budget = model.slots.size() * 2;
+        for (size_t attempt = 0; attempt < scan_budget; ++attempt)
+        {
+            const uint32_t candidate = model.clock_hand;
+            model.clock_hand =
+                static_cast<uint32_t>((model.clock_hand + 1) % model.slots.size());
+            ShadowSlot &candidate_slot = model.slots[candidate];
+            if (candidate_slot.recently_accessed != 0)
+            {
+                candidate_slot.recently_accessed = 0;
+                model.clock_second_chances++;
+                continue;
+            }
+            model.id_to_slot.erase(candidate_slot.node_id);
+            model.evictions++;
+            slot = candidate;
+            break;
+        }
+    }
+    if (slot == INVALID_NODE)
+        return;
+
+    model.slots[slot].node_id = node_id;
+    model.slots[slot].recently_accessed = 1;
+    model.id_to_slot[node_id] = slot;
+    model.admissions++;
+}
+
+template <typename T> bool MeritMemoryPool<T>::shadow_sampled_node(uint32_t node_id) const
+{
+    if (!_shadow_enabled)
+        return false;
+    const uint32_t hash = static_cast<uint32_t>(
+        (static_cast<uint64_t>(node_id) * 11400714819323198485ull) >> 32);
+    const uint32_t sample_mask =
+        _shadow_sample_shift == 0 ? 0u : (uint32_t{1} << _shadow_sample_shift) - 1;
+    return (hash & sample_mask) == 0;
+}
+
+template <typename T> void MeritMemoryPool<T>::shadow_access(uint32_t node_id, uint32_t search_hop)
+{
+    if (!shadow_sampled_node(node_id))
+        return;
+
+    std::unique_lock<std::mutex> lock(_shadow_mu, std::try_to_lock);
+    if (!lock.owns_lock())
+    {
+        _shadow_dropped_samples.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    for (ShadowModel &model : _shadow_models)
+        shadow_model_access(model, node_id, search_hop);
+}
+
+template <typename T>
+std::array<typename MeritMemoryPool<T>::ShadowStats, 3> MeritMemoryPool<T>::shadow_stats() const
+{
+    std::array<ShadowStats, 3> result;
+    std::lock_guard<std::mutex> lock(_shadow_mu);
+    for (size_t index = 0; index < _shadow_models.size(); ++index)
+    {
+        const ShadowModel &model = _shadow_models[index];
+        ShadowStats &stats = result[index];
+        stats.name = model.name;
+        stats.resident = model.next_free_slot;
+        stats.accesses = model.accesses;
+        stats.hits = model.hits;
+        stats.misses = model.misses;
+        stats.admissions = model.admissions;
+        stats.rejections = model.rejections;
+        stats.second_hits = model.second_hits;
+        stats.evictions = model.evictions;
+        stats.clock_second_chances = model.clock_second_chances;
+        stats.sampled_capacity = model.slots.size();
+    }
+    return result;
+}
+
+template <typename T> void MeritMemoryPool<T>::shadow_evaluate_controller(uint64_t query_count)
+{
+    const auto current_stats = shadow_stats();
+    const uint64_t current_admit_samples =
+        _shadow_real_admit_samples.load(std::memory_order_relaxed);
+    const uint64_t current_admit_ns =
+        _shadow_real_admit_ns.load(std::memory_order_relaxed);
+    const uint64_t current_disk_reads =
+        _shadow_query_disk_reads.load(std::memory_order_relaxed);
+    const uint64_t current_io_ns =
+        _shadow_query_io_ns.load(std::memory_order_relaxed);
+
+    std::array<ShadowStats, 3> delta;
+    for (size_t index = 0; index < delta.size(); ++index)
+    {
+        delta[index].name = current_stats[index].name;
+        delta[index].accesses =
+            current_stats[index].accesses - _shadow_last_stats[index].accesses;
+        delta[index].hits = current_stats[index].hits - _shadow_last_stats[index].hits;
+        delta[index].misses = current_stats[index].misses - _shadow_last_stats[index].misses;
+        delta[index].admissions =
+            current_stats[index].admissions - _shadow_last_stats[index].admissions;
+        delta[index].rejections =
+            current_stats[index].rejections - _shadow_last_stats[index].rejections;
+        delta[index].second_hits =
+            current_stats[index].second_hits - _shadow_last_stats[index].second_hits;
+        delta[index].evictions =
+            current_stats[index].evictions - _shadow_last_stats[index].evictions;
+        delta[index].clock_second_chances =
+            current_stats[index].clock_second_chances -
+            _shadow_last_stats[index].clock_second_chances;
+    }
+    const uint64_t admit_sample_delta =
+        current_admit_samples - _shadow_last_real_admit_samples;
+    const uint64_t admit_ns_delta = current_admit_ns - _shadow_last_real_admit_ns;
+    const uint64_t disk_read_delta =
+        current_disk_reads - _shadow_last_query_disk_reads;
+    const uint64_t io_ns_delta = current_io_ns - _shadow_last_query_io_ns;
+
+    _shadow_last_stats = current_stats;
+    _shadow_last_real_admit_samples = current_admit_samples;
+    _shadow_last_real_admit_ns = current_admit_ns;
+    _shadow_last_query_disk_reads = current_disk_reads;
+    _shadow_last_query_io_ns = current_io_ns;
+
+    if (admit_sample_delta != 0)
+    {
+        const double window_admit_ns =
+            static_cast<double>(admit_ns_delta) / static_cast<double>(admit_sample_delta);
+        _shadow_ewma_admit_ns =
+            _shadow_ewma_admit_ns == 0
+                ? window_admit_ns
+                : 0.5 * _shadow_ewma_admit_ns + 0.5 * window_admit_ns;
+    }
+
+    const bool reject_enabled =
+        _adaptive_reject_enabled.load(std::memory_order_relaxed);
+    const uint32_t current_threshold =
+        _admission_hop_threshold.load(std::memory_order_relaxed);
+    const size_t current_mode =
+        !reject_enabled ? 0 : (current_threshold <= _adaptive_min_hop_threshold ? 2 : 1);
+    if (!_shadow_controller_ready)
+    {
+        if (current_stats[current_mode].resident < current_stats[current_mode].sampled_capacity)
+        {
+            diskann::cout << "MERIT ncache shadow controller: queries=" << query_count
+                          << " current=" << current_stats[current_mode].name
+                          << " ready=no resident=" << current_stats[current_mode].resident
+                          << " capacity=" << current_stats[current_mode].sampled_capacity
+                          << std::endl;
+            return;
+        }
+        _shadow_controller_ready = true;
+        diskann::cout << "MERIT ncache shadow controller: queries=" << query_count
+                      << " current=" << current_stats[current_mode].name
+                      << " ready=warming resident=" << current_stats[current_mode].resident
+                      << " capacity=" << current_stats[current_mode].sampled_capacity
+                      << std::endl;
+        return;
+    }
+    if (delta[current_mode].misses == 0 || io_ns_delta == 0 ||
+        _shadow_ewma_admit_ns == 0)
+        return;
+
+    const double represented_io_ns_per_miss =
+        static_cast<double>(io_ns_delta) /
+        static_cast<double>(delta[current_mode].misses);
+    const double represented_admit_ns =
+        _shadow_ewma_admit_ns * static_cast<double>(shadow_sample_divisor());
+    std::array<double, 3> scores{};
+    for (size_t index = 0; index < scores.size(); ++index)
+    {
+        scores[index] =
+            static_cast<double>(delta[index].misses) * represented_io_ns_per_miss +
+            static_cast<double>(delta[index].admissions) * represented_admit_ns;
+    }
+
+    size_t best_mode = 0;
+    for (size_t index = 1; index < scores.size(); ++index)
+    {
+        if (scores[index] < scores[best_mode])
+            best_mode = index;
+    }
+    const double relative_gain =
+        best_mode == current_mode || scores[current_mode] == 0
+            ? 0.0
+            : 1.0 - scores[best_mode] / scores[current_mode];
+    if (best_mode == current_mode || relative_gain < 0.005)
+    {
+        _shadow_candidate_mode = _shadow_models.size();
+        _shadow_candidate_windows = 0;
+    }
+    else if (_shadow_candidate_mode == best_mode)
+    {
+        _shadow_candidate_windows++;
+    }
+    else
+    {
+        _shadow_candidate_mode = best_mode;
+        _shadow_candidate_windows = 1;
+    }
+    const bool worthwhile =
+        best_mode != current_mode &&
+        (relative_gain >= _shadow_min_gain || _shadow_candidate_windows >= 3);
+    diskann::cout << "MERIT ncache shadow controller: queries=" << query_count
+                  << " current=" << current_stats[current_mode].name
+                  << " best=" << current_stats[best_mode].name
+                  << " score_mru=" << scores[0]
+                  << " score_hop12=" << scores[1]
+                  << " score_hop8=" << scores[2]
+                  << " relative_gain=" << relative_gain
+                  << " candidate_windows=" << _shadow_candidate_windows
+                  << " represented_io_ns_per_miss=" << represented_io_ns_per_miss
+                  << " represented_admit_ns=" << represented_admit_ns
+                  << " disk_reads=" << disk_read_delta
+                  << " switch=" << (worthwhile ? "yes" : "no") << std::endl;
+    if (!worthwhile)
+        return;
+
+    if (best_mode == 0)
+    {
+        _adaptive_reject_enabled.store(false, std::memory_order_relaxed);
+        _admission_hop_threshold.store(_adaptive_initial_hop_threshold,
+                                       std::memory_order_relaxed);
+    }
+    else
+    {
+        _adaptive_reject_enabled.store(true, std::memory_order_relaxed);
+        _admission_hop_threshold.store(
+            best_mode == 1 ? _adaptive_initial_hop_threshold
+                           : _adaptive_min_hop_threshold,
+            std::memory_order_relaxed);
+    }
+    _adaptive_transitions++;
+    _shadow_candidate_mode = _shadow_models.size();
+    _shadow_candidate_windows = 0;
+}
+
 template <typename T> void MeritMemoryPool<T>::bump(uint32_t node_id, uint64_t delta)
 {
     (void)delta;
@@ -601,12 +971,25 @@ bool MeritMemoryPool<T>::should_admit(uint32_t node_id, uint32_t search_hop,
     return false;
 }
 
-template <typename T> void MeritMemoryPool<T>::on_query_end()
+template <typename T> void MeritMemoryPool<T>::on_query_end(uint32_t disk_reads, double io_us)
 {
+    if (_shadow_enabled)
+    {
+        _shadow_query_disk_reads.fetch_add(disk_reads, std::memory_order_relaxed);
+        _shadow_query_io_ns.fetch_add(
+            static_cast<uint64_t>(std::max(0.0, io_us) * 1000.0),
+            std::memory_order_relaxed);
+    }
     if (_admission_policy != AdmissionPolicy::AdaptiveHopReject)
         return;
 
     const uint64_t query_count = _adaptive_query_count.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (_shadow_control_enabled)
+    {
+        if (query_count % _adaptive_half_life_queries == 0)
+            shadow_evaluate_controller(query_count);
+        return;
+    }
     if (query_count % _adaptive_stage_queries != 0)
         return;
 
@@ -664,22 +1047,15 @@ template <typename T> void MeritMemoryPool<T>::on_query_end()
 
     const bool reject_enabled = _adaptive_reject_enabled.load(std::memory_order_relaxed);
     const bool enough_ghost_samples = rejection_delta >= 100;
-    const bool moderate_churn =
-        !reject_enabled &&
-        hit_rate >= _adaptive_low_hit_rate &&
-        hit_rate < _adaptive_medium_hit_rate &&
-        evictions_per_query >= _adaptive_medium_min_evictions_per_query;
     const bool low_locality =
-        moderate_churn ||
-        (hit_rate < _adaptive_low_hit_rate &&
-         ((!reject_enabled && evictions_per_query >= _adaptive_mru_min_evictions_per_query) ||
-          (reject_enabled && enough_ghost_samples &&
-           reuse_rate < _adaptive_low_reuse_rate &&
-           evictions_per_query >= _adaptive_reject_min_evictions_per_query)));
+        hit_rate < _adaptive_low_hit_rate &&
+        ((!reject_enabled && evictions_per_query >= _adaptive_mru_min_evictions_per_query) ||
+         (reject_enabled && enough_ghost_samples &&
+          reuse_rate < _adaptive_low_reuse_rate &&
+          evictions_per_query >= _adaptive_reject_min_evictions_per_query));
     const bool high_locality =
         reject_enabled &&
-        ((hit_rate > _adaptive_high_hit_rate &&
-          evictions_per_query < _adaptive_recovery_max_evictions_per_query) ||
+        (hit_rate > _adaptive_high_hit_rate ||
          (enough_ghost_samples && reuse_rate > _adaptive_high_reuse_rate));
     _adaptive_low_stages = low_locality ? _adaptive_low_stages + 1 : 0;
     _adaptive_high_stages = high_locality ? _adaptive_high_stages + 1 : 0;
@@ -696,8 +1072,7 @@ template <typename T> void MeritMemoryPool<T>::on_query_end()
         if (!reject_enabled)
         {
             next_reject_enabled = true;
-            next_threshold = moderate_churn ? _adaptive_min_hop_threshold
-                                            : _adaptive_initial_hop_threshold;
+            next_threshold = _adaptive_initial_hop_threshold;
         }
         else if (current_threshold > _adaptive_min_hop_threshold)
         {
@@ -782,22 +1157,38 @@ uint32_t MeritMemoryPool<T>::try_admit(uint32_t node_id, const char *node_disk_b
                                        bool admitted_after_rejection)
 {
     (void)max_node_len_for_coords;
+    const bool measure_shadow_cost = shadow_sampled_node(node_id);
+    const auto shadow_cost_start =
+        measure_shadow_cost ? std::chrono::steady_clock::now()
+                            : std::chrono::steady_clock::time_point{};
+    const auto finish = [&](uint32_t result, bool admitted) {
+        if (measure_shadow_cost && admitted)
+        {
+            const uint64_t elapsed_ns = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - shadow_cost_start)
+                    .count());
+            _shadow_real_admit_ns.fetch_add(elapsed_ns, std::memory_order_relaxed);
+            _shadow_real_admit_samples.fetch_add(1, std::memory_order_relaxed);
+        }
+        return result;
+    };
     Shard &shard = _shards[shard_index(node_id)];
     std::lock_guard<MeritNcacheMutex> lock(shard.mu);
     if (!_coords_buf || node_disk_buf == nullptr)
-        return INVALID_NODE;
+        return finish(INVALID_NODE, false);
     const auto existing = shard.id_to_slot.find(node_id);
     if (existing != shard.id_to_slot.end())
     {
         touch_or_mark_unlocked(shard, existing->second);
         membership_set(node_id);
-        return INVALID_NODE;
+        return finish(INVALID_NODE, false);
     }
 
     const uint32_t *nhood_base = reinterpret_cast<const uint32_t *>(node_disk_buf + disk_bytes_per_point);
     const uint32_t nnbrs = nhood_base[0];
     if (nnbrs > _max_degree)
-        return INVALID_NODE;
+        return finish(INVALID_NODE, false);
 
     uint32_t slot = INVALID_NODE;
     uint32_t evicted = INVALID_NODE;
@@ -816,10 +1207,10 @@ uint32_t MeritMemoryPool<T>::try_admit(uint32_t node_id, const char *node_disk_b
     {
         evicted = _clock_enabled ? clock_victim_unlocked(shard) : lru_victim_unlocked(shard);
         if (evicted == INVALID_NODE)
-            return INVALID_NODE;
+            return finish(INVALID_NODE, false);
         const auto eit = shard.id_to_slot.find(evicted);
         if (eit == shard.id_to_slot.end())
-            return INVALID_NODE;
+            return finish(INVALID_NODE, false);
         slot = eit->second;
         membership_clear(evicted);
         unlink_lru_unlocked(shard, slot);
@@ -828,7 +1219,7 @@ uint32_t MeritMemoryPool<T>::try_admit(uint32_t node_id, const char *node_disk_b
     }
 
     if (slot == INVALID_NODE || slot >= _slots.size())
-        return INVALID_NODE;
+        return finish(INVALID_NODE, false);
     if (_ghost_stats_enabled && evicted != INVALID_NODE)
         note_ghost_admitted_slot_eviction(slot);
 
@@ -857,7 +1248,7 @@ uint32_t MeritMemoryPool<T>::try_admit(uint32_t node_id, const char *node_disk_b
     if (_clock_enabled)
         _recently_accessed[slot].store(low_priority ? 0 : 1, std::memory_order_relaxed);
 
-    return evicted;
+    return finish(evicted, true);
 }
 
 template <typename T> const char *MeritMemoryPool<T>::admission_policy_name() const

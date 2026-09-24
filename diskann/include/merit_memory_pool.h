@@ -10,6 +10,7 @@
 #include <memory>
 #include <mutex>
 #include <shared_mutex>
+#include <string>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -85,6 +86,21 @@ template <typename T> class MeritMemoryPool
   public:
     static constexpr uint32_t INVALID_NODE = std::numeric_limits<uint32_t>::max();
 
+    struct ShadowStats
+    {
+        const char *name = "";
+        uint64_t resident = 0;
+        uint64_t accesses = 0;
+        uint64_t hits = 0;
+        uint64_t misses = 0;
+        uint64_t admissions = 0;
+        uint64_t rejections = 0;
+        uint64_t second_hits = 0;
+        uint64_t evictions = 0;
+        uint64_t clock_second_chances = 0;
+        uint64_t sampled_capacity = 0;
+    };
+
     MeritMemoryPool() = default;
 
     void clear();
@@ -126,6 +142,40 @@ template <typename T> class MeritMemoryPool
 
     bool lookup(uint32_t node_id, T *&coords, std::pair<uint32_t, uint32_t *> &nhood,
                 bool track_ghost_value = false);
+    void shadow_access(uint32_t node_id, uint32_t search_hop);
+    bool shadow_enabled() const
+    {
+        return _shadow_enabled;
+    }
+    bool shadow_control_enabled() const
+    {
+        return _shadow_control_enabled;
+    }
+    uint64_t shadow_dropped_samples() const
+    {
+        return _shadow_dropped_samples.load(std::memory_order_relaxed);
+    }
+    uint64_t shadow_real_admit_samples() const
+    {
+        return _shadow_real_admit_samples.load(std::memory_order_relaxed);
+    }
+    uint64_t shadow_real_admit_ns() const
+    {
+        return _shadow_real_admit_ns.load(std::memory_order_relaxed);
+    }
+    uint64_t shadow_query_disk_reads() const
+    {
+        return _shadow_query_disk_reads.load(std::memory_order_relaxed);
+    }
+    uint64_t shadow_query_io_ns() const
+    {
+        return _shadow_query_io_ns.load(std::memory_order_relaxed);
+    }
+    uint64_t shadow_sample_divisor() const
+    {
+        return uint64_t{1} << _shadow_sample_shift;
+    }
+    std::array<ShadowStats, 3> shadow_stats() const;
 
     void bump(uint32_t node_id, uint64_t delta = 1);
 
@@ -138,7 +188,7 @@ template <typename T> class MeritMemoryPool
     uint32_t try_admit(uint32_t node_id, const char *node_disk_buf, uint64_t disk_bytes_per_point,
                        uint64_t max_node_len_for_coords, uint32_t search_hop,
                        bool admitted_after_rejection = false);
-    void on_query_end();
+    void on_query_end(uint32_t disk_reads = 0, double io_us = 0.0);
 
     void commit_initial_load(const std::vector<uint32_t> &node_ids, const std::vector<uint64_t> &importance);
 
@@ -253,6 +303,35 @@ template <typename T> class MeritMemoryPool
         uint64_t token = 0;
     };
 
+    struct ShadowSlot
+    {
+        uint32_t node_id = INVALID_NODE;
+        uint8_t recently_accessed = 0;
+    };
+
+    struct ShadowModel
+    {
+        const char *name = "";
+        uint32_t hop_threshold = 0;
+        bool reject_first = false;
+        std::vector<ShadowSlot> slots;
+        tsl::robin_map<uint32_t, uint32_t> id_to_slot;
+        std::vector<GhostEntry> ghost_ring;
+        tsl::robin_map<uint32_t, uint64_t> ghost_tokens;
+        uint32_t next_free_slot = 0;
+        uint32_t clock_hand = 0;
+        size_t ghost_cursor = 0;
+        uint64_t ghost_sequence = 0;
+        uint64_t accesses = 0;
+        uint64_t hits = 0;
+        uint64_t misses = 0;
+        uint64_t admissions = 0;
+        uint64_t rejections = 0;
+        uint64_t second_hits = 0;
+        uint64_t evictions = 0;
+        uint64_t clock_second_chances = 0;
+    };
+
     static constexpr size_t kDefaultShardCount = 128;
     static constexpr size_t kMaxShardCount = 128;
 
@@ -288,6 +367,9 @@ template <typename T> class MeritMemoryPool
     void set_ghost_admitted_slot(uint32_t slot, bool admitted_after_rejection);
     void note_ghost_admitted_slot_hit(uint32_t slot);
     void note_ghost_admitted_slot_eviction(uint32_t slot);
+    bool shadow_sampled_node(uint32_t node_id) const;
+    void shadow_model_access(ShadowModel &model, uint32_t node_id, uint32_t search_hop);
+    void shadow_evaluate_controller(uint64_t query_count);
 
     uint64_t _capacity = 0;
     uint64_t _node_count = 0;
@@ -313,6 +395,26 @@ template <typename T> class MeritMemoryPool
     bool _fast_miss_enabled = false;
     bool _clock_enabled = false;
     bool _ghost_stats_enabled = false;
+    bool _shadow_enabled = false;
+    bool _shadow_control_enabled = false;
+    uint32_t _shadow_sample_shift = 6;
+    mutable std::mutex _shadow_mu;
+    std::array<ShadowModel, 3> _shadow_models;
+    std::atomic<uint64_t> _shadow_dropped_samples{0};
+    std::atomic<uint64_t> _shadow_real_admit_samples{0};
+    std::atomic<uint64_t> _shadow_real_admit_ns{0};
+    std::atomic<uint64_t> _shadow_query_disk_reads{0};
+    std::atomic<uint64_t> _shadow_query_io_ns{0};
+    std::array<ShadowStats, 3> _shadow_last_stats;
+    uint64_t _shadow_last_real_admit_samples = 0;
+    uint64_t _shadow_last_real_admit_ns = 0;
+    uint64_t _shadow_last_query_disk_reads = 0;
+    uint64_t _shadow_last_query_io_ns = 0;
+    double _shadow_ewma_admit_ns = 0;
+    double _shadow_min_gain = 0.02;
+    bool _shadow_controller_ready = false;
+    size_t _shadow_candidate_mode = 3;
+    uint32_t _shadow_candidate_windows = 0;
     std::unique_ptr<std::atomic<uint64_t>[]> _membership_words;
     std::unique_ptr<std::atomic<uint8_t>[]> _recently_accessed;
     std::unique_ptr<std::atomic<uint64_t>[]> _ghost_admitted_slot_words;
@@ -335,13 +437,10 @@ template <typename T> class MeritMemoryPool
     uint64_t _adaptive_half_life_queries = 25000;
     uint64_t _adaptive_stage_queries = 1000;
     double _adaptive_low_hit_rate = 0.40;
-    double _adaptive_medium_hit_rate = 0.75;
-    double _adaptive_high_hit_rate = 0.85;
+    double _adaptive_high_hit_rate = 0.60;
     double _adaptive_low_reuse_rate = 0.02;
     double _adaptive_high_reuse_rate = 0.10;
     double _adaptive_mru_min_evictions_per_query = 30.0;
-    double _adaptive_medium_min_evictions_per_query = 40.0;
-    double _adaptive_recovery_max_evictions_per_query = 15.0;
     double _adaptive_reject_min_evictions_per_query = 10.0;
     std::atomic<bool> _adaptive_reject_enabled{false};
     std::atomic<uint64_t> _adaptive_query_count{0};

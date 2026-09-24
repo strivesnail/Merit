@@ -1971,6 +1971,7 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
                 bool mem_hit = false;
                 if (_merit_mem_pool != nullptr && _merit_mem_pool->active())
                 {
+                    _merit_mem_pool->shadow_access(nbr.id, current_iteration);
                     T *coord_ptr = nullptr;
                     std::pair<uint32_t, uint32_t *> nh_pair;
                     if (_merit_mem_pool->lookup(nbr.id, coord_ptr, nh_pair, true))
@@ -2663,7 +2664,8 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
         merit_dyn_on_query_end(stats, query_scratch);
     }
     if (_merit_mem_pool != nullptr && _merit_mem_pool->active())
-        _merit_mem_pool->on_query_end();
+        _merit_mem_pool->on_query_end(stats == nullptr ? 0 : stats->n_disk_reads,
+                                      stats == nullptr ? 0.0 : stats->io_us);
 
     // re-sort by distance
     std::sort(full_retset.begin(), full_retset.end());
@@ -3587,6 +3589,52 @@ template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::print_merit
                                     static_cast<double>(ghost_admission_evictions))
                       << " tracking_bytes=" << _merit_mem_pool->ghost_tracking_bitmap_bytes()
                       << std::endl;
+    }
+    if (_merit_mem_pool->shadow_enabled())
+    {
+        const auto shadow_stats = _merit_mem_pool->shadow_stats();
+        const uint64_t real_admit_samples = _merit_mem_pool->shadow_real_admit_samples();
+        const uint64_t real_admit_ns = _merit_mem_pool->shadow_real_admit_ns();
+        const uint64_t query_disk_reads = _merit_mem_pool->shadow_query_disk_reads();
+        const uint64_t query_io_ns = _merit_mem_pool->shadow_query_io_ns();
+        diskann::cout << "MERIT ncache shadow cost: control="
+                      << (_merit_mem_pool->shadow_control_enabled() ? "on" : "off")
+                      << " sample_divisor="
+                      << _merit_mem_pool->shadow_sample_divisor()
+                      << " real_admit_samples=" << real_admit_samples
+                      << " avg_real_admit_ns="
+                      << (real_admit_samples == 0
+                              ? 0.0
+                              : static_cast<double>(real_admit_ns) /
+                                    static_cast<double>(real_admit_samples))
+                      << " disk_reads=" << query_disk_reads
+                      << " avg_io_ns_per_read="
+                      << (query_disk_reads == 0
+                              ? 0.0
+                              : static_cast<double>(query_io_ns) /
+                                    static_cast<double>(query_disk_reads))
+                      << std::endl;
+        for (const auto &shadow : shadow_stats)
+        {
+            diskann::cout << "MERIT ncache shadow: policy=" << shadow.name
+                          << " resident=" << shadow.resident
+                          << " accesses=" << shadow.accesses
+                          << " hits=" << shadow.hits
+                          << " misses=" << shadow.misses
+                          << " hit_rate="
+                          << (shadow.accesses == 0
+                                  ? 0.0
+                                  : static_cast<double>(shadow.hits) /
+                                        static_cast<double>(shadow.accesses))
+                          << " admissions=" << shadow.admissions
+                          << " rejected=" << shadow.rejections
+                          << " second_hits=" << shadow.second_hits
+                          << " evictions=" << shadow.evictions
+                          << " clock_second_chances=" << shadow.clock_second_chances
+                          << " sampled_capacity=" << shadow.sampled_capacity
+                          << " dropped=" << _merit_mem_pool->shadow_dropped_samples()
+                          << std::endl;
+        }
     }
 }
 
