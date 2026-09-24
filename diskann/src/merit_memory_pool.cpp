@@ -34,7 +34,10 @@ template <typename T> void MeritMemoryPool<T>::clear()
     _max_degree = 0;
     _membership_words.reset();
     _recently_accessed.reset();
+    _ghost_admitted_slot_words.reset();
+    _ghost_admitted_hit_words.reset();
     _membership_word_count = 0;
+    _ghost_slot_word_count = 0;
     _fast_miss_bypasses.store(0, std::memory_order_relaxed);
     _clock_second_chances.store(0, std::memory_order_relaxed);
     _next_free_slot.store(0, std::memory_order_relaxed);
@@ -43,6 +46,11 @@ template <typename T> void MeritMemoryPool<T>::clear()
     _admission_rejections.store(0, std::memory_order_relaxed);
     _admission_second_hits.store(0, std::memory_order_relaxed);
     _low_priority_admissions.store(0, std::memory_order_relaxed);
+    _ghost_actual_admissions.store(0, std::memory_order_relaxed);
+    _ghost_post_admission_hits.store(0, std::memory_order_relaxed);
+    _ghost_reused_admissions.store(0, std::memory_order_relaxed);
+    _ghost_admission_evictions.store(0, std::memory_order_relaxed);
+    _ghost_zero_hit_evictions.store(0, std::memory_order_relaxed);
     _adaptive_query_count.store(0, std::memory_order_relaxed);
     _adaptive_reject_enabled.store(false, std::memory_order_relaxed);
     {
@@ -95,6 +103,9 @@ void MeritMemoryPool<T>::init(uint64_t capacity, uint64_t aligned_dim, uint64_t 
         shard.mu.set_spin(_spin_lock_enabled);
     const char *fast_miss = std::getenv("MERIT_NCACHE_FAST_MISS");
     _fast_miss_enabled = fast_miss != nullptr && std::strtoull(fast_miss, nullptr, 10) != 0;
+    const char *ghost_stats = std::getenv("MERIT_NCACHE_GHOST_STATS");
+    _ghost_stats_enabled =
+        ghost_stats != nullptr && std::strtoull(ghost_stats, nullptr, 10) != 0;
 
     _admission_policy = AdmissionPolicy::Mru;
     const char *admission = std::getenv("MERIT_NCACHE_ADMISSION");
@@ -172,6 +183,19 @@ void MeritMemoryPool<T>::init(uint64_t capacity, uint64_t aligned_dim, uint64_t 
          _admission_policy == AdmissionPolicy::AdaptiveHopReject) &&
         _ghost_percent > 0)
     {
+        if (_ghost_stats_enabled)
+        {
+            _ghost_slot_word_count = (capacity + 63) / 64;
+            _ghost_admitted_slot_words =
+                std::make_unique<std::atomic<uint64_t>[]>(_ghost_slot_word_count);
+            _ghost_admitted_hit_words =
+                std::make_unique<std::atomic<uint64_t>[]>(_ghost_slot_word_count);
+            for (uint64_t index = 0; index < _ghost_slot_word_count; ++index)
+            {
+                _ghost_admitted_slot_words[index].store(0, std::memory_order_relaxed);
+                _ghost_admitted_hit_words[index].store(0, std::memory_order_relaxed);
+            }
+        }
         const uint64_t ghost_total = std::max<uint64_t>(1, capacity * _ghost_percent / 100);
         const size_t ghost_per_shard =
             static_cast<size_t>(std::max<uint64_t>(1, ghost_total / _shard_count));
@@ -203,6 +227,67 @@ template <typename T> void MeritMemoryPool<T>::membership_clear(uint32_t node_id
     if (!_fast_miss_enabled || _membership_words == nullptr || node_id >= _node_count)
         return;
     _membership_words[node_id >> 6].fetch_and(~(uint64_t{1} << (node_id & 63)), std::memory_order_release);
+}
+
+template <typename T> bool MeritMemoryPool<T>::ghost_admitted_slot(uint32_t slot) const
+{
+    if (!_ghost_admitted_slot_words || static_cast<uint64_t>(slot) >= _capacity)
+        return false;
+    const uint64_t word = static_cast<uint64_t>(slot) >> 6;
+    const uint64_t bit = uint64_t{1} << (slot & 63U);
+    return (_ghost_admitted_slot_words[word].load(std::memory_order_acquire) & bit) != 0;
+}
+
+template <typename T> bool MeritMemoryPool<T>::ghost_admitted_slot_was_hit(uint32_t slot) const
+{
+    if (!_ghost_admitted_hit_words || static_cast<uint64_t>(slot) >= _capacity)
+        return false;
+    const uint64_t word = static_cast<uint64_t>(slot) >> 6;
+    const uint64_t bit = uint64_t{1} << (slot & 63U);
+    return (_ghost_admitted_hit_words[word].load(std::memory_order_acquire) & bit) != 0;
+}
+
+template <typename T>
+void MeritMemoryPool<T>::set_ghost_admitted_slot(uint32_t slot, bool admitted_after_rejection)
+{
+    if (!_ghost_admitted_slot_words || !_ghost_admitted_hit_words ||
+        static_cast<uint64_t>(slot) >= _capacity)
+        return;
+
+    const uint64_t word = static_cast<uint64_t>(slot) >> 6;
+    const uint64_t bit = uint64_t{1} << (slot & 63U);
+    _ghost_admitted_hit_words[word].fetch_and(~bit, std::memory_order_release);
+    if (admitted_after_rejection)
+    {
+        _ghost_admitted_slot_words[word].fetch_or(bit, std::memory_order_release);
+        _ghost_actual_admissions.fetch_add(1, std::memory_order_relaxed);
+    }
+    else
+    {
+        _ghost_admitted_slot_words[word].fetch_and(~bit, std::memory_order_release);
+    }
+}
+
+template <typename T> void MeritMemoryPool<T>::note_ghost_admitted_slot_hit(uint32_t slot)
+{
+    if (!ghost_admitted_slot(slot))
+        return;
+
+    _ghost_post_admission_hits.fetch_add(1, std::memory_order_relaxed);
+    const uint64_t word = static_cast<uint64_t>(slot) >> 6;
+    const uint64_t bit = uint64_t{1} << (slot & 63U);
+    if ((_ghost_admitted_hit_words[word].fetch_or(bit, std::memory_order_relaxed) & bit) == 0)
+        _ghost_reused_admissions.fetch_add(1, std::memory_order_relaxed);
+}
+
+template <typename T> void MeritMemoryPool<T>::note_ghost_admitted_slot_eviction(uint32_t slot)
+{
+    if (!ghost_admitted_slot(slot))
+        return;
+
+    _ghost_admission_evictions.fetch_add(1, std::memory_order_relaxed);
+    if (!ghost_admitted_slot_was_hit(slot))
+        _ghost_zero_hit_evictions.fetch_add(1, std::memory_order_relaxed);
 }
 
 template <typename T> bool MeritMemoryPool<T>::contains(uint32_t node_id) const
@@ -311,7 +396,8 @@ bool MeritMemoryPool<T>::low_priority_insert_unlocked(Shard &shard, uint32_t sea
 }
 
 template <typename T>
-bool MeritMemoryPool<T>::lookup(uint32_t node_id, T *&coords, std::pair<uint32_t, uint32_t *> &nhood)
+bool MeritMemoryPool<T>::lookup(uint32_t node_id, T *&coords, std::pair<uint32_t, uint32_t *> &nhood,
+                                bool track_ghost_value)
 {
     Shard &shard = _shards[shard_index(node_id)];
     if (!membership_maybe_contains(node_id))
@@ -332,6 +418,8 @@ bool MeritMemoryPool<T>::lookup(uint32_t node_id, T *&coords, std::pair<uint32_t
         shard.lookup_hits.fetch_add(1, std::memory_order_relaxed);
         const uint32_t slot = it->second;
         _recently_accessed[slot].store(1, std::memory_order_relaxed);
+        if (track_ghost_value && _ghost_stats_enabled)
+            note_ghost_admitted_slot_hit(slot);
         coords = _coords_buf + static_cast<uint64_t>(slot) * _aligned_dim;
         uint32_t *nh = _nhood_buf + static_cast<uint64_t>(slot) * (_max_degree + 1);
         nhood = {nh[0], nh + 1};
@@ -347,6 +435,8 @@ bool MeritMemoryPool<T>::lookup(uint32_t node_id, T *&coords, std::pair<uint32_t
     shard.lookup_hits.fetch_add(1, std::memory_order_relaxed);
     const uint32_t slot = it->second;
     touch_lru_unlocked(shard, slot);
+    if (track_ghost_value && _ghost_stats_enabled)
+        note_ghost_admitted_slot_hit(slot);
     coords = _coords_buf + static_cast<uint64_t>(slot) * _aligned_dim;
     uint32_t *nh = _nhood_buf + static_cast<uint64_t>(slot) * (_max_degree + 1);
     nhood = {nh[0], nh + 1};
@@ -464,8 +554,11 @@ bool MeritMemoryPool<T>::copy_payload(uint32_t node_id, std::vector<T> &coords, 
     return true;
 }
 
-template <typename T> bool MeritMemoryPool<T>::should_admit(uint32_t node_id, uint32_t search_hop)
+template <typename T>
+bool MeritMemoryPool<T>::should_admit(uint32_t node_id, uint32_t search_hop,
+                                     bool &admitted_after_rejection)
 {
+    admitted_after_rejection = false;
     const bool reject_first =
         _admission_policy == AdmissionPolicy::RejectFirst ||
         (_admission_policy == AdmissionPolicy::HopReject &&
@@ -486,6 +579,7 @@ template <typename T> bool MeritMemoryPool<T>::should_admit(uint32_t node_id, ui
     {
         shard.ghost_tokens.erase(seen);
         _admission_second_hits.fetch_add(1, std::memory_order_relaxed);
+        admitted_after_rejection = true;
         return true;
     }
 
@@ -676,7 +770,8 @@ void MeritMemoryPool<T>::commit_initial_load(const std::vector<uint32_t> &node_i
 
 template <typename T>
 uint32_t MeritMemoryPool<T>::try_admit(uint32_t node_id, const char *node_disk_buf, uint64_t disk_bytes_per_point,
-                                       uint64_t max_node_len_for_coords, uint32_t search_hop)
+                                       uint64_t max_node_len_for_coords, uint32_t search_hop,
+                                       bool admitted_after_rejection)
 {
     (void)max_node_len_for_coords;
     Shard &shard = _shards[shard_index(node_id)];
@@ -726,6 +821,8 @@ uint32_t MeritMemoryPool<T>::try_admit(uint32_t node_id, const char *node_disk_b
 
     if (slot == INVALID_NODE || slot >= _slots.size())
         return INVALID_NODE;
+    if (_ghost_stats_enabled && evicted != INVALID_NODE)
+        note_ghost_admitted_slot_eviction(slot);
 
     T *coord_dst = _coords_buf + static_cast<uint64_t>(slot) * _aligned_dim;
     uint32_t *nh_dst = _nhood_buf + static_cast<uint64_t>(slot) * (_max_degree + 1);
@@ -735,6 +832,8 @@ uint32_t MeritMemoryPool<T>::try_admit(uint32_t node_id, const char *node_disk_b
     memcpy(nh_dst + 1, nhood_base + 1, nnbrs * sizeof(uint32_t));
 
     _slots[slot].node_id = node_id;
+    if (_ghost_stats_enabled)
+        set_ghost_admitted_slot(slot, admitted_after_rejection);
     membership_set(node_id);
     shard.id_to_slot[node_id] = slot;
     const bool low_priority = low_priority_insert_unlocked(shard, search_hop);

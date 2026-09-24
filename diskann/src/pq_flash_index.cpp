@@ -1973,7 +1973,7 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
                 {
                     T *coord_ptr = nullptr;
                     std::pair<uint32_t, uint32_t *> nh_pair;
-                    if (_merit_mem_pool->lookup(nbr.id, coord_ptr, nh_pair))
+                    if (_merit_mem_pool->lookup(nbr.id, coord_ptr, nh_pair, true))
                     {
                         cached_nhoods.push_back(std::make_pair(nbr.id, nh_pair));
                         mem_hit = true;
@@ -3539,6 +3539,11 @@ template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::print_merit
 {
     if (!_merit_mem_pool || !_merit_mem_pool->active())
         return;
+    const uint64_t ghost_actual_admissions = _merit_mem_pool->ghost_actual_admissions();
+    const uint64_t ghost_post_hits = _merit_mem_pool->ghost_post_admission_hits();
+    const uint64_t ghost_reused_admissions = _merit_mem_pool->ghost_reused_admissions();
+    const uint64_t ghost_admission_evictions = _merit_mem_pool->ghost_admission_evictions();
+    const uint64_t ghost_zero_hit_evictions = _merit_mem_pool->ghost_zero_hit_evictions();
     diskann::cout << "MERIT ncache admission: policy=" << _merit_mem_pool->admission_policy_name()
                   << " hop_threshold=" << _merit_mem_pool->admission_hop_threshold()
                   << " rejected=" << _merit_mem_pool->admission_rejections()
@@ -3558,6 +3563,31 @@ template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::print_merit
                   << " ewma_ghost_reuse=" << _merit_mem_pool->adaptive_ghost_reuse_rate()
                   << " ewma_evictions_per_query=" << _merit_mem_pool->adaptive_evictions_per_query()
                   << " transitions=" << _merit_mem_pool->adaptive_transition_count() << std::endl;
+    if (_merit_mem_pool->ghost_stats_enabled())
+    {
+        diskann::cout << "MERIT ncache ghost value: actual_admissions=" << ghost_actual_admissions
+                      << " post_admission_hits=" << ghost_post_hits
+                      << " reused_admissions=" << ghost_reused_admissions
+                      << " admission_evictions=" << ghost_admission_evictions
+                      << " zero_hit_evictions=" << ghost_zero_hit_evictions
+                      << " hits_per_admission="
+                      << (ghost_actual_admissions == 0
+                              ? 0.0
+                              : static_cast<double>(ghost_post_hits) /
+                                    static_cast<double>(ghost_actual_admissions))
+                      << " reused_pct="
+                      << (ghost_actual_admissions == 0
+                              ? 0.0
+                              : 100.0 * static_cast<double>(ghost_reused_admissions) /
+                                    static_cast<double>(ghost_actual_admissions))
+                      << " zero_hit_eviction_pct="
+                      << (ghost_admission_evictions == 0
+                              ? 0.0
+                              : 100.0 * static_cast<double>(ghost_zero_hit_evictions) /
+                                    static_cast<double>(ghost_admission_evictions))
+                      << " tracking_bytes=" << _merit_mem_pool->ghost_tracking_bitmap_bytes()
+                      << std::endl;
+    }
 }
 
 template <typename T, typename LabelT> bool PQFlashIndex<T, LabelT>::merit_mem_pool_contains(uint32_t node_id) const
@@ -5301,7 +5331,8 @@ uint32_t PQFlashIndex<T, LabelT>::merit_dyn_admit_node(uint32_t node_id, const c
         !(_merit_mem_runtime_admit || _merit_dyn_enabled))
         return MeritMemoryPool<T>::INVALID_NODE;
 
-    if (!_merit_mem_pool->should_admit(node_id, search_hop))
+    bool admitted_after_rejection = false;
+    if (!_merit_mem_pool->should_admit(node_id, search_hop, admitted_after_rejection))
         return MeritMemoryPool<T>::INVALID_NODE;
 
     const bool dynamic_maintenance =
@@ -5314,7 +5345,8 @@ uint32_t PQFlashIndex<T, LabelT>::merit_dyn_admit_node(uint32_t node_id, const c
             merit_dyn_on_ncache_evict(victim, stats);
     }
     const uint32_t evicted =
-        _merit_mem_pool->try_admit(node_id, node_disk_buf, _disk_bytes_per_point, _max_node_len, search_hop);
+        _merit_mem_pool->try_admit(node_id, node_disk_buf, _disk_bytes_per_point, _max_node_len, search_hop,
+                                   admitted_after_rejection);
     if (stats != nullptr && evicted != MeritMemoryPool<T>::INVALID_NODE)
         stats->n_merit_mem_evictions++;
     if (dynamic_maintenance && _merit_mem_pool->contains(node_id) && query_scratch != nullptr)

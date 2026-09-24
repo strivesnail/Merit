@@ -25,18 +25,20 @@ This tree is a **DiskANN fork** with MERIT integrated in `diskann/` plus reprodu
 
 The current runtime can learn directly from the live query stream; it does not need to know whether the workload is uniform or contains moving hotspots.
 
-- **N-cache** stores complete nodes in DRAM. It uses 32 lock shards, an atomic membership bitmap for lock-free misses, a reader-writer lock, and CLOCK replacement. Every 1,000 queries it measures hit rate, rejected-node reuse, and evictions. Each run of 25 consecutive low-locality windows advances one step from normal admission to Hop-12, then from Hop-12 to Hop-8. A node first encountered at or beyond the selected hop is recorded but not admitted; a second encounter admits it. Six high-locality windows relax one step in the reverse direction.
+- **N-cache** stores complete nodes in DRAM. It uses 128 lock shards by default, an atomic membership bitmap for lock-free misses, a reader-writer lock, and CLOCK replacement. Every 1,000 queries it measures hit rate, rejected-node reuse, and evictions. Each run of 25 consecutive low-locality windows advances one step from normal admission to Hop-12, then from Hop-12 to Hop-8. A node first encountered at or beyond the selected hop is recorded but not admitted; a second encounter admits it. Six high-locality windows relax one step in the reverse direction.
 - **M-cache** stores node and edge hotness metadata. Every 1,000 queries it measures the current-window hit rate. Each run of 25 consecutive windows below 20% reduces updates one step from 100% to 10%, then from 10% to 1%; six windows above 40% restore one level at a time.
 - **D-cache** stores runtime-generated 4 KiB pages. It is controlled by net physical-I/O benefit, not hit rate alone. MERIT counts base-index pages avoided and D-cache pages read. Twenty-five consecutive 1,000-query windows saving less than 0.1 page/query disable M/D-cache maintenance. While disabled, 1% of queries remain full probes. Two consecutive 10,000-query probe windows with at least 0.25 net page saved/query and at least 1.25 avoided pages per D-cache page read re-enable maintenance.
 
 The D-cache net-benefit gate is enabled automatically when `MERIT_MCACHE_ADAPTIVE_UPDATE=1`; set `MERIT_DCACHE_NET_GATE=0` to disable it.
+
+Set `MERIT_NCACHE_GHOST_STATS=1` only for diagnostics to attribute later N-cache hits to second-encounter admissions. It is disabled by default because exact per-hit accounting adds atomic operations to the search path.
 
 Example:
 
 ```bash
 export MERIT_DYNAMIC_3CACHE=1
 export MERIT_DEFERRED_NCACHE_PAGE_WRITE=1
-export MERIT_NCACHE_SHARDS=32
+export MERIT_NCACHE_SHARDS=128
 export MERIT_NCACHE_FAST_MISS=1
 export MERIT_NCACHE_CLOCK=1
 export MERIT_NCACHE_SPIN=0
@@ -67,6 +69,8 @@ Reproduced on SIFT100M with 2 million queries: ten cycles of 100K global-uniform
 - **Adaptive N-cache only:** 11,256.89 QPS, 51.05 reads/query, P99 6,637 us.
 - **Current adaptive full MERIT:** 11,458.95 QPS, 51.05 reads/query, P99 6,398 us.
 - Recall@1 is 99.99% for all four runs. The adaptive full mode is 83.1% faster than plain full MERIT and 49.2% faster than DiskANN BFS on this workload.
+
+With `MERIT_NCACHE_GHOST_STATS=1`, 979,234 nodes were admitted after a second encounter. Of these, 598,719 (61.14%) produced a later cache hit, contributing 70,637,091 of 133,952,593 total N-cache hits (52.73%). A same-build back-to-back comparison of 128 versus 32 shards measured 11,235.81 versus 11,124.77 QPS, 296.54 versus 314.00 CPU us/query, and 5,828 versus 6,644 us P99.
 
 ## Build
 

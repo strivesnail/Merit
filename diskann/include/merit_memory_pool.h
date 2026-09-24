@@ -124,7 +124,8 @@ template <typename T> class MeritMemoryPool
     bool contains(uint32_t node_id) const;
     bool contains_evictable(uint32_t node_id) const;
 
-    bool lookup(uint32_t node_id, T *&coords, std::pair<uint32_t, uint32_t *> &nhood);
+    bool lookup(uint32_t node_id, T *&coords, std::pair<uint32_t, uint32_t *> &nhood,
+                bool track_ghost_value = false);
 
     void bump(uint32_t node_id, uint64_t delta = 1);
 
@@ -132,10 +133,11 @@ template <typename T> class MeritMemoryPool
 
     bool copy_payload(uint32_t node_id, std::vector<T> &coords, std::vector<uint32_t> &nbrs) const;
 
-    bool should_admit(uint32_t node_id, uint32_t search_hop);
+    bool should_admit(uint32_t node_id, uint32_t search_hop, bool &admitted_after_rejection);
 
     uint32_t try_admit(uint32_t node_id, const char *node_disk_buf, uint64_t disk_bytes_per_point,
-                       uint64_t max_node_len_for_coords, uint32_t search_hop);
+                       uint64_t max_node_len_for_coords, uint32_t search_hop,
+                       bool admitted_after_rejection = false);
     void on_query_end();
 
     void commit_initial_load(const std::vector<uint32_t> &node_ids, const std::vector<uint64_t> &importance);
@@ -187,6 +189,34 @@ template <typename T> class MeritMemoryPool
     {
         return _low_priority_admissions.load(std::memory_order_relaxed);
     }
+    uint64_t ghost_actual_admissions() const
+    {
+        return _ghost_actual_admissions.load(std::memory_order_relaxed);
+    }
+    uint64_t ghost_post_admission_hits() const
+    {
+        return _ghost_post_admission_hits.load(std::memory_order_relaxed);
+    }
+    uint64_t ghost_reused_admissions() const
+    {
+        return _ghost_reused_admissions.load(std::memory_order_relaxed);
+    }
+    uint64_t ghost_admission_evictions() const
+    {
+        return _ghost_admission_evictions.load(std::memory_order_relaxed);
+    }
+    uint64_t ghost_zero_hit_evictions() const
+    {
+        return _ghost_zero_hit_evictions.load(std::memory_order_relaxed);
+    }
+    uint64_t ghost_tracking_bitmap_bytes() const
+    {
+        return _ghost_slot_word_count * sizeof(uint64_t) * 2;
+    }
+    bool ghost_stats_enabled() const
+    {
+        return _ghost_stats_enabled;
+    }
 
     T *coord_ptr(uint32_t slot)
     {
@@ -223,8 +253,8 @@ template <typename T> class MeritMemoryPool
         uint64_t token = 0;
     };
 
-    static constexpr size_t kDefaultShardCount = 4;
-    static constexpr size_t kMaxShardCount = 32;
+    static constexpr size_t kDefaultShardCount = 128;
+    static constexpr size_t kMaxShardCount = 128;
 
     struct alignas(64) Shard
     {
@@ -253,6 +283,11 @@ template <typename T> class MeritMemoryPool
     bool membership_maybe_contains(uint32_t node_id) const;
     void membership_set(uint32_t node_id);
     void membership_clear(uint32_t node_id);
+    bool ghost_admitted_slot(uint32_t slot) const;
+    bool ghost_admitted_slot_was_hit(uint32_t slot) const;
+    void set_ghost_admitted_slot(uint32_t slot, bool admitted_after_rejection);
+    void note_ghost_admitted_slot_hit(uint32_t slot);
+    void note_ghost_admitted_slot_eviction(uint32_t slot);
 
     uint64_t _capacity = 0;
     uint64_t _node_count = 0;
@@ -277,11 +312,20 @@ template <typename T> class MeritMemoryPool
     bool _spin_lock_enabled = false;
     bool _fast_miss_enabled = false;
     bool _clock_enabled = false;
+    bool _ghost_stats_enabled = false;
     std::unique_ptr<std::atomic<uint64_t>[]> _membership_words;
     std::unique_ptr<std::atomic<uint8_t>[]> _recently_accessed;
+    std::unique_ptr<std::atomic<uint64_t>[]> _ghost_admitted_slot_words;
+    std::unique_ptr<std::atomic<uint64_t>[]> _ghost_admitted_hit_words;
     uint64_t _membership_word_count = 0;
+    uint64_t _ghost_slot_word_count = 0;
     std::atomic<uint64_t> _fast_miss_bypasses{0};
     std::atomic<uint64_t> _clock_second_chances{0};
+    std::atomic<uint64_t> _ghost_actual_admissions{0};
+    std::atomic<uint64_t> _ghost_post_admission_hits{0};
+    std::atomic<uint64_t> _ghost_reused_admissions{0};
+    std::atomic<uint64_t> _ghost_admission_evictions{0};
+    std::atomic<uint64_t> _ghost_zero_hit_evictions{0};
     AdmissionPolicy _admission_policy = AdmissionPolicy::Mru;
     std::atomic<uint32_t> _admission_hop_threshold{8};
     uint32_t _bip_period = 32;
