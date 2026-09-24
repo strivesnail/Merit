@@ -175,6 +175,8 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
     std::vector<uint32_t> node_list;
     const bool dyn3_cache = (std::getenv("MERIT_DYNAMIC_3CACHE") != nullptr &&
                              std::strcmp(std::getenv("MERIT_DYNAMIC_3CACHE"), "0") != 0);
+    const bool ncache_only = (std::getenv("MERIT_NCACHE_ONLY") != nullptr &&
+                              std::strcmp(std::getenv("MERIT_NCACHE_ONLY"), "0") != 0);
     if (merit_memory_gb > 0.0)
     {
         uint64_t max_nodes = 0;
@@ -187,10 +189,10 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
         }
         diskann::cout << budget_report << std::endl;
 
-        if (dyn3_cache)
+        if (dyn3_cache || ncache_only)
         {
-            diskann::cout << "MERIT Memory cache: BFS around medoid, " << max_nodes << " nodes (DiskANN-style)."
-                          << std::endl;
+            diskann::cout << "MERIT Memory cache: BFS around medoid, " << max_nodes << " nodes"
+                          << (ncache_only && !dyn3_cache ? " (n-cache only)." : " (DiskANN-style).") << std::endl;
             _pFlashIndex->cache_bfs_levels(max_nodes, node_list);
             if (_pFlashIndex->load_merit_memory_pool("", node_list) != 0)
             {
@@ -603,15 +605,37 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
                 stats, query_num, [](const diskann::QueryStats &s) { return s.n_merit_dyn_hits; });
             auto mean_dyn_flushes = diskann::get_mean_stats<uint32_t>(
                 stats, query_num, [](const diskann::QueryStats &s) { return s.n_merit_dyn_flushes; });
+            auto mean_dyn_reads = diskann::get_mean_stats<uint32_t>(
+                stats, query_num, [](const diskann::QueryStats &s) { return s.n_merit_dyn_disk_reads; });
+            auto mean_base_avoided = diskann::get_mean_stats<uint32_t>(
+                stats, query_num, [](const diskann::QueryStats &s) { return s.n_merit_base_pages_avoided; });
+            uint64_t mcache_hits = 0;
+            uint64_t mcache_misses = 0;
+            for (size_t qi = 0; qi < query_num; qi++)
+            {
+                mcache_hits += stats[qi].n_merit_mcache_hits;
+                mcache_misses += stats[qi].n_merit_mcache_misses;
+            }
             if (_pFlashIndex->merit_dynamic_3cache_enabled())
             {
                 diskann::cout << "      dynamic3: mean_disk_reads=" << mean_disk_reads_all
-                              << " mean_dyn_hits=" << mean_dyn_hits << " mean_dyn_flushes=" << mean_dyn_flushes;
+                              << " mean_dyn_hits=" << mean_dyn_hits
+                              << " mean_dyn_reads=" << mean_dyn_reads
+                              << " mean_base_pages_avoided=" << mean_base_avoided
+                              << " net_pages_saved=" << (mean_base_avoided - mean_dyn_reads)
+                              << " mean_dyn_flushes=" << mean_dyn_flushes
+                              << " mcache_hit_rate="
+                              << (mcache_hits + mcache_misses == 0
+                                      ? 0.0
+                                      : 100.0 * static_cast<double>(mcache_hits) /
+                                            static_cast<double>(mcache_hits + mcache_misses))
+                              << "%";
                 if (calc_recall_flag)
                     diskann::cout << " recall@" << recall_at << "=" << recall;
                 diskann::cout << std::endl;
                 _pFlashIndex->print_merit_dynamic_3cache_stats();
             }
+            _pFlashIndex->print_merit_memory_cache_stats();
         }
         if (merit_disk_cache_ratio > 0.0)
         {
@@ -706,7 +730,9 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
             {
                 qout << "query_id,total_us,io_us,cpu_us,n_ios,n_base_pages,n_disk_cache_pages,n_merit_hits,"
                         "n_mem_hits,n_disk_reads,n_sector_cache_hits,n_hops,max_sector_jump,"
-                        "n_merit_dyn_hits,n_merit_dyn_flushes,n_merit_dyn_pages,n_merit_dyn_disk_reads\n";
+                        "n_merit_dyn_hits,n_merit_dyn_flushes,n_merit_dyn_pages,n_merit_dyn_disk_reads,"
+                        "n_merit_base_pages_avoided,n_merit_dcache_probe,"
+                        "n_merit_mcache_hits,n_merit_mcache_misses\n";
                 for (size_t qi = 0; qi < query_num; qi++)
                 {
                     const auto &s = stats[qi];
@@ -715,7 +741,9 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
                          << s.n_cache_hits << ',' << s.n_disk_reads << ',' << s.n_sector_cache_hits << ','
                          << s.n_hops << ',' << s.max_sector_jump << ',' << s.n_merit_dyn_hits << ','
                          << s.n_merit_dyn_flushes << ',' << s.n_merit_dyn_pages << ','
-                         << s.n_merit_dyn_disk_reads << '\n';
+                         << s.n_merit_dyn_disk_reads << ',' << s.n_merit_base_pages_avoided << ','
+                         << s.n_merit_dcache_probe << ',' << s.n_merit_mcache_hits << ','
+                         << s.n_merit_mcache_misses << '\n';
                 }
                 qout.close();
                 diskann::cout << "      per-query stats written to " << dump_query_stats_path << std::endl;

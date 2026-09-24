@@ -153,18 +153,43 @@ template <typename T> class SSDQueryScratch : public AbstractScratch<T>
     tsl::robin_map<uint32_t, uint32_t> profile_parent;
     tsl::robin_set<uint64_t> read_sectors; // distinct base _disk.index sectors (frontier reads / base sector cache)
     tsl::robin_set<uint32_t> read_merit_disk_cache_sectors; // distinct MERIT disk cache file sectors
+    tsl::robin_set<uint64_t> merit_avoided_base_sectors;
     // Per-query sector cache: key = base _disk.index sector id
     tsl::robin_map<uint64_t, std::array<char, defaults::SECTOR_LEN>> sector_cache;
     // Per-query MERIT disk cache: key = disk cache sector id (not base sector)
     tsl::robin_map<uint32_t, std::array<char, defaults::SECTOR_LEN>> merit_sector_cache;
     std::vector<uint32_t> merit_dyn_pinned_sectors;
     std::vector<uint32_t> merit_heap_dirty_slots;
+    std::vector<uint32_t> merit_heap_dirty_nodes;
+    std::vector<float> merit_heap_dirty_scores;
+    std::vector<uint8_t> merit_heap_dirty_eligible;
     tsl::robin_set<uint32_t> merit_heap_dirty_set;
+    bool merit_dcache_lookup_enabled = false;
+    bool merit_dcache_maintenance_enabled = false;
+    bool merit_dcache_probe = false;
+    uint32_t merit_dyn_physical_reads = 0;
+    uint32_t merit_dyn_served_nodes = 0;
     // Temporal order of sector ids for cache-miss disk reads (one query)
     std::vector<uint64_t> disk_read_sector_order;
 
     SSDQueryScratch(size_t aligned_dim, size_t visited_reserve);
     ~SSDQueryScratch();
+
+    bool mark_merit_heap_dirty(uint32_t slot_id)
+    {
+        if (merit_heap_dirty_set.insert(slot_id).second)
+        {
+            merit_heap_dirty_slots.push_back(slot_id);
+            return true;
+        }
+        return false;
+    }
+
+    void clear_merit_heap_dirty()
+    {
+        merit_heap_dirty_set.clear();
+        merit_heap_dirty_slots.clear();
+    }
 
     void reset();
 };

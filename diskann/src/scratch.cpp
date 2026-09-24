@@ -94,9 +94,17 @@ template <typename T> void SSDQueryScratch<T>::reset()
     profile_parent.clear();
     read_sectors.clear();
     read_merit_disk_cache_sectors.clear();
+    merit_avoided_base_sectors.clear();
     merit_dyn_pinned_sectors.clear();
-    merit_heap_dirty_slots.clear();
-    merit_heap_dirty_set.clear();
+    clear_merit_heap_dirty();
+    merit_heap_dirty_nodes.clear();
+    merit_heap_dirty_scores.clear();
+    merit_heap_dirty_eligible.clear();
+    merit_dcache_lookup_enabled = false;
+    merit_dcache_maintenance_enabled = false;
+    merit_dcache_probe = false;
+    merit_dyn_physical_reads = 0;
+    merit_dyn_served_nodes = 0;
 }
 
 template <typename T> SSDQueryScratch<T>::SSDQueryScratch(size_t aligned_dim, size_t visited_reserve)

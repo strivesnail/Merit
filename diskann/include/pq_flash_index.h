@@ -131,59 +131,45 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
     DISKANN_DLLEXPORT int save_access_profile(const std::string &output_prefix) const;
     DISKANN_DLLEXPORT void print_access_profile_cdf() const;
 
-    // MERIT Memory cache: size in bytes per cached node entry (coords + nhood).
     DISKANN_DLLEXPORT uint64_t bytes_per_cached_node() const;
-    // Estimate DRAM already needed by index (PQ, pivots, thread scratch, etc.).
     DISKANN_DLLEXPORT uint64_t estimate_baseline_resident_bytes(uint32_t num_threads) const;
-    // Validate requested cache GB against residual host memory; fill report and max node count.
-    // Returns 0 on success, -1 if request exceeds residual budget.
     DISKANN_DLLEXPORT int plan_merit_memory_cache(double merit_memory_gb, double host_memory_gb,
                                                   double reserve_gb, uint32_t num_threads,
                                                   uint64_t &out_max_nodes, std::string &report) const;
-    // Select Top-N nodes by Run2 node_expand counts (N limited by plan).
-    // rank_skip: skip the hottest rank_skip nodes (for disk tier after memory).
     DISKANN_DLLEXPORT int build_merit_memory_node_list(const std::string &profile_prefix, uint64_t max_nodes,
                                                       std::vector<uint32_t> &node_list,
                                                       uint64_t rank_skip = 0) const;
-    // Hot-node + k-hop page order (relayout semantics); disk cache only, max_nodes cap, exclude memory-tier ids.
     DISKANN_DLLEXPORT int build_merit_disk_node_list(const std::string &profile_prefix, uint64_t max_nodes,
                                                      uint64_t memory_tier_exclude_count, uint32_t k_hops,
                                                      const std::string &layout, std::vector<uint32_t> &node_list,
                                                      std::vector<SeedPageGroup> *seed_page_groups = nullptr) const;
 
     DISKANN_DLLEXPORT uint64_t merit_memory_cached_count() const;
+    DISKANN_DLLEXPORT void print_merit_memory_cache_stats() const;
     DISKANN_DLLEXPORT bool merit_mem_pool_contains(uint32_t node_id) const;
     DISKANN_DLLEXPORT bool merit_dc_map_contains(uint32_t node_id) const;
-    // Compare every MERIT disk-cache node against base _disk.index (coords + nbr list).
     DISKANN_DLLEXPORT int verify_merit_disk_cache_against_base(uint64_t max_reports = 20);
     DISKANN_DLLEXPORT void clear_merit_memory_cache();
-    // Load MERIT dynamic pool (Top-N from profile); does not use DiskANN _nhood_cache.
     DISKANN_DLLEXPORT int load_merit_memory_pool(const std::string &profile_prefix,
                                                   std::vector<uint32_t> &node_list);
     DISKANN_DLLEXPORT void enable_merit_memory_runtime_admit(bool enable);
-    // Runtime n-cache LRU + m-cache + d-cache seed flush (MERIT_DYNAMIC_3CACHE).
     DISKANN_DLLEXPORT void enable_merit_dynamic_3cache(bool enable, const std::string &flush_prefix = "");
     DISKANN_DLLEXPORT bool merit_dynamic_3cache_enabled() const;
     DISKANN_DLLEXPORT void print_merit_dynamic_3cache_stats() const;
     DISKANN_DLLEXPORT uint64_t merit_dynamic_flush_count() const;
     DISKANN_DLLEXPORT uint64_t merit_dynamic_clean_seeds() const;
     DISKANN_DLLEXPORT uint64_t merit_dynamic_partial_seeds() const;
-    // Shrink/grow memory cache; evicted = nodes removed vs previous load.
     DISKANN_DLLEXPORT int reload_merit_memory_cache(const std::string &profile_prefix, double merit_memory_gb,
                                                     double host_memory_gb, double reserve_gb, uint32_t num_threads,
                                                     uint64_t &evicted_nodes, std::string &report);
 
-    // MERIT Disk Cache: ratio of base _disk.index size (e.g. 0.1 => 10% of base bytes).
     DISKANN_DLLEXPORT int plan_merit_disk_cache(double base_ratio, uint64_t &out_max_nodes, std::string &report,
                                                 bool allow_replica_slots = false) const;
-    // Build side file from ranked expand nodes; rank_skip excludes hottest (memory tier).
     DISKANN_DLLEXPORT int build_and_load_merit_disk_cache(const std::string &profile_prefix, uint64_t max_nodes,
                                                           const std::string &output_prefix, uint64_t rank_skip = 0,
                                                           bool unified_single_file = false, uint32_t k_hops = 2,
                                                           const std::string &layout = "node");
-    // Load existing disk cache from prefix_merit_dc.{data,nodes} without repacking.
     DISKANN_DLLEXPORT int load_merit_disk_cache_from_prefix(const std::string &output_prefix);
-    // Rebuild disk cache (batch eviction); evicted = nodes dropped vs previous map.
     DISKANN_DLLEXPORT int reload_merit_disk_cache(const std::string &profile_prefix, double base_ratio,
                                                   const std::string &output_prefix, uint64_t rank_skip,
                                                   uint64_t &evicted_nodes, std::string &report,
@@ -353,10 +339,16 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
     static constexpr uint32_t MERIT_DYN_SECTOR_BASE = 0x80000000u;
     static constexpr uint32_t MERIT_DYN_INVALID_PAGE = std::numeric_limits<uint32_t>::max();
 
-    struct MeritSeedDirEntry
+    struct MeritDynLocNode
     {
-        std::vector<uint32_t> page_members;
-        uint32_t page_id = MERIT_DYN_INVALID_PAGE;
+        MeritDiskLoc loc;
+        uint32_t next = MERIT_DYN_INVALID_PAGE;
+    };
+
+    struct MeritDynLocChain
+    {
+        uint32_t head = MERIT_DYN_INVALID_PAGE;
+        uint32_t count = 0;
     };
 
     enum class MeritNodeState : uint8_t
@@ -382,6 +374,7 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
         uint32_t deletion_id = std::numeric_limits<uint32_t>::max();
         uint32_t insertion_slot = MeritMetadataCache::kInvalid;
         uint32_t deletion_slot = MeritMetadataCache::kInvalid;
+        uint32_t created_epoch = 0;
         MeritPendingFlush snap;
         bool committing = false;
     };
@@ -394,11 +387,40 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
     };
 
     bool _merit_dyn_enabled = false;
+    bool _merit_dcache_net_gate_enabled = false;
+    uint32_t _merit_dcache_probe_period = 100;
+    std::atomic<bool> _merit_dcache_gate_active{true};
+    std::atomic<uint64_t> _merit_dcache_query_issued{0};
+    std::atomic<uint64_t> _merit_dcache_query_completed{0};
+    std::atomic<uint64_t> _merit_dcache_enabled_queries{0};
+    std::atomic<uint64_t> _merit_dcache_avoided_pages{0};
+    std::atomic<uint64_t> _merit_dcache_physical_reads{0};
+    std::atomic<uint64_t> _merit_dcache_served_nodes{0};
+    std::atomic<uint64_t> _merit_dcache_gate_transitions{0};
+    mutable std::mutex _merit_dcache_gate_mu;
+    uint64_t _merit_dcache_last_enabled_queries = 0;
+    uint64_t _merit_dcache_last_avoided_pages = 0;
+    uint64_t _merit_dcache_last_physical_reads = 0;
+    uint64_t _merit_dcache_last_served_nodes = 0;
+    uint32_t _merit_dcache_low_windows = 0;
+    uint32_t _merit_dcache_high_windows = 0;
+    uint32_t _merit_dcache_inactive_stages = 0;
+    // Build a candidate page from n-cache-resident members, then copy all
+    // payloads only when the first member is evicted. This removes the stash
+    // from the page-write path.
+    bool _merit_deferred_ncache_page_write = false;
     MeritMetadataCache _merit_mcache;
-    tsl::robin_map<uint32_t, MeritSeedDirEntry> _merit_seed_dir;
+    // Members are stored densely by physical page to avoid one heap-allocated
+    // vector per live d-cache page.
+    std::vector<uint32_t> _merit_dyn_page_members;
+    std::vector<uint16_t> _merit_dyn_page_member_count;
+    uint32_t _merit_dyn_members_per_page = 1;
+    tsl::robin_map<uint32_t, MeritDynLocChain> _merit_dyn_loc_map;
+    std::vector<MeritDynLocNode> _merit_dyn_loc_pool;
+    std::vector<uint32_t> _merit_dyn_loc_free;
     std::vector<uint32_t> _merit_dyn_free;
     tsl::robin_set<uint32_t> _merit_dyn_retired;
-    tsl::robin_map<uint32_t, uint32_t> _merit_page_to_seed;
+    uint64_t _merit_dyn_committed_pages = 0;
     uint64_t _merit_dyn_page_cap = 4096;
     uint64_t _merit_dyn_physical_cap = 0;
     uint32_t _merit_dyn_next_page = 0;
@@ -409,36 +431,71 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
     std::fstream _merit_dyn_write_stream;
     std::mutex _merit_dyn_writer_mu;
     uint64_t _merit_dyn_flush_count = 0;
+    void merit_dyn_loc_clear_unlocked();
+    void merit_dyn_loc_add_unlocked(uint32_t node_id, const MeritDiskLoc &loc);
+    void merit_dyn_loc_erase_sector_unlocked(uint32_t node_id, uint32_t sector);
+    bool merit_dyn_seed_page_unlocked(uint32_t seed_id, uint32_t &page_idx) const;
+    size_t merit_dc_loc_count_unlocked(uint32_t node_id) const;
+    bool merit_dc_loc_at_unlocked(uint32_t node_id, size_t index, MeritDiskLoc &loc) const;
+    bool merit_dc_loc_contains_unlocked(uint32_t node_id, const MeritDiskLoc &loc) const;
+    bool merit_dc_loc_directory_empty_unlocked() const;
+    template <typename Fn> void merit_dc_for_each_loc_unlocked(uint32_t node_id, Fn &&fn) const
+    {
+        if (_merit_dyn_enabled)
+        {
+            const auto it = _merit_dyn_loc_map.find(node_id);
+            if (it == _merit_dyn_loc_map.end())
+                return;
+            uint32_t current = it.value().head;
+            size_t index = 0;
+            while (current != MERIT_DYN_INVALID_PAGE)
+            {
+                fn(_merit_dyn_loc_pool[current].loc, index++);
+                current = _merit_dyn_loc_pool[current].next;
+            }
+            return;
+        }
+        const auto it = _merit_dc_map.find(node_id);
+        if (it == _merit_dc_map.end())
+            return;
+        for (size_t index = 0; index < it->second.size(); ++index)
+            fn(it->second[index], index);
+    }
     struct MeritHeapEntry
     {
         float score = 0;
         uint32_t slot_id = MeritMetadataCache::kInvalid;
-        uint32_t generation = 0;
     };
-    struct MeritMaxHeapCmp
+    enum class MeritHeapKind : uint8_t
     {
-        bool operator()(const MeritHeapEntry &a, const MeritHeapEntry &b) const
-        {
-            return a.score != b.score ? a.score < b.score : a.slot_id < b.slot_id;
-        }
+        None = 0,
+        Max = 1,
+        Min = 2
     };
-    struct MeritMinHeapCmp
+    static constexpr size_t MERIT_MAX_HEAP_SHARDS = 32;
+    static constexpr size_t MERIT_DEFAULT_HEAP_SHARDS = 4;
+    struct alignas(64) MeritHeapShard
     {
-        bool operator()(const MeritHeapEntry &a, const MeritHeapEntry &b) const
-        {
-            return a.score != b.score ? a.score > b.score : a.slot_id > b.slot_id;
-        }
+        mutable std::mutex mu;
+        std::vector<MeritHeapEntry> max_heap;
+        std::vector<MeritHeapEntry> min_heap;
     };
-    std::priority_queue<MeritHeapEntry, std::vector<MeritHeapEntry>, MeritMaxHeapCmp> _merit_max_heap;
-    std::priority_queue<MeritHeapEntry, std::vector<MeritHeapEntry>, MeritMinHeapCmp> _merit_min_heap;
-    std::vector<uint32_t> _merit_heap_generation;
-    tsl::robin_map<uint32_t, float> _merit_heap_score;
-    tsl::robin_map<uint32_t, MeritNodeState> _merit_node_state;
+    std::array<MeritHeapShard, MERIT_MAX_HEAP_SHARDS> _merit_heap_shards;
+    size_t _merit_heap_shard_count = MERIT_DEFAULT_HEAP_SHARDS;
+    std::vector<uint32_t> _merit_heap_position;
+    std::vector<uint8_t> _merit_heap_kind;
+    std::unique_ptr<std::atomic<uint8_t>[]> _merit_node_state;
+    uint64_t _merit_node_state_capacity = 0;
     tsl::robin_map<uint32_t, MeritReadyPair> _merit_ready_pairs; // insertion slot -> pair
     tsl::robin_map<uint32_t, std::vector<uint32_t>> _merit_member_to_pending;
     tsl::robin_map<uint32_t, uint32_t> _merit_deletion_to_pending;
     uint64_t _merit_reserved_free_pages = 0;
     std::atomic<uint32_t> _merit_pending_pair_count{0};
+    std::atomic<uint32_t> _merit_deletion_pair_count{0};
+    std::atomic<uint32_t> _merit_query_epoch{0};
+    uint32_t _merit_pending_max_age_queries = 65536;
+    uint32_t _merit_pending_check_interval = 2048;
+    uint32_t _merit_pending_force_batch = 4;
     std::atomic<bool> _merit_refresh_needed{false};
     std::atomic<bool> _merit_refresh_running{false};
     static constexpr size_t MERIT_PENDING_PAIR_CAP = 4096;
@@ -454,12 +511,81 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
     uint64_t _merit_heap_writes = 0;
     uint64_t _merit_heap_deletes = 0;
     uint64_t _merit_ncache_write_trig = 0;
-    mutable std::mutex _merit_heap_mu;
+    mutable std::shared_mutex _merit_pair_mu;
     static constexpr uint32_t MERIT_FETCHED_PER_PARENT = 8;
+    struct MeritRecentChildren
+    {
+        std::array<uint32_t, MERIT_FETCHED_PER_PARENT> ids;
+
+        MeritRecentChildren()
+        {
+            ids.fill(MeritMetadataCache::kInvalid);
+        }
+
+        void touch(uint32_t child)
+        {
+            size_t count = 0;
+            size_t pos = ids.size();
+            while (count < ids.size() && ids[count] != MeritMetadataCache::kInvalid)
+            {
+                if (ids[count] == child)
+                    pos = count;
+                ++count;
+            }
+            if (pos < count)
+            {
+                for (size_t i = pos + 1; i < count; ++i)
+                    ids[i - 1] = ids[i];
+                ids[count - 1] = child;
+                return;
+            }
+            if (count < ids.size())
+            {
+                ids[count] = child;
+                if (count + 1 < ids.size())
+                    ids[count + 1] = MeritMetadataCache::kInvalid;
+                return;
+            }
+            for (size_t i = 1; i < count; ++i)
+                ids[i - 1] = ids[i];
+            ids[count - 1] = child;
+        }
+
+        size_t size() const
+        {
+            size_t count = 0;
+            while (count < ids.size() && ids[count] != MeritMetadataCache::kInvalid)
+                ++count;
+            return count;
+        }
+
+        bool empty() const
+        {
+            return ids[0] == MeritMetadataCache::kInvalid;
+        }
+
+        const uint32_t *begin() const
+        {
+            return ids.data();
+        }
+        const uint32_t *end() const
+        {
+            return ids.data() + size();
+        }
+        size_t capacity() const
+        {
+            return ids.size();
+        }
+        void clear()
+        {
+            ids[0] = MeritMetadataCache::kInvalid;
+        }
+    };
     uint64_t _merit_stash_cap = 16384;
     tsl::robin_map<uint32_t, MeritPayloadStashEntry> _merit_payload_stash;
     std::list<uint32_t> _merit_stash_lru;
-    tsl::robin_map<uint32_t, std::vector<uint32_t>> _merit_parent_fetched;
+    std::vector<MeritRecentChildren> _merit_parent_fetched_by_slot;
+    std::vector<uint32_t> _merit_parent_fetched_owner;
     mutable std::mutex _merit_stash_mu;
     // Reader-writer lock (std::shared_mutex). Lookup/copy take shared; page
     // install takes exclusive. Not a spin/seqlock: robin_map rehash is not
@@ -470,19 +596,40 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
     {
         return sector >= MERIT_DYN_SECTOR_BASE;
     }
-    std::vector<uint32_t> merit_dyn_now_page_ids(uint32_t seed_id, const MeritMetadataCache::Snapshot &snap) const;
-    bool merit_dyn_hotter_mismatch(const std::vector<uint32_t> &page_members,
+    bool merit_dyn_page_live(uint32_t page_idx) const
+    {
+        return page_idx < _merit_dyn_page_member_count.size() &&
+               _merit_dyn_page_member_count[page_idx] != 0;
+    }
+    std::vector<uint32_t> merit_dyn_now_page_ids(uint32_t seed_id, const MeritMetadataCache::Snapshot &snap,
+                                                 bool ncache_only = false) const;
+    bool merit_dyn_hotter_mismatch(const uint32_t *page_members, size_t page_member_count,
                                    const std::vector<uint32_t> &now_ids) const;
     void merit_dyn_invalidate_seed_page(uint32_t seed_id);
     uint32_t merit_dyn_alloc_page_unlocked();
     void merit_dyn_maybe_mark_seed(uint32_t node_id);
     void merit_dyn_note_touch(const MeritMetadataCache::TouchResult &tr, SSDQueryScratch<T> *query_scratch);
     void merit_dyn_on_mcache_evict(uint32_t node_id, uint32_t slot_id);
+    bool merit_dyn_ncache_evictable(uint32_t node_id) const;
+    bool merit_dyn_heap_better_unlocked(const MeritHeapEntry &a, const MeritHeapEntry &b,
+                                        MeritHeapKind kind) const;
+    void merit_dyn_heap_swap_unlocked(std::vector<MeritHeapEntry> &heap, size_t a, size_t b);
+    void merit_dyn_heap_sift_up_unlocked(std::vector<MeritHeapEntry> &heap, size_t index, MeritHeapKind kind);
+    void merit_dyn_heap_sift_down_unlocked(std::vector<MeritHeapEntry> &heap, size_t index, MeritHeapKind kind);
+    void merit_dyn_heap_insert_unlocked(const MeritHeapEntry &entry, MeritHeapKind kind);
+    size_t merit_dyn_heap_shard_index(uint32_t slot_id) const;
+    MeritHeapShard &merit_dyn_heap_shard(uint32_t slot_id);
+    const MeritHeapShard &merit_dyn_heap_shard(uint32_t slot_id) const;
+    std::vector<MeritHeapEntry> &merit_dyn_heap_for(MeritHeapShard &shard, MeritHeapKind kind);
+    const std::vector<MeritHeapEntry> &merit_dyn_heap_for(const MeritHeapShard &shard,
+                                                          MeritHeapKind kind) const;
+    MeritHeapKind merit_dyn_heap_kind_unlocked(uint32_t slot_id) const;
+    void merit_dyn_set_heap_kind_unlocked(uint32_t slot_id, MeritHeapKind kind);
     void merit_dyn_heap_erase_unlocked(uint32_t slot_id);
+    void merit_dyn_heap_apply_unlocked(uint32_t slot_id, float score, MeritHeapKind desired);
     void merit_dyn_heap_upsert_unlocked(uint32_t slot_id, float score);
-    void merit_dyn_clean_max_heap_unlocked();
-    void merit_dyn_clean_min_heap_unlocked();
-    void merit_dyn_rebuild_heaps_unlocked();
+    void merit_dyn_clean_heap_unlocked(MeritHeapShard &shard, MeritHeapKind kind);
+    bool merit_dyn_best_heap_entry(MeritHeapKind kind, MeritHeapEntry &entry, size_t &shard_index);
     void merit_dyn_flush_dirty_heap(SSDQueryScratch<T> *query_scratch);
     MeritNodeState merit_dyn_state_unlocked(uint32_t slot_id) const;
     void merit_dyn_set_state_unlocked(uint32_t node_id, uint32_t slot_id, MeritNodeState st);
@@ -493,8 +640,9 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
     void merit_dyn_maybe_refresh_pair();
     void merit_dyn_request_refresh();
     bool merit_dyn_commit_ready_pair(uint32_t insertion_slot);
+    void merit_dyn_commit_expired_pairs(uint32_t query_epoch, QueryStats *stats);
     uint32_t merit_dyn_admit_node(uint32_t node_id, const char *node_disk_buf, QueryStats *stats,
-                                  SSDQueryScratch<T> *query_scratch);
+                                  SSDQueryScratch<T> *query_scratch, uint32_t search_hop);
     void merit_dyn_note_base_load(uint32_t node_id, uint32_t parent, const char *node_disk_buf,
                                   SSDQueryScratch<T> *query_scratch);
     bool merit_dyn_has_payload(uint32_t node_id) const;
@@ -504,6 +652,8 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
     void merit_dyn_stash_evict_unlocked();
     void merit_dyn_release_page_pin(uint32_t sector);
     void merit_dyn_on_ncache_evict(uint32_t node_id, QueryStats *stats);
+    void merit_dyn_prepare_query(SSDQueryScratch<T> *query_scratch);
+    void merit_dyn_update_dcache_gate(QueryStats *stats, SSDQueryScratch<T> *query_scratch);
     void merit_dyn_on_query_end(QueryStats *stats, SSDQueryScratch<T> *query_scratch);
     bool merit_dyn_commit_one(MeritPendingFlush &pf, uint32_t replacement_seed = MERIT_DYN_INVALID_PAGE);
 

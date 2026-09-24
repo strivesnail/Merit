@@ -15,6 +15,7 @@ enum class MeritLockKind : size_t
 {
     Score = 0,
     Heap,
+    Pair,
     Metadata,
     DynamicShared,
     DynamicUnique,
