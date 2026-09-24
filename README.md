@@ -21,6 +21,53 @@ Offline **k-hop relayout** tools (`relayout_disk_index`, `apply_disk_permutation
 
 This tree is a **DiskANN fork** with MERIT integrated in `diskann/` plus reproducible scripts under `experiments/`.
 
+## Online adaptive three-cache mode
+
+The current runtime can learn directly from the live query stream; it does not need to know whether the workload is uniform or contains moving hotspots.
+
+- **N-cache** stores complete nodes in DRAM. It uses 32 lock shards, an atomic membership bitmap for lock-free misses, a reader-writer lock, and CLOCK replacement. Every 1,000 queries it measures hit rate, rejected-node reuse, and evictions. Each run of 25 consecutive low-locality windows advances one step from normal admission to Hop-12, then from Hop-12 to Hop-8. A node first encountered at or beyond the selected hop is recorded but not admitted; a second encounter admits it. Six high-locality windows relax one step in the reverse direction.
+- **M-cache** stores node and edge hotness metadata. Every 1,000 queries it measures the current-window hit rate. Each run of 25 consecutive windows below 20% reduces updates one step from 100% to 10%, then from 10% to 1%; six windows above 40% restore one level at a time.
+- **D-cache** stores runtime-generated 4 KiB pages. It is controlled by net physical-I/O benefit, not hit rate alone. MERIT counts base-index pages avoided and D-cache pages read. Twenty-five consecutive 1,000-query windows saving less than 0.1 page/query disable M/D-cache maintenance. While disabled, 1% of queries remain full probes. Two consecutive 10,000-query probe windows with at least 0.25 net page saved/query and at least 1.25 avoided pages per D-cache page read re-enable maintenance.
+
+The D-cache net-benefit gate is enabled automatically when `MERIT_MCACHE_ADAPTIVE_UPDATE=1`; set `MERIT_DCACHE_NET_GATE=0` to disable it.
+
+Example:
+
+```bash
+export MERIT_DYNAMIC_3CACHE=1
+export MERIT_DEFERRED_NCACHE_PAGE_WRITE=1
+export MERIT_NCACHE_SHARDS=32
+export MERIT_NCACHE_FAST_MISS=1
+export MERIT_NCACHE_CLOCK=1
+export MERIT_NCACHE_SPIN=0
+export MERIT_NCACHE_ADMISSION=adaptive_hop_reject
+export MERIT_NCACHE_HOP_THRESHOLD=12
+export MERIT_NCACHE_ADAPT_MIN_HOP=8
+export MERIT_NCACHE_ADAPT_HALF_LIFE_QUERIES=25000
+export MERIT_NCACHE_GHOST_PERCENT=10
+export MERIT_MCACHE_ADAPTIVE_UPDATE=1
+
+./diskann/build/apps/search_disk_index \
+  --data_type uint8 --dist_fn l2 \
+  --index_path_prefix /path/to/index \
+  --query_file /path/to/queries.u8bin \
+  --gt_file /path/to/ground_truth.bin \
+  --result_path /path/to/results \
+  --recall_at 1 --search_list 100 --beamwidth 4 --num_threads 24 \
+  --num_nodes_to_cache 0 \
+  --merit_memory_gb 2 --merit_memory_runtime_admit true
+```
+
+### SIFT100M moving-hotspot result
+
+Reproduced on SIFT100M with 2 million queries: ten cycles of 100K global-uniform queries followed by 100K Zipfian queries (`alpha=1.2`). Every Zipfian segment uses a different, non-overlapping 100K-node region. Configuration: 24 threads, `L=100`, beam width 4, 2 GiB N-cache, mdadm RAID5.
+
+- **Plain full MERIT:** 6,257.90 QPS, 50.90 reads/query, P99 8,580 us.
+- **DiskANN BFS:** 7,682.13 QPS, 99.23 reads/query, P99 5,289 us.
+- **Adaptive N-cache only:** 11,256.89 QPS, 51.05 reads/query, P99 6,637 us.
+- **Current adaptive full MERIT:** 11,458.95 QPS, 51.05 reads/query, P99 6,398 us.
+- Recall@1 is 99.99% for all four runs. The adaptive full mode is 83.1% faster than plain full MERIT and 49.2% faster than DiskANN BFS on this workload.
+
 ## Build
 
 ```bash
@@ -73,6 +120,12 @@ See `experiments/test-scripts/README.md` for more scripts (eviction, Layout A/B,
 | `--enable_query_sector_cache` | Intra-query sector reuse |
 | `MERIT_RECORD_DRIVEN_SEED_ACCESS=1` | Record-driven seed routing (required for Adaptive) |
 | `MERIT_ADAPTIVE_PARENT_OR_SELF=1` | Adaptive parent-or-self policy (with record-driven) |
+| `MERIT_DYNAMIC_3CACHE=1` | Enable online N/M/D three-cache mode |
+| `MERIT_NCACHE_ADMISSION=adaptive_hop_reject` | Enable adaptive normal/Hop-12/Hop-8 admission |
+| `MERIT_NCACHE_FAST_MISS=1` / `MERIT_NCACHE_CLOCK=1` | Enable lock-free miss checks and CLOCK replacement |
+| `MERIT_MCACHE_ADAPTIVE_UPDATE=1` | Enable adaptive M-cache update frequency and D-cache net-I/O gate |
+| `MERIT_DCACHE_NET_GATE=0` | Explicitly disable the net-I/O gate |
+| `MERIT_DCACHE_PROBE_PERIOD` | Probe period while D-cache is disabled; default `100` |
 
 Example Adaptive search (reuse a built seed-replica cache):
 
