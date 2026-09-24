@@ -335,10 +335,13 @@ template <typename T> class MeritMemoryPool
     uint64_t _adaptive_half_life_queries = 25000;
     uint64_t _adaptive_stage_queries = 1000;
     double _adaptive_low_hit_rate = 0.40;
-    double _adaptive_high_hit_rate = 0.60;
+    double _adaptive_medium_hit_rate = 0.75;
+    double _adaptive_high_hit_rate = 0.85;
     double _adaptive_low_reuse_rate = 0.02;
     double _adaptive_high_reuse_rate = 0.10;
     double _adaptive_mru_min_evictions_per_query = 30.0;
+    double _adaptive_medium_min_evictions_per_query = 40.0;
+    double _adaptive_recovery_max_evictions_per_query = 15.0;
     double _adaptive_reject_min_evictions_per_query = 10.0;
     std::atomic<bool> _adaptive_reject_enabled{false};
     std::atomic<uint64_t> _adaptive_query_count{0};

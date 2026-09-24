@@ -664,15 +664,22 @@ template <typename T> void MeritMemoryPool<T>::on_query_end()
 
     const bool reject_enabled = _adaptive_reject_enabled.load(std::memory_order_relaxed);
     const bool enough_ghost_samples = rejection_delta >= 100;
+    const bool moderate_churn =
+        !reject_enabled &&
+        hit_rate >= _adaptive_low_hit_rate &&
+        hit_rate < _adaptive_medium_hit_rate &&
+        evictions_per_query >= _adaptive_medium_min_evictions_per_query;
     const bool low_locality =
-        hit_rate < _adaptive_low_hit_rate &&
-        ((!reject_enabled && evictions_per_query >= _adaptive_mru_min_evictions_per_query) ||
-         (reject_enabled && enough_ghost_samples &&
-          reuse_rate < _adaptive_low_reuse_rate &&
-          evictions_per_query >= _adaptive_reject_min_evictions_per_query));
+        moderate_churn ||
+        (hit_rate < _adaptive_low_hit_rate &&
+         ((!reject_enabled && evictions_per_query >= _adaptive_mru_min_evictions_per_query) ||
+          (reject_enabled && enough_ghost_samples &&
+           reuse_rate < _adaptive_low_reuse_rate &&
+           evictions_per_query >= _adaptive_reject_min_evictions_per_query)));
     const bool high_locality =
         reject_enabled &&
-        (hit_rate > _adaptive_high_hit_rate ||
+        ((hit_rate > _adaptive_high_hit_rate &&
+          evictions_per_query < _adaptive_recovery_max_evictions_per_query) ||
          (enough_ghost_samples && reuse_rate > _adaptive_high_reuse_rate));
     _adaptive_low_stages = low_locality ? _adaptive_low_stages + 1 : 0;
     _adaptive_high_stages = high_locality ? _adaptive_high_stages + 1 : 0;
@@ -689,7 +696,8 @@ template <typename T> void MeritMemoryPool<T>::on_query_end()
         if (!reject_enabled)
         {
             next_reject_enabled = true;
-            next_threshold = _adaptive_initial_hop_threshold;
+            next_threshold = moderate_churn ? _adaptive_min_hop_threshold
+                                            : _adaptive_initial_hop_threshold;
         }
         else if (current_threshold > _adaptive_min_hop_threshold)
         {
