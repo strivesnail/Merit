@@ -494,6 +494,48 @@ MeritMetadataCache::TouchResult MeritMetadataCache::on_edge(uint32_t parent, uin
     return r;
 }
 
+MeritMetadataCache::TouchResult MeritMetadataCache::on_real_io_edge(uint32_t parent, uint32_t child,
+                                                                    size_t max_edges)
+{
+    TouchResult r;
+    if (parent == child || max_edges == 0)
+        return r;
+
+    const size_t shard_id = shard_index(parent);
+    Shard &shard = *_shards[shard_id];
+    MeritTimedMutexGuard lock(shard.mu, MeritLockKind::Metadata);
+    r = touch_or_insert_unlocked(shard, shard_id, parent, 0.0f);
+    if (!r.present)
+        return r;
+
+    const auto parent_it = shard.node_to_slot.find(parent);
+    if (parent_it == shard.node_to_slot.end())
+        return r;
+    std::vector<Edge> &edges = shard.edges_by_slot[parent_it->second];
+    for (Edge &edge : edges)
+    {
+        if (edge.child() == child)
+        {
+            edge.bump_heat();
+            return r;
+        }
+    }
+
+    if (edges.size() < max_edges)
+    {
+        edges.emplace_back(child, 1);
+        _total_edges.fetch_add(1, std::memory_order_relaxed);
+        return r;
+    }
+
+    auto weakest = std::min_element(edges.begin(), edges.end(),
+                                    [](const Edge &a, const Edge &b) { return a.heat() < b.heat(); });
+    const uint8_t inherited_heat = weakest->heat();
+    *weakest = Edge(child, inherited_heat);
+    weakest->bump_heat();
+    return r;
+}
+
 bool MeritMetadataCache::contains(uint32_t node_id) const
 {
     const Shard &shard = *_shards[shard_index(node_id)];

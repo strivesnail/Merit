@@ -779,20 +779,21 @@ void PQFlashIndex<T, LabelT>::generate_cache_list_from_sample_queries(std::strin
 
 template <typename T, typename LabelT>
 void PQFlashIndex<T, LabelT>::cache_bfs_levels(uint64_t num_nodes_to_cache, std::vector<uint32_t> &node_list,
-                                               const bool shuffle)
+                                               const bool shuffle, double max_fraction)
 {
     std::random_device rng;
     std::mt19937 urng(rng());
 
     tsl::robin_set<uint32_t> node_set;
 
-    // Do not cache more than 10% of the nodes in the index
-    uint64_t tenp_nodes = (uint64_t)(std::round(this->_num_points * 0.1));
-    if (num_nodes_to_cache > tenp_nodes)
+    max_fraction = std::max(0.0, std::min(1.0, max_fraction));
+    const uint64_t max_nodes = (uint64_t)(std::round(this->_num_points * max_fraction));
+    if (num_nodes_to_cache > max_nodes)
     {
-        diskann::cout << "Reducing nodes to cache from: " << num_nodes_to_cache << " to: " << tenp_nodes
-                      << "(10 percent of total nodes:" << this->_num_points << ")" << std::endl;
-        num_nodes_to_cache = tenp_nodes == 0 ? 1 : tenp_nodes;
+        diskann::cout << "Reducing nodes to cache from: " << num_nodes_to_cache << " to: " << max_nodes << " ("
+                      << (max_fraction * 100.0) << " percent of total nodes:" << this->_num_points << ")"
+                      << std::endl;
+        num_nodes_to_cache = max_nodes == 0 ? 1 : max_nodes;
     }
     diskann::cout << "Caching " << num_nodes_to_cache << "..." << std::endl;
 
@@ -1830,7 +1831,8 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
     auto profile_on_first_visit = [this, query_scratch](uint32_t id, uint32_t parent) {
         if (query_scratch->profile_parent.find(id) == query_scratch->profile_parent.end())
             query_scratch->profile_parent.insert({id, parent});
-        if (this->_merit_dyn_enabled && query_scratch->merit_dcache_maintenance_enabled)
+        if (this->_merit_dyn_enabled && query_scratch->merit_dcache_maintenance_enabled &&
+            !this->_merit_real_io_coaccess)
         {
             bool touched = false;
             {
@@ -3037,7 +3039,7 @@ int PQFlashIndex<T, LabelT>::build_merit_disk_node_list(const std::string &profi
                                                         uint64_t memory_tier_exclude_count, uint32_t k_hops,
                                                         const std::string &layout_in,
                                                         std::vector<uint32_t> &node_list,
-                                                        std::vector<SeedPageGroup> *seed_page_groups) const
+                                                        std::vector<SeedPageGroup> *seed_page_groups)
 {
     node_list.clear();
     if (seed_page_groups != nullptr)
@@ -3048,6 +3050,33 @@ int PQFlashIndex<T, LabelT>::build_merit_disk_node_list(const std::string &profi
     std::string layout = normalize_disk_cache_layout(layout_in);
     if (layout.empty())
         layout = (k_hops == 0) ? "flat" : "node";
+
+    if (layout == "bfs")
+    {
+        std::vector<uint32_t> bfs_nodes;
+        const uint64_t request =
+            std::min<uint64_t>(_num_points, max_nodes + std::min<uint64_t>(memory_tier_exclude_count, _num_points));
+        cache_bfs_levels(request, bfs_nodes, false, 1.0);
+        node_list.reserve(static_cast<size_t>(max_nodes));
+        for (uint32_t id : bfs_nodes)
+        {
+            if (_merit_mem_pool != nullptr && _merit_mem_pool->contains(id))
+                continue;
+            node_list.push_back(id);
+            if (node_list.size() >= max_nodes)
+                break;
+        }
+        if (node_list.size() != max_nodes)
+        {
+            diskann::cerr << "MERIT disk-cache BFS prefill selected only " << node_list.size() << " / " << max_nodes
+                          << " nodes after excluding the N-cache." << std::endl;
+            return -1;
+        }
+        diskann::cout << "MERIT disk-cache node list: BFS prefill selected " << node_list.size()
+                      << " nodes after excluding "
+                      << (_merit_mem_pool != nullptr ? _merit_mem_pool->size() : 0) << " N-cache nodes." << std::endl;
+        return 0;
+    }
 
     std::vector<uint64_t> node_expand;
     std::vector<std::tuple<uint32_t, uint32_t, uint64_t>> edges;
@@ -3980,6 +4009,8 @@ void PQFlashIndex<T, LabelT>::enable_merit_dynamic_3cache(bool enable, const std
     }
     _merit_dyn_enabled = true;
     g_dyn_probe.reset();
+    const bool import_static_prefill =
+        merit_env_u64("MERIT_DYNAMIC_PREFILL_STATIC", 0) != 0 && !_merit_dc_path.empty() && !_merit_dc_map.empty();
 
     const uint64_t ncache_n =
         (_merit_mem_pool != nullptr && _merit_mem_pool->active()) ? _merit_mem_pool->capacity() : 0;
@@ -3995,6 +4026,45 @@ void PQFlashIndex<T, LabelT>::enable_merit_dynamic_3cache(bool enable, const std
     const uint8_t sig_t = static_cast<uint8_t>(merit_env_u64("MERIT_SEED_T", MeritMetadataCache::kDefaultSigT));
     _merit_mcache.init(mcache_cap, sig_t, _num_points);
     _merit_deferred_ncache_page_write = merit_env_u64("MERIT_DEFERRED_NCACHE_PAGE_WRITE", 0) != 0;
+    _merit_dcache_evict_ncache_on_commit =
+        merit_env_u64("MERIT_DCACHE_EVICT_NCACHE_ON_COMMIT", 0) != 0;
+    _merit_dcache_ncache_erases.store(0, std::memory_order_relaxed);
+    _merit_real_io_coaccess = merit_env_u64("MERIT_REAL_IO_COACCESS", 1) != 0;
+    _merit_real_io_window = static_cast<uint32_t>(
+        std::max<uint64_t>(1, std::min<uint64_t>(16, merit_env_u64("MERIT_REAL_IO_WINDOW", 4))));
+    _merit_real_io_sample_queries = static_cast<uint32_t>(
+        std::max<uint64_t>(1, merit_env_u64("MERIT_REAL_IO_SAMPLE_QUERIES", 64)));
+    _merit_real_io_max_partners = static_cast<uint32_t>(
+        std::max<uint64_t>(1, std::min<uint64_t>(128, merit_env_u64("MERIT_REAL_IO_MAX_PARTNERS", 32))));
+    _merit_real_io_queries.store(0, std::memory_order_relaxed);
+    _merit_real_io_sampled_queries.store(0, std::memory_order_relaxed);
+    _merit_real_io_nodes.store(0, std::memory_order_relaxed);
+    _merit_real_io_pairs.store(0, std::memory_order_relaxed);
+    _merit_pending_buffer_cap_bytes =
+        _merit_deferred_ncache_page_write
+            ? merit_env_u64("MERIT_PENDING_BUFFER_BYTES", 4ULL * 1024ULL * 1024ULL)
+            : 0;
+    _merit_pending_buffer_payload_bytes = 0;
+    _merit_pending_require_full_page =
+        _merit_pending_buffer_cap_bytes > 0 &&
+        merit_env_u64("MERIT_PENDING_REQUIRE_FULL_PAGE", 1) != 0;
+    _merit_pending_buffer_ready_percent = static_cast<uint32_t>(
+        std::min<uint64_t>(100, merit_env_u64("MERIT_PENDING_BUFFER_READY_PERCENT", 0)));
+    _merit_pending_buffer_ready_min_members = static_cast<uint16_t>(
+        std::min<uint64_t>(std::numeric_limits<uint16_t>::max(),
+                           std::max<uint64_t>(1, merit_env_u64("MERIT_PENDING_BUFFER_READY_MIN_MEMBERS", 2))));
+    _merit_pending_buffer_inserts.store(0, std::memory_order_relaxed);
+    _merit_pending_buffer_ready_writes.store(0, std::memory_order_relaxed);
+    _merit_pending_buffer_pressure_writes.store(0, std::memory_order_relaxed);
+    _merit_pending_buffer_drops.store(0, std::memory_order_relaxed);
+    _merit_pending_member_refreshes.store(0, std::memory_order_relaxed);
+    _merit_pending_became_full.store(0, std::memory_order_relaxed);
+    _merit_monitor_warmup_queries = static_cast<uint32_t>(
+        std::min<uint64_t>(std::numeric_limits<uint32_t>::max(),
+                           merit_env_u64("MERIT_MONITOR_WARMUP_QUERIES", 0)));
+    _merit_monitor_interval_queries = static_cast<uint32_t>(
+        std::min<uint64_t>(std::numeric_limits<uint32_t>::max(),
+                           std::max<uint64_t>(1, merit_env_u64("MERIT_MONITOR_INTERVAL_QUERIES", 1000000))));
     _merit_dcache_net_gate_enabled =
         merit_env_u64("MERIT_DCACHE_NET_GATE", _merit_mcache.adaptive_update_enabled() ? 1 : 0) != 0;
     _merit_dcache_probe_period = static_cast<uint32_t>(
@@ -4026,6 +4096,10 @@ void PQFlashIndex<T, LabelT>::enable_merit_dynamic_3cache(bool enable, const std
     _merit_pending_max_age_queries = pending_knob("MERIT_PENDING_MAX_AGE_QUERIES", 65536);
     _merit_pending_check_interval = pending_knob("MERIT_PENDING_CHECK_INTERVAL", 2048);
     _merit_pending_force_batch = pending_knob("MERIT_PENDING_FORCE_BATCH", 4);
+    const uint64_t pending_pair_default = _merit_pending_buffer_cap_bytes > 0 ? 16384 : 4096;
+    _merit_pending_pair_cap = static_cast<size_t>(
+        std::min<uint64_t>(MERIT_PENDING_PAIR_CAP_MAX,
+                           std::max<uint64_t>(1, merit_env_u64("MERIT_PENDING_PAIR_CAP", pending_pair_default))));
     const uint64_t requested_heap_shards =
         merit_env_u64("MERIT_HEAP_SHARDS", MERIT_DEFAULT_HEAP_SHARDS);
     _merit_heap_shard_count =
@@ -4051,6 +4125,8 @@ void PQFlashIndex<T, LabelT>::enable_merit_dynamic_3cache(bool enable, const std
         _merit_ready_pairs.clear();
         _merit_member_to_pending.clear();
         _merit_deletion_to_pending.clear();
+        _merit_pending_buffer_buckets.clear();
+        _merit_pending_buffer_buckets.resize(static_cast<size_t>(nps) + 1);
         _merit_reserved_free_pages = 0;
         _merit_pending_pair_count.store(0, std::memory_order_relaxed);
         _merit_deletion_pair_count.store(0, std::memory_order_relaxed);
@@ -4089,7 +4165,8 @@ void PQFlashIndex<T, LabelT>::enable_merit_dynamic_3cache(bool enable, const std
         _merit_dyn_page_members.clear();
         _merit_dyn_page_member_count.clear();
         _merit_dyn_members_per_page = static_cast<uint32_t>(nps);
-        _merit_dc_map.clear();
+        if (!import_static_prefill)
+            _merit_dc_map.clear();
         merit_dyn_loc_clear_unlocked();
         const uint64_t max_dynamic_locations = _merit_dyn_page_cap * nps;
         if (max_dynamic_locations <= static_cast<uint64_t>(std::numeric_limits<uint32_t>::max()))
@@ -4142,6 +4219,9 @@ void PQFlashIndex<T, LabelT>::enable_merit_dynamic_3cache(bool enable, const std
 #pragma omp critical
         { _merit_dyn_reader->register_thread(); }
     }
+    if (import_static_prefill && merit_dyn_import_static_prefill() != 0)
+        throw ANNException("Failed to import the static BFS d-cache into dynamic MERIT.", -1, __FUNCSIG__, __FILE__,
+                           __LINE__);
     _merit_mem_runtime_admit = true;
     _merit_seed_first_lookup = true;
     _merit_stash_cap = _merit_deferred_ncache_page_write
@@ -4152,6 +4232,7 @@ void PQFlashIndex<T, LabelT>::enable_merit_dynamic_3cache(bool enable, const std
         std::lock_guard<std::mutex> slock(_merit_stash_mu);
         _merit_payload_stash.clear();
         _merit_stash_lru.clear();
+        _merit_pending_buffer_payload_bytes = 0;
         _merit_parent_fetched_by_slot.assign(static_cast<size_t>(_merit_mcache.slot_capacity()),
                                              MeritRecentChildren{});
         _merit_parent_fetched_owner.assign(static_cast<size_t>(_merit_mcache.slot_capacity()),
@@ -4167,7 +4248,142 @@ void PQFlashIndex<T, LabelT>::enable_merit_dynamic_3cache(bool enable, const std
                   << " dcache_net_gate=" << (_merit_dcache_net_gate_enabled ? "on" : "off")
                   << " dcache_probe=1/" << _merit_dcache_probe_period
                   << " deferred_ncache_page_write=" << (_merit_deferred_ncache_page_write ? "on" : "off")
+                  << " dcache_ncache_exclusive="
+                  << (_merit_dcache_evict_ncache_on_commit ? "on" : "off")
+                  << " real_io_coaccess=" << (_merit_real_io_coaccess ? "on" : "off")
+                  << " real_io_window=" << _merit_real_io_window
+                  << " real_io_sample=1/" << _merit_real_io_sample_queries
+                  << " pending_buffer_bytes=" << _merit_pending_buffer_cap_bytes
+                  << " pending_buffer_ready=" << _merit_pending_buffer_ready_percent << "%"
+                  << "/" << _merit_pending_buffer_ready_min_members << "-members"
+                  << " pending_require_full_page=" << (_merit_pending_require_full_page ? "on" : "off")
+                  << " pending_pair_cap=" << _merit_pending_pair_cap
                   << std::endl;
+}
+
+template <typename T, typename LabelT> int PQFlashIndex<T, LabelT>::merit_dyn_import_static_prefill()
+{
+    if (_merit_dc_path.empty() || _merit_dc_map.empty() || _merit_dyn_write_fd < 0)
+        return -1;
+
+    uint64_t page_count = 0;
+    for (const auto &entry : _merit_dc_map)
+    {
+        for (const MeritDiskLoc &loc : entry.second)
+            page_count = std::max<uint64_t>(page_count, static_cast<uint64_t>(loc.sector) + 1ULL);
+    }
+    if (page_count == 0 || page_count > _merit_dyn_page_cap)
+    {
+        diskann::cerr << "MERIT BFS prefill page count " << page_count << " exceeds dynamic capacity "
+                      << _merit_dyn_page_cap << "." << std::endl;
+        return -1;
+    }
+
+#ifndef _WINDOWS
+    const int src_fd = ::open(_merit_dc_path.c_str(), O_RDONLY | O_DIRECT | O_LARGEFILE);
+    if (src_fd < 0)
+    {
+        diskann::cerr << "MERIT BFS prefill could not open " << _merit_dc_path << "." << std::endl;
+        return -1;
+    }
+    constexpr size_t copy_chunk = 4ULL * 1024ULL * 1024ULL;
+    void *buffer = nullptr;
+    if (::posix_memalign(&buffer, defaults::SECTOR_LEN, copy_chunk) != 0)
+    {
+        ::close(src_fd);
+        return -1;
+    }
+    const uint64_t bytes_to_copy = page_count * defaults::SECTOR_LEN;
+    bool copy_ok = true;
+    for (uint64_t offset = 0; offset < bytes_to_copy;)
+    {
+        const size_t bytes = static_cast<size_t>(std::min<uint64_t>(copy_chunk, bytes_to_copy - offset));
+        const ssize_t got = ::pread(src_fd, buffer, bytes, static_cast<off_t>(offset));
+        if (got != static_cast<ssize_t>(bytes) ||
+            ::pwrite(_merit_dyn_write_fd, buffer, bytes, static_cast<off_t>(offset)) != static_cast<ssize_t>(bytes))
+        {
+            copy_ok = false;
+            break;
+        }
+        offset += bytes;
+    }
+    ::free(buffer);
+    ::close(src_fd);
+    if (!copy_ok || ::fdatasync(_merit_dyn_write_fd) != 0)
+    {
+        diskann::cerr << "MERIT BFS prefill failed while copying " << bytes_to_copy << " bytes." << std::endl;
+        return -1;
+    }
+#else
+    diskann::cerr << "MERIT BFS dynamic prefill is not implemented on Windows." << std::endl;
+    return -1;
+#endif
+
+    std::vector<uint32_t> seeds(static_cast<size_t>(page_count), MERIT_DYN_INVALID_PAGE);
+    {
+        MeritTimedSharedMutexGuard lock(_merit_dyn_mu, MeritLockKind::DynamicUnique, true);
+        for (const auto &entry : _merit_dc_map)
+        {
+            const uint32_t node_id = entry.first;
+            for (const MeritDiskLoc &static_loc : entry.second)
+            {
+                if (static_loc.sector >= page_count || static_loc.slot >= _merit_dyn_members_per_page)
+                    return -1;
+                MeritDiskLoc dynamic_loc = static_loc;
+                dynamic_loc.sector = static_cast<uint32_t>(MERIT_DYN_SECTOR_BASE + static_loc.sector);
+                merit_dyn_loc_add_unlocked(node_id, dynamic_loc);
+                const size_t member_index =
+                    static_cast<size_t>(static_loc.sector) * _merit_dyn_members_per_page + static_loc.slot;
+                _merit_dyn_page_members[member_index] = node_id;
+                _merit_dyn_page_member_count[static_loc.sector] =
+                    std::max<uint16_t>(_merit_dyn_page_member_count[static_loc.sector],
+                                       static_cast<uint16_t>(static_loc.slot + 1));
+                if (static_loc.slot == 0)
+                    seeds[static_loc.sector] = node_id;
+            }
+        }
+        for (uint64_t page = 0; page < page_count; ++page)
+        {
+            if (_merit_dyn_page_member_count[page] != _merit_dyn_members_per_page ||
+                seeds[page] == MERIT_DYN_INVALID_PAGE)
+            {
+                diskann::cerr << "MERIT BFS prefill page " << page << " is not full ("
+                              << _merit_dyn_page_member_count[page] << "/" << _merit_dyn_members_per_page << ")."
+                              << std::endl;
+                return -1;
+            }
+        }
+        _merit_dyn_committed_pages = page_count;
+        _merit_dyn_next_page = page_count;
+        _merit_dc_map.clear();
+    }
+
+    for (uint32_t seed : seeds)
+    {
+        const auto tr = _merit_mcache.on_expand(seed, _merit_score_unit);
+        if (!tr.present || tr.evicted_id != MeritMetadataCache::kInvalid)
+        {
+            diskann::cerr << "MERIT BFS prefill could not register all page seeds in m-cache." << std::endl;
+            return -1;
+        }
+        {
+            MeritTimedSharedMutexGuard plock(_merit_pair_mu, MeritLockKind::Pair, true);
+            merit_dyn_set_state_unlocked(seed, tr.slot_id, MeritNodeState::Seed);
+        }
+        MeritHeapShard &shard = merit_dyn_heap_shard(tr.slot_id);
+        MeritTimedMutexGuard hlock(shard.mu, MeritLockKind::Heap);
+        merit_dyn_heap_upsert_unlocked(tr.slot_id, tr.score);
+    }
+
+    if (_merit_disk_reader)
+    {
+        _merit_disk_reader->close();
+        _merit_disk_reader.reset();
+    }
+    diskann::cout << "MERIT dynamic BFS prefill: " << page_count << "/" << _merit_dyn_page_cap
+                  << " pages, " << (page_count * _merit_dyn_members_per_page)
+                  << " nodes; all pages full before measurement." << std::endl;
+    return 0;
 }
 
 template <typename T, typename LabelT> bool PQFlashIndex<T, LabelT>::merit_dynamic_3cache_enabled() const
@@ -4178,6 +4394,41 @@ template <typename T, typename LabelT> bool PQFlashIndex<T, LabelT>::merit_dynam
 template <typename T, typename LabelT> uint64_t PQFlashIndex<T, LabelT>::merit_dynamic_flush_count() const
 {
     return _merit_dyn_flush_count;
+}
+
+template <typename T, typename LabelT> uint64_t PQFlashIndex<T, LabelT>::merit_dynamic_page_count() const
+{
+    MeritTimedSharedMutexGuard lock(_merit_dyn_mu, MeritLockKind::DynamicShared, false);
+    return _merit_dyn_committed_pages;
+}
+
+template <typename T, typename LabelT> uint64_t PQFlashIndex<T, LabelT>::merit_dynamic_page_capacity() const
+{
+    return _merit_dyn_page_cap;
+}
+
+template <typename T, typename LabelT> bool PQFlashIndex<T, LabelT>::merit_dynamic_disk_full() const
+{
+    return merit_dyn_disk_is_full();
+}
+
+template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::merit_dynamic_begin_measurement()
+{
+    _merit_monitor_warmup_queries = _merit_query_epoch.load(std::memory_order_acquire);
+    _merit_pending_buffer_inserts.store(0, std::memory_order_relaxed);
+    _merit_pending_buffer_ready_writes.store(0, std::memory_order_relaxed);
+    _merit_pending_buffer_pressure_writes.store(0, std::memory_order_relaxed);
+    _merit_pending_buffer_drops.store(0, std::memory_order_relaxed);
+    _merit_pending_member_refreshes.store(0, std::memory_order_relaxed);
+    _merit_pending_became_full.store(0, std::memory_order_relaxed);
+    {
+        MeritTimedSharedMutexGuard plock(_merit_pair_mu, MeritLockKind::Pair, true);
+        _merit_heap_writes = 0;
+        _merit_heap_deletes = 0;
+        _merit_ncache_write_trig = 0;
+    }
+    diskann::cout << "MERIT measurement counters reset at query="
+                  << _merit_monitor_warmup_queries << std::endl;
 }
 
 template <typename T, typename LabelT> uint64_t PQFlashIndex<T, LabelT>::merit_dynamic_clean_seeds() const
@@ -4281,6 +4532,7 @@ template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::print_merit
     const uint64_t ncache_payload_bytes =
         (_merit_mem_pool && _merit_mem_pool->active()) ? _merit_mem_pool->payload_capacity_bytes() : 0;
     uint64_t stash_payload_bytes = 0;
+    uint64_t pending_buffer_payload_bytes = 0;
     uint64_t parent_fetched_bytes = 0;
     uint64_t stash_entries = 0;
     uint64_t parent_entries = 0;
@@ -4290,6 +4542,7 @@ template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::print_merit
         for (const auto &kv : _merit_payload_stash)
             stash_payload_bytes +=
                 kv.second.coords.capacity() * sizeof(T) + kv.second.nbrs.capacity() * sizeof(uint32_t);
+        pending_buffer_payload_bytes = _merit_pending_buffer_payload_bytes;
         for (const auto &kids : _merit_parent_fetched_by_slot)
             if (!kids.empty())
                 ++parent_entries;
@@ -4302,6 +4555,28 @@ template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::print_merit
                   << " stash_payload_capacity_bytes=" << stash_payload_bytes
                   << " parent_fetched_entries=" << parent_entries
                   << " parent_fetched_capacity_bytes=" << parent_fetched_bytes << std::endl;
+    diskann::cout << "MERIT pending_buffer: payload_bytes=" << pending_buffer_payload_bytes << "/"
+                  << _merit_pending_buffer_cap_bytes
+                  << " entries=" << stash_entries
+                  << " inserts=" << _merit_pending_buffer_inserts.load(std::memory_order_relaxed)
+                  << " ready_writes="
+                  << _merit_pending_buffer_ready_writes.load(std::memory_order_relaxed)
+                  << " pressure_writes="
+                  << _merit_pending_buffer_pressure_writes.load(std::memory_order_relaxed)
+                  << " drops=" << _merit_pending_buffer_drops.load(std::memory_order_relaxed)
+                  << " member_refreshes="
+                  << _merit_pending_member_refreshes.load(std::memory_order_relaxed)
+                  << " became_full=" << _merit_pending_became_full.load(std::memory_order_relaxed)
+                  << " dcache_ncache_erases="
+                  << _merit_dcache_ncache_erases.load(std::memory_order_relaxed)
+                  << std::endl;
+    diskann::cout << "MERIT real_io_coaccess: enabled=" << (_merit_real_io_coaccess ? "yes" : "no")
+                  << " queries=" << _merit_real_io_queries.load(std::memory_order_relaxed)
+                  << " sampled_queries=" << _merit_real_io_sampled_queries.load(std::memory_order_relaxed)
+                  << " nodes=" << _merit_real_io_nodes.load(std::memory_order_relaxed)
+                  << " directed_pairs=" << _merit_real_io_pairs.load(std::memory_order_relaxed)
+                  << " window=" << _merit_real_io_window
+                  << " max_partners=" << _merit_real_io_max_partners << std::endl;
     diskann::cout << "MERIT dyn probe: ncache_hit=" << g_dyn_probe.ncache_hit
                   << " ncache_miss=" << g_dyn_probe.ncache_miss << " resolve=" << g_dyn_probe.resolve_call
                   << " parent_hit=" << g_dyn_probe.parent_hit << " parent_absent=" << g_dyn_probe.parent_absent
@@ -4435,10 +4710,21 @@ std::vector<uint32_t> PQFlashIndex<T, LabelT>::merit_dyn_now_page_ids(uint32_t s
             return;
         if (!used.insert(id).second)
             return;
-        const bool has_payload =
-            ncache_only ? (_merit_mem_pool != nullptr && _merit_mem_pool->active() &&
-                           _merit_mem_pool->contains(id))
-                        : merit_dyn_has_payload(id);
+        bool has_payload = false;
+        if (ncache_only)
+        {
+            has_payload = _merit_mem_pool != nullptr && _merit_mem_pool->active() &&
+                          _merit_mem_pool->contains(id);
+            if (!has_payload && _merit_pending_buffer_cap_bytes > 0)
+            {
+                std::lock_guard<std::mutex> slock(_merit_stash_mu);
+                has_payload = _merit_payload_stash.find(id) != _merit_payload_stash.end();
+            }
+        }
+        else
+        {
+            has_payload = merit_dyn_has_payload(id);
+        }
         if (!has_payload)
             return;
         now.push_back(id);
@@ -4479,14 +4765,17 @@ std::vector<uint32_t> PQFlashIndex<T, LabelT>::merit_dyn_now_page_ids(uint32_t s
     for (auto it = fetched.rbegin(); it != fetched.rend(); ++it)
         try_add(*it);
 
-    for (uint32_t id : old_members)
+    if (!_merit_real_io_coaccess)
     {
-        if (_merit_mem_pool != nullptr && _merit_mem_pool->contains(id))
-            continue;
-        try_add(id);
+        for (uint32_t id : old_members)
+        {
+            if (_merit_mem_pool != nullptr && _merit_mem_pool->contains(id))
+                continue;
+            try_add(id);
+        }
+        for (uint32_t id : old_members)
+            try_add(id);
     }
-    for (uint32_t id : old_members)
-        try_add(id);
     return now;
 }
 
@@ -4919,6 +5208,8 @@ void PQFlashIndex<T, LabelT>::merit_dyn_clear_ready_pair_unlocked(uint32_t inser
         return;
 
     MeritReadyPair pair = std::move(pair_it->second);
+    if (pair.retained_members < _merit_pending_buffer_buckets.size())
+        _merit_pending_buffer_buckets[pair.retained_members].erase(insertion_slot);
     _merit_ready_pairs.erase(pair_it);
     _merit_pending_pair_count.fetch_sub(1, std::memory_order_release);
     const uint32_t ins = pair.insertion_id;
@@ -5059,6 +5350,93 @@ bool PQFlashIndex<T, LabelT>::merit_dyn_build_pending_flush(uint32_t seed_id,
     return nps <= 1 || pf.member_ids.size() >= 2;
 }
 
+template <typename T, typename LabelT>
+bool PQFlashIndex<T, LabelT>::merit_dyn_refresh_pending_members(uint32_t insertion_slot)
+{
+    uint32_t seed_id = MeritMetadataCache::kInvalid;
+    std::vector<uint32_t> old_members;
+    {
+        MeritTimedSharedMutexGuard plock(_merit_pair_mu, MeritLockKind::Pair, false);
+        const auto pair_it = _merit_ready_pairs.find(insertion_slot);
+        if (pair_it == _merit_ready_pairs.end() || pair_it->second.committing)
+            return false;
+        seed_id = pair_it->second.insertion_id;
+        old_members = pair_it->second.snap.member_ids;
+    }
+
+    MeritMetadataCache::Snapshot snap;
+    if (!_merit_mcache.snapshot(seed_id, snap))
+        return false;
+    std::vector<uint32_t> refreshed =
+        merit_dyn_now_page_ids(seed_id, snap, _merit_deferred_ncache_page_write);
+    const size_t page_capacity = static_cast<size_t>(
+        (_nnodes_per_sector > 0) ? _nnodes_per_sector : 1);
+    for (uint32_t member_id : old_members)
+    {
+        if (refreshed.size() >= page_capacity)
+            break;
+        if (std::find(refreshed.begin(), refreshed.end(), member_id) != refreshed.end())
+            continue;
+        bool available = _merit_mem_pool != nullptr && _merit_mem_pool->contains(member_id);
+        if (!available)
+        {
+            std::lock_guard<std::mutex> slock(_merit_stash_mu);
+            available = _merit_payload_stash.find(member_id) != _merit_payload_stash.end();
+        }
+        if (available)
+            refreshed.push_back(member_id);
+    }
+    if (refreshed.empty() || refreshed.front() != seed_id)
+        return false;
+
+    bool became_full = false;
+    {
+        MeritTimedSharedMutexGuard plock(_merit_pair_mu, MeritLockKind::Pair, true);
+        auto pair_it = _merit_ready_pairs.find(insertion_slot);
+        if (pair_it == _merit_ready_pairs.end() || pair_it.value().committing ||
+            pair_it.value().insertion_id != seed_id)
+            return false;
+        MeritReadyPair &pair = pair_it.value();
+        const size_t previous_count = pair.snap.member_ids.size();
+        if (pair.snap.member_ids == refreshed)
+            return refreshed.size() >= page_capacity;
+
+        if (pair.retained_members < _merit_pending_buffer_buckets.size())
+            _merit_pending_buffer_buckets[pair.retained_members].erase(insertion_slot);
+        for (uint32_t member_id : pair.snap.member_ids)
+        {
+            auto member_it = _merit_member_to_pending.find(member_id);
+            if (member_it == _merit_member_to_pending.end())
+                continue;
+            auto &pending = member_it.value();
+            pending.erase(std::remove(pending.begin(), pending.end(), insertion_slot), pending.end());
+            if (pending.empty())
+                _merit_member_to_pending.erase(member_it);
+        }
+
+        pair.snap.snap = std::move(snap);
+        pair.snap.member_ids = refreshed;
+        pair.retained_members = 0;
+        {
+            std::lock_guard<std::mutex> slock(_merit_stash_mu);
+            for (uint32_t member_id : pair.snap.member_ids)
+                if (_merit_payload_stash.find(member_id) != _merit_payload_stash.end())
+                    ++pair.retained_members;
+        }
+        for (uint32_t member_id : pair.snap.member_ids)
+            _merit_member_to_pending[member_id].push_back(insertion_slot);
+        if (pair.retained_members < _merit_pending_buffer_buckets.size())
+            _merit_pending_buffer_buckets[pair.retained_members].insert(insertion_slot);
+        became_full = previous_count < page_capacity && pair.snap.member_ids.size() >= page_capacity;
+    }
+
+    _merit_pending_member_refreshes.fetch_add(1, std::memory_order_relaxed);
+    if (became_full)
+        _merit_pending_became_full.fetch_add(1, std::memory_order_relaxed);
+    merit_dyn_release_unreferenced_buffer_members(old_members);
+    return refreshed.size() >= page_capacity;
+}
+
 template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::merit_dyn_maybe_refresh_pair()
 {
     if (!_merit_dyn_enabled)
@@ -5076,7 +5454,7 @@ template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::merit_dyn_m
     {
         MeritTimedSharedMutexGuard plock(_merit_pair_mu, MeritLockKind::Pair, false);
         MeritTimedSharedMutexGuard dlock(_merit_dyn_mu, MeritLockKind::DynamicShared, false);
-        if (_merit_ready_pairs.size() >= MERIT_PENDING_PAIR_CAP)
+        if (_merit_ready_pairs.size() >= _merit_pending_pair_cap)
             return;
         const uint64_t committed_pages = _merit_dyn_committed_pages;
         full = committed_pages >= _merit_dyn_page_cap;
@@ -5126,7 +5504,7 @@ template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::merit_dyn_m
     {
         MeritTimedSharedMutexGuard plock(_merit_pair_mu, MeritLockKind::Pair, true);
         MeritTimedSharedMutexGuard dlock(_merit_dyn_mu, MeritLockKind::DynamicShared, false);
-        if (_merit_ready_pairs.size() >= MERIT_PENDING_PAIR_CAP)
+        if (_merit_ready_pairs.size() >= _merit_pending_pair_cap)
             return;
         const uint64_t committed_pages = _merit_dyn_committed_pages;
         const bool now_full = committed_pages >= _merit_dyn_page_cap;
@@ -5159,6 +5537,13 @@ template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::merit_dyn_m
         pair.deletion_slot = cand_del_slot;
         pair.created_epoch = _merit_query_epoch.load(std::memory_order_relaxed);
         pair.snap = std::move(pf);
+        if (_merit_pending_buffer_cap_bytes > 0)
+        {
+            std::lock_guard<std::mutex> slock(_merit_stash_mu);
+            for (uint32_t mid : pair.snap.member_ids)
+                if (_merit_payload_stash.find(mid) != _merit_payload_stash.end())
+                    ++pair.retained_members;
+        }
         for (uint32_t mid : pair.snap.member_ids)
             _merit_member_to_pending[mid].push_back(cand_ins_slot);
         if (cand_del_slot == MeritMetadataCache::kInvalid)
@@ -5169,6 +5554,9 @@ template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::merit_dyn_m
             _merit_deletion_pair_count.fetch_add(1, std::memory_order_release);
         }
         _merit_ready_pairs[cand_ins_slot] = std::move(pair);
+        const uint16_t retained_members = _merit_ready_pairs[cand_ins_slot].retained_members;
+        if (retained_members < _merit_pending_buffer_buckets.size())
+            _merit_pending_buffer_buckets[retained_members].insert(cand_ins_slot);
         _merit_pending_pair_count.fetch_add(1, std::memory_order_release);
         merit_dyn_set_state_unlocked(cand_ins, cand_ins_slot, MeritNodeState::ReadyToInsertion);
         {
@@ -5191,7 +5579,7 @@ template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::merit_dyn_r
     if (!_merit_dyn_enabled)
         return;
     _merit_refresh_needed.store(true, std::memory_order_release);
-    if (_merit_pending_pair_count.load(std::memory_order_acquire) >= MERIT_PENDING_PAIR_CAP)
+    if (_merit_pending_pair_count.load(std::memory_order_acquire) >= _merit_pending_pair_cap)
         return;
 
     bool expected = false;
@@ -5201,7 +5589,7 @@ template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::merit_dyn_r
     for (unsigned pass = 0; pass < 4; ++pass)
     {
         _merit_refresh_needed.store(false, std::memory_order_release);
-        if (_merit_pending_pair_count.load(std::memory_order_acquire) < MERIT_PENDING_PAIR_CAP)
+        if (_merit_pending_pair_count.load(std::memory_order_acquire) < _merit_pending_pair_cap)
             merit_dyn_maybe_refresh_pair();
         if (!_merit_refresh_needed.load(std::memory_order_acquire))
             break;
@@ -5209,7 +5597,7 @@ template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::merit_dyn_r
     _merit_refresh_running.store(false, std::memory_order_release);
 
     if (_merit_refresh_needed.load(std::memory_order_acquire) &&
-        _merit_pending_pair_count.load(std::memory_order_acquire) < MERIT_PENDING_PAIR_CAP)
+        _merit_pending_pair_count.load(std::memory_order_acquire) < _merit_pending_pair_cap)
     {
         expected = false;
         if (_merit_refresh_running.compare_exchange_strong(expected, true, std::memory_order_acq_rel))
@@ -5229,6 +5617,11 @@ template <typename T, typename LabelT> bool PQFlashIndex<T, LabelT>::merit_dyn_c
         if (pair_it == _merit_ready_pairs.end() || pair_it->second.committing)
             return false;
         const MeritReadyPair &candidate = pair_it->second;
+        const size_t page_capacity = static_cast<size_t>(
+            (_nnodes_per_sector > 0) ? _nnodes_per_sector : 1);
+        if (_merit_pending_require_full_page &&
+            candidate.snap.member_ids.size() < page_capacity)
+            return false;
         const float insertion_score = _merit_mcache.score_at(candidate.insertion_slot);
         if (_merit_mcache.node_at(candidate.insertion_slot) != candidate.insertion_id ||
             (candidate.deletion_id != std::numeric_limits<uint32_t>::max() &&
@@ -5243,6 +5636,8 @@ template <typename T, typename LabelT> bool PQFlashIndex<T, LabelT>::merit_dyn_c
             merit_dyn_clear_ready_pair_unlocked(insertion_slot);
             return false;
         }
+        if (pair_it.value().retained_members < _merit_pending_buffer_buckets.size())
+            _merit_pending_buffer_buckets[pair_it.value().retained_members].erase(insertion_slot);
         pair_it.value().committing = true;
     }
 
@@ -5265,7 +5660,7 @@ template <typename T, typename LabelT> bool PQFlashIndex<T, LabelT>::merit_dyn_c
         {
             std::vector<T> coords;
             std::vector<uint32_t> nbrs;
-            if (_merit_mem_pool == nullptr || !_merit_mem_pool->copy_payload(member_id, coords, nbrs))
+            if (!merit_dyn_copy_member_payload(member_id, coords, nbrs))
             {
                 pf.member_coords.clear();
                 pf.member_nbrs.clear();
@@ -5334,6 +5729,7 @@ template <typename T, typename LabelT> bool PQFlashIndex<T, LabelT>::merit_dyn_c
         _merit_heap_writes++;
         g_dyn_probe.write_ok++;
     }
+    merit_dyn_release_unreferenced_buffer_members(pair.snap.member_ids);
     return true;
 }
 
@@ -5363,8 +5759,22 @@ void PQFlashIndex<T, LabelT>::merit_dyn_commit_expired_pairs(uint32_t query_epoc
     g_dyn_probe.timeout_trig.fetch_add(expired.size(), std::memory_order_relaxed);
     for (uint32_t insertion_slot : expired)
     {
+        if (_merit_pending_require_full_page)
+            merit_dyn_refresh_pending_members(insertion_slot);
         if (!merit_dyn_commit_ready_pair(insertion_slot))
+        {
+            if (_merit_pending_require_full_page)
+            {
+                MeritTimedSharedMutexGuard plock(_merit_pair_mu, MeritLockKind::Pair, true);
+                const auto pair_it = _merit_ready_pairs.find(insertion_slot);
+                if (pair_it != _merit_ready_pairs.end() && !pair_it->second.committing &&
+                    pair_it->second.created_epoch <= query_epoch &&
+                    static_cast<uint32_t>(query_epoch - pair_it->second.created_epoch) >=
+                        _merit_pending_max_age_queries)
+                    merit_dyn_clear_ready_pair_unlocked(insertion_slot);
+            }
             continue;
+        }
         g_dyn_probe.timeout_ok.fetch_add(1, std::memory_order_relaxed);
         if (stats != nullptr)
             stats->n_merit_dyn_flushes++;
@@ -5423,6 +5833,9 @@ void PQFlashIndex<T, LabelT>::merit_dyn_note_base_load(uint32_t node_id, uint32_
     if (!_merit_dyn_enabled || query_scratch == nullptr ||
         !query_scratch->merit_dcache_maintenance_enabled || node_disk_buf == nullptr)
         return;
+
+    if (_merit_real_io_coaccess)
+        query_scratch->merit_storage_node_order.push_back(node_id);
 
     const T *coord_src = offset_to_node_coords(const_cast<char *>(node_disk_buf));
     const uint32_t *nhood = offset_to_node_nhood(const_cast<char *>(node_disk_buf));
@@ -5564,14 +5977,189 @@ bool PQFlashIndex<T, LabelT>::merit_dyn_copy_member_payload(uint32_t node_id, st
 }
 
 template <typename T, typename LabelT>
+bool PQFlashIndex<T, LabelT>::merit_dyn_buffer_evicted_member(uint32_t node_id, bool &inserted)
+{
+    inserted = false;
+    if (_merit_pending_buffer_cap_bytes == 0 || _merit_mem_pool == nullptr)
+        return false;
+
+    std::vector<T> coords;
+    std::vector<uint32_t> nbrs;
+    if (!_merit_mem_pool->copy_payload(node_id, coords, nbrs))
+        return false;
+
+    std::lock_guard<std::mutex> slock(_merit_stash_mu);
+    auto existing = _merit_payload_stash.find(node_id);
+    if (existing != _merit_payload_stash.end())
+    {
+        _merit_stash_lru.splice(_merit_stash_lru.begin(), _merit_stash_lru, existing.value().lru_it);
+        existing.value().lru_it = _merit_stash_lru.begin();
+        return _merit_pending_buffer_payload_bytes > _merit_pending_buffer_cap_bytes;
+    }
+
+    _merit_stash_lru.push_front(node_id);
+    MeritPayloadStashEntry entry;
+    entry.coords = std::move(coords);
+    entry.nbrs = std::move(nbrs);
+    entry.lru_it = _merit_stash_lru.begin();
+    _merit_pending_buffer_payload_bytes +=
+        entry.coords.size() * sizeof(T) + entry.nbrs.size() * sizeof(uint32_t);
+    _merit_payload_stash[node_id] = std::move(entry);
+    _merit_pending_buffer_inserts.fetch_add(1, std::memory_order_relaxed);
+    inserted = true;
+    return _merit_pending_buffer_payload_bytes > _merit_pending_buffer_cap_bytes;
+}
+
+template <typename T, typename LabelT>
+uint32_t PQFlashIndex<T, LabelT>::merit_dyn_best_buffered_pair(bool require_ready) const
+{
+    MeritTimedSharedMutexGuard plock(_merit_pair_mu, MeritLockKind::Pair, false);
+    for (size_t retained = _merit_pending_buffer_buckets.size(); retained > 1; --retained)
+    {
+        const auto &bucket = _merit_pending_buffer_buckets[retained - 1];
+        for (uint32_t insertion_slot : bucket)
+        {
+            const auto pair_it = _merit_ready_pairs.find(insertion_slot);
+            if (pair_it != _merit_ready_pairs.end() && !pair_it->second.committing &&
+                pair_it->second.retained_members == retained - 1)
+            {
+                const size_t page_capacity = static_cast<size_t>(
+                    (_nnodes_per_sector > 0) ? _nnodes_per_sector : 1);
+                if (_merit_pending_require_full_page &&
+                    pair_it->second.snap.member_ids.size() < page_capacity)
+                    continue;
+                if (require_ready &&
+                    (pair_it->second.retained_members < _merit_pending_buffer_ready_min_members ||
+                     static_cast<uint64_t>(pair_it->second.retained_members) * 100 <
+                         static_cast<uint64_t>(pair_it->second.snap.member_ids.size()) *
+                             _merit_pending_buffer_ready_percent))
+                    continue;
+                return insertion_slot;
+            }
+        }
+    }
+    return MeritMetadataCache::kInvalid;
+}
+
+template <typename T, typename LabelT>
+void PQFlashIndex<T, LabelT>::merit_dyn_release_unreferenced_buffer_members(
+    const std::vector<uint32_t> &member_ids)
+{
+    if (_merit_pending_buffer_cap_bytes == 0)
+        return;
+
+    MeritTimedSharedMutexGuard plock(_merit_pair_mu, MeritLockKind::Pair, false);
+    std::lock_guard<std::mutex> slock(_merit_stash_mu);
+    for (uint32_t member_id : member_ids)
+    {
+        if (_merit_member_to_pending.find(member_id) != _merit_member_to_pending.end())
+            continue;
+        auto stash_it = _merit_payload_stash.find(member_id);
+        if (stash_it == _merit_payload_stash.end())
+            continue;
+        const uint64_t payload_bytes =
+            stash_it.value().coords.size() * sizeof(T) +
+            stash_it.value().nbrs.size() * sizeof(uint32_t);
+        _merit_stash_lru.erase(stash_it.value().lru_it);
+        _merit_payload_stash.erase(stash_it);
+        _merit_pending_buffer_payload_bytes =
+            payload_bytes >= _merit_pending_buffer_payload_bytes
+                ? 0
+                : _merit_pending_buffer_payload_bytes - payload_bytes;
+    }
+}
+
+template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::merit_dyn_trim_pending_buffer()
+{
+    if (_merit_pending_buffer_cap_bytes == 0)
+        return;
+
+    for (;;)
+    {
+        uint32_t victim = MeritMetadataCache::kInvalid;
+        {
+            std::lock_guard<std::mutex> slock(_merit_stash_mu);
+            if (_merit_pending_buffer_payload_bytes <= _merit_pending_buffer_cap_bytes ||
+                _merit_stash_lru.empty())
+                return;
+            victim = _merit_stash_lru.back();
+        }
+
+        bool cleared_pair = false;
+        {
+            MeritTimedSharedMutexGuard plock(_merit_pair_mu, MeritLockKind::Pair, true);
+            std::vector<uint32_t> dependent_slots;
+            const auto member_it = _merit_member_to_pending.find(victim);
+            if (member_it != _merit_member_to_pending.end())
+                dependent_slots = member_it->second;
+            for (uint32_t insertion_slot : dependent_slots)
+            {
+                const auto pair_it = _merit_ready_pairs.find(insertion_slot);
+                if (pair_it != _merit_ready_pairs.end() && pair_it->second.committing)
+                    return;
+            }
+            for (uint32_t insertion_slot : dependent_slots)
+            {
+                if (_merit_ready_pairs.find(insertion_slot) == _merit_ready_pairs.end())
+                    continue;
+                merit_dyn_clear_ready_pair_unlocked(insertion_slot);
+                cleared_pair = true;
+            }
+
+            std::lock_guard<std::mutex> slock(_merit_stash_mu);
+            auto stash_it = _merit_payload_stash.find(victim);
+            if (stash_it == _merit_payload_stash.end())
+                continue;
+            const uint64_t payload_bytes =
+                stash_it.value().coords.size() * sizeof(T) +
+                stash_it.value().nbrs.size() * sizeof(uint32_t);
+            _merit_stash_lru.erase(stash_it.value().lru_it);
+            _merit_payload_stash.erase(stash_it);
+            _merit_pending_buffer_payload_bytes =
+                payload_bytes >= _merit_pending_buffer_payload_bytes
+                    ? 0
+                    : _merit_pending_buffer_payload_bytes - payload_bytes;
+            _merit_pending_buffer_drops.fetch_add(1, std::memory_order_relaxed);
+        }
+        if (cleared_pair)
+            merit_dyn_request_refresh();
+    }
+}
+
+template <typename T, typename LabelT>
 void PQFlashIndex<T, LabelT>::merit_dyn_on_ncache_evict(uint32_t node_id, QueryStats *stats)
 {
     if (!_merit_dyn_enabled || node_id == MeritMemoryPool<T>::INVALID_NODE)
         return;
 
     std::vector<uint32_t> pending_slots;
+    std::vector<uint32_t> refresh_slots;
     {
         MeritTimedSharedMutexGuard plock(_merit_pair_mu, MeritLockKind::Pair, false);
+        const auto member_it = _merit_member_to_pending.find(node_id);
+        if (member_it != _merit_member_to_pending.end())
+        {
+            pending_slots = member_it->second;
+            if (_merit_pending_require_full_page)
+            {
+                const size_t page_capacity = static_cast<size_t>(
+                    (_nnodes_per_sector > 0) ? _nnodes_per_sector : 1);
+                for (uint32_t insertion_slot : pending_slots)
+                {
+                    const auto pair_it = _merit_ready_pairs.find(insertion_slot);
+                    if (pair_it != _merit_ready_pairs.end() &&
+                        pair_it->second.snap.member_ids.size() < page_capacity)
+                        refresh_slots.push_back(insertion_slot);
+                }
+            }
+        }
+    }
+    for (uint32_t insertion_slot : refresh_slots)
+        merit_dyn_refresh_pending_members(insertion_slot);
+    if (!refresh_slots.empty())
+    {
+        MeritTimedSharedMutexGuard plock(_merit_pair_mu, MeritLockKind::Pair, false);
+        pending_slots.clear();
         const auto member_it = _merit_member_to_pending.find(node_id);
         if (member_it != _merit_member_to_pending.end())
             pending_slots = member_it->second;
@@ -5583,10 +6171,62 @@ void PQFlashIndex<T, LabelT>::merit_dyn_on_ncache_evict(uint32_t node_id, QueryS
             MeritTimedSharedMutexGuard plock(_merit_pair_mu, MeritLockKind::Pair, true);
             _merit_ncache_write_trig += pending_slots.size();
         }
-        for (uint32_t insertion_slot : pending_slots)
+        if (_merit_pending_buffer_cap_bytes > 0)
         {
-            if (merit_dyn_commit_ready_pair(insertion_slot) && stats != nullptr)
-                stats->n_merit_dyn_flushes++;
+            bool inserted = false;
+            const bool pressure = merit_dyn_buffer_evicted_member(node_id, inserted);
+            if (inserted)
+            {
+                MeritTimedSharedMutexGuard plock(_merit_pair_mu, MeritLockKind::Pair, true);
+                const auto member_it = _merit_member_to_pending.find(node_id);
+                if (member_it != _merit_member_to_pending.end())
+                {
+                    for (uint32_t insertion_slot : member_it->second)
+                    {
+                        auto pair_it = _merit_ready_pairs.find(insertion_slot);
+                        if (pair_it != _merit_ready_pairs.end() && !pair_it.value().committing &&
+                            pair_it.value().retained_members < pair_it.value().snap.member_ids.size())
+                        {
+                            const uint16_t old_retained = pair_it.value().retained_members;
+                            if (old_retained < _merit_pending_buffer_buckets.size())
+                                _merit_pending_buffer_buckets[old_retained].erase(insertion_slot);
+                            ++pair_it.value().retained_members;
+                            if (pair_it.value().retained_members < _merit_pending_buffer_buckets.size())
+                                _merit_pending_buffer_buckets[pair_it.value().retained_members].insert(
+                                    insertion_slot);
+                        }
+                    }
+                }
+            }
+            uint32_t best_slot = MeritMetadataCache::kInvalid;
+            bool ready_trigger = false;
+            if (_merit_pending_buffer_ready_percent > 0)
+            {
+                best_slot = merit_dyn_best_buffered_pair(true);
+                ready_trigger = best_slot != MeritMetadataCache::kInvalid;
+            }
+            if (pressure && best_slot == MeritMetadataCache::kInvalid)
+                best_slot = merit_dyn_best_buffered_pair(false);
+            if (best_slot != MeritMetadataCache::kInvalid &&
+                merit_dyn_commit_ready_pair(best_slot))
+            {
+                if (ready_trigger)
+                    _merit_pending_buffer_ready_writes.fetch_add(1, std::memory_order_relaxed);
+                else
+                    _merit_pending_buffer_pressure_writes.fetch_add(1, std::memory_order_relaxed);
+                if (stats != nullptr)
+                    stats->n_merit_dyn_flushes++;
+            }
+            if (pressure)
+                merit_dyn_trim_pending_buffer();
+        }
+        else
+        {
+            for (uint32_t insertion_slot : pending_slots)
+            {
+                if (merit_dyn_commit_ready_pair(insertion_slot) && stats != nullptr)
+                    stats->n_merit_dyn_flushes++;
+            }
         }
         {
             const uint32_t slot_id = _merit_mcache.slot_of(node_id);
@@ -5742,8 +6382,114 @@ void PQFlashIndex<T, LabelT>::merit_dyn_update_dcache_gate(QueryStats *stats,
 }
 
 template <typename T, typename LabelT>
+void PQFlashIndex<T, LabelT>::merit_dyn_log_monitor(uint32_t query_epoch) const
+{
+    if (_merit_monitor_warmup_queries == 0 || query_epoch < _merit_monitor_warmup_queries ||
+        (query_epoch - _merit_monitor_warmup_queries) % _merit_monitor_interval_queries != 0)
+        return;
+
+    uint64_t pages = 0;
+    uint64_t members = 0;
+    uint64_t full_pages = 0;
+    {
+        MeritTimedSharedMutexGuard lock(_merit_dyn_mu, MeritLockKind::DynamicShared, false);
+        pages = _merit_dyn_committed_pages;
+        const uint16_t page_capacity = static_cast<uint16_t>(
+            (_nnodes_per_sector > 0) ? _nnodes_per_sector : 1);
+        for (uint16_t count : _merit_dyn_page_member_count)
+        {
+            if (count == 0)
+                continue;
+            members += count;
+            if (count >= page_capacity)
+                ++full_pages;
+        }
+    }
+    uint64_t pending = 0;
+    uint64_t pending_full = 0;
+    uint64_t writes = 0;
+    {
+        MeritTimedSharedMutexGuard plock(_merit_pair_mu, MeritLockKind::Pair, false);
+        pending = _merit_ready_pairs.size();
+        const size_t page_capacity = static_cast<size_t>(
+            (_nnodes_per_sector > 0) ? _nnodes_per_sector : 1);
+        for (const auto &entry : _merit_ready_pairs)
+            if (entry.second.snap.member_ids.size() >= page_capacity)
+                ++pending_full;
+        writes = _merit_heap_writes;
+    }
+    uint64_t buffer_bytes = 0;
+    uint64_t buffer_entries = 0;
+    {
+        std::lock_guard<std::mutex> slock(_merit_stash_mu);
+        buffer_bytes = _merit_pending_buffer_payload_bytes;
+        buffer_entries = _merit_payload_stash.size();
+    }
+    diskann::cout << "MERIT page monitor: query=" << query_epoch
+                  << " measured=" << query_epoch - _merit_monitor_warmup_queries
+                  << " pages=" << pages
+                  << " members=" << members
+                  << " avg_members=" << (pages == 0 ? 0.0 : static_cast<double>(members) / pages)
+                  << " full_pages=" << full_pages
+                  << " pending=" << pending
+                  << " pending_full=" << pending_full
+                  << " buffer_entries=" << buffer_entries
+                  << " buffer_bytes=" << buffer_bytes
+                  << " member_refreshes="
+                  << _merit_pending_member_refreshes.load(std::memory_order_relaxed)
+                  << " became_full=" << _merit_pending_became_full.load(std::memory_order_relaxed)
+                  << " writes=" << writes << std::endl;
+}
+
+template <typename T, typename LabelT>
+void PQFlashIndex<T, LabelT>::merit_dyn_record_real_io_coaccess(SSDQueryScratch<T> *query_scratch)
+{
+    if (!_merit_real_io_coaccess || query_scratch == nullptr ||
+        !query_scratch->merit_dcache_maintenance_enabled)
+        return;
+
+    const uint64_t query_number = _merit_real_io_queries.fetch_add(1, std::memory_order_relaxed);
+    const std::vector<uint32_t> &nodes = query_scratch->merit_storage_node_order;
+    if (nodes.size() < 2 || query_number % _merit_real_io_sample_queries != 0)
+        return;
+
+    _merit_real_io_sampled_queries.fetch_add(1, std::memory_order_relaxed);
+    _merit_real_io_nodes.fetch_add(nodes.size(), std::memory_order_relaxed);
+    uint64_t recorded_pairs = 0;
+    bool touched = false;
+    for (size_t i = 0; i < nodes.size(); ++i)
+    {
+        const size_t end = std::min(nodes.size(), i + static_cast<size_t>(_merit_real_io_window) + 1);
+        for (size_t j = i + 1; j < end; ++j)
+        {
+            if (nodes[i] == nodes[j])
+                continue;
+            const auto forward =
+                _merit_mcache.on_real_io_edge(nodes[i], nodes[j], _merit_real_io_max_partners);
+            if (forward.present)
+            {
+                merit_dyn_note_touch(forward, query_scratch);
+                touched = true;
+            }
+            const auto reverse =
+                _merit_mcache.on_real_io_edge(nodes[j], nodes[i], _merit_real_io_max_partners);
+            if (reverse.present)
+            {
+                merit_dyn_note_touch(reverse, query_scratch);
+                touched = true;
+            }
+            recorded_pairs += 2;
+        }
+    }
+    _merit_real_io_pairs.fetch_add(recorded_pairs, std::memory_order_relaxed);
+    if (touched)
+        _merit_refresh_needed.store(true, std::memory_order_release);
+}
+
+template <typename T, typename LabelT>
 void PQFlashIndex<T, LabelT>::merit_dyn_on_query_end(QueryStats *stats, SSDQueryScratch<T> *query_scratch)
 {
+    merit_dyn_record_real_io_coaccess(query_scratch);
     _merit_mcache.on_query_end();
     if (query_scratch != nullptr && query_scratch->merit_dcache_maintenance_enabled)
         merit_dyn_flush_dirty_heap(query_scratch);
@@ -5755,6 +6501,7 @@ void PQFlashIndex<T, LabelT>::merit_dyn_on_query_end(QueryStats *stats, SSDQuery
     const uint32_t query_epoch = _merit_query_epoch.fetch_add(1, std::memory_order_acq_rel) + 1;
     if (query_epoch % _merit_pending_check_interval == 0)
         merit_dyn_commit_expired_pairs(query_epoch, stats);
+    merit_dyn_log_monitor(query_epoch);
     uint64_t page_count = 0;
     {
         MeritTimedSharedMutexGuard lock(_merit_dyn_mu, MeritLockKind::DynamicShared, false);
@@ -5942,6 +6689,13 @@ bool PQFlashIndex<T, LabelT>::merit_dyn_commit_one(MeritPendingFlush &pf, uint32
         _merit_dyn_page_member_count[page_idx] = static_cast<uint16_t>(pf.member_ids.size());
         _merit_dyn_committed_pages++;
         _merit_dyn_flush_count++;
+    }
+    if (_merit_dcache_evict_ncache_on_commit && _merit_mem_pool != nullptr && _merit_mem_pool->active())
+    {
+        uint64_t erased = 0;
+        for (uint32_t member_id : pf.member_ids)
+            erased += _merit_mem_pool->erase(member_id) ? 1ULL : 0ULL;
+        _merit_dcache_ncache_erases.fetch_add(erased, std::memory_order_relaxed);
     }
     return true;
 }
@@ -7674,6 +8428,8 @@ void PQFlashIndex<T, LabelT>::finalize_merit_pending_nodes(const std::vector<Mer
         {
             query_scratch->merit_avoided_base_sectors.insert(get_node_sector(mp.id));
             query_scratch->merit_dyn_served_nodes++;
+            if (_merit_real_io_coaccess)
+                query_scratch->merit_storage_node_order.push_back(mp.id);
         }
     }
 

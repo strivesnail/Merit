@@ -77,6 +77,7 @@ class MeritMetadataCache
 
     TouchResult on_expand(uint32_t node_id, const std::atomic<float> &score_unit);
     TouchResult on_edge(uint32_t parent, uint32_t child);
+    TouchResult on_real_io_edge(uint32_t parent, uint32_t child, size_t max_edges = 32);
     UpdateDecision plan_expand_update(uint32_t node_id, bool force_update = false,
                                       bool suppress_update = false);
     void on_query_end();

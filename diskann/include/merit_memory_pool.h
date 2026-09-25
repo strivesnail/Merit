@@ -188,6 +188,7 @@ template <typename T> class MeritMemoryPool
     uint32_t try_admit(uint32_t node_id, const char *node_disk_buf, uint64_t disk_bytes_per_point,
                        uint64_t max_node_len_for_coords, uint32_t search_hop,
                        bool admitted_after_rejection = false);
+    bool erase(uint32_t node_id);
     void on_query_end(uint32_t disk_reads = 0, double io_us = 0.0);
 
     void commit_initial_load(const std::vector<uint32_t> &node_ids, const std::vector<uint64_t> &importance);
@@ -384,6 +385,8 @@ template <typename T> class MeritMemoryPool
     tsl::robin_set<uint32_t> _pinned;
 
     std::atomic<uint32_t> _next_free_slot{0};
+    std::mutex _free_slots_mu;
+    std::vector<uint32_t> _free_slots;
     std::atomic<uint64_t> _size{0};
     std::atomic<uint64_t> _eviction_count{0};
     std::atomic<uint64_t> _admission_rejections{0};

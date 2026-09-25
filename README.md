@@ -27,9 +27,28 @@ The current runtime can learn directly from the live query stream; it does not n
 
 - **N-cache** stores complete nodes in DRAM. It uses 128 lock shards by default, an atomic membership bitmap for lock-free misses, a reader-writer lock, and CLOCK replacement. Adaptive mode samples nodes by ID (1/64 by default) and continuously simulates three independent shadow caches: normal MRU admission, Hop-12 reject-first, and Hop-8 reject-first. The shadow caches never serve queries. Every 25K queries, MERIT estimates each policy's cost from its predicted misses and admissions, the measured device I/O time, and sampled real admission time. It switches immediately when the predicted gain is at least 2%, or after the same policy wins three consecutive windows by at least 0.5%. Evaluation starts only after the active shadow cache is full, avoiding cold-start decisions. No workload label or hit-rate range is used.
 - **M-cache** stores node and edge hotness metadata. Every 1,000 queries it measures the current-window hit rate. Each run of 25 consecutive windows below 20% reduces updates one step from 100% to 10%, then from 10% to 1%; six windows above 40% restore one level at a time.
-- **D-cache** stores runtime-generated 4 KiB pages. It is controlled by net physical-I/O benefit, not hit rate alone. MERIT counts base-index pages avoided and D-cache pages read. Twenty-five consecutive 1,000-query windows saving less than 0.1 page/query disable M/D-cache maintenance. While disabled, 1% of queries remain full probes. Two consecutive 10,000-query probe windows with at least 0.25 net page saved/query and at least 1.25 avoided pages per D-cache page read re-enable maintenance.
+- **D-cache** stores runtime-generated 4 KiB pages. Page membership is learned from nodes actually served by base storage or D-cache in the same query, rather than graph neighbors merely discovered during traversal. One in every 64 queries records a four-node neighborhood in the real storage-access order; each metadata entry retains at most 32 partners. With deferred writes enabled, an optional bounded write-back buffer retains complete payloads only for nodes already selected into pending seed pages. D-cache maintenance is controlled by net physical-I/O benefit, not hit rate alone. MERIT counts base-index pages avoided and D-cache pages read. Twenty-five consecutive 1,000-query windows saving less than 0.1 page/query disable M/D-cache maintenance. While disabled, 1% of queries remain full probes. Two consecutive 10,000-query probe windows with at least 0.25 net page saved/query and at least 1.25 avoided pages per D-cache page read re-enable maintenance.
 
 The D-cache net-benefit gate is enabled automatically when `MERIT_MCACHE_ADAPTIVE_UPDATE=1`; set `MERIT_DCACHE_NET_GATE=0` to disable it.
+
+All reported dynamic D-cache benchmarks must use a full-cache warmup. Set
+`MERIT_REQUIRE_FULL_DCACHE_WARMUP=1`; the search application repeatedly runs
+the supplied query workload until the configured D-cache reaches 100%
+capacity, then starts the timed query pass with fresh per-query statistics.
+Thus a reported 2M-query experiment means 2M measured queries after the
+D-cache is full; warmup queries are not included in QPS, latency, hit-rate, or
+I/O results. If the cache cannot fill within
+`MERIT_FULL_WARMUP_MAX_QUERIES` (default 100M), the run fails instead of
+publishing a cold-cache result.
+
+Large D-caches may not fill from a stable skewed stream. For a reproducible
+full initial state, use `--merit_disk_cache_layout bfs` together with
+`MERIT_DYNAMIC_PREFILL_STATIC=1`. MERIT first packs the BFS-selected nodes
+into full 10-node pages, imports those pages into the dynamic D-cache, registers
+one seed per page in M-cache, and only then enables normal dynamic replacement.
+`MERIT_NCACHE_CAP_NODES` and `MERIT_DCACHE_NODE_CAP` provide exact node caps
+for percentage-based experiments; `MERIT_DCACHE_CAP` remains the exact dynamic
+page cap.
 
 Set `MERIT_NCACHE_GHOST_STATS=1` only for diagnostics to attribute later N-cache hits to second-encounter admissions. It is disabled by default because exact per-hit accounting adds atomic operations to the search path.
 
@@ -82,6 +101,44 @@ The moderate workload contains rounds of one million queries. Each round samples
 - **Plain MRU MERIT, first 1M round:** 9,704 QPS.
 - **General shadow-adaptive MERIT, same 1M round:** 9,971 QPS, 59.68 reads/query, P99 5,819 us.
 - The controller selects Hop-12 at 225K queries and Hop-8 at 775K from measured costs. Recall@1 is 99.97%.
+
+A full-capacity 5M-query run used exactly 1M N-cache nodes and 20M
+D-cache nodes (2M full BFS-prefilled pages). Original dynamic MERIT achieved
+4,558 QPS and 75.81 reads/query. N-cache removed 39.60 read candidates/query
+(33.77% of estimated no-cache demand); D-cache avoided 16.99 base reads while
+issuing 15.11 D-cache reads, for a net 1.87 reads/query (1.60%). Requiring the
+4 MiB pending buffer to preserve 10/10-node pages increased occupancy from
+8.44 to 10 nodes/page, but fell to 4,085 QPS and produced effectively zero
+net D-cache savings. Full pages alone are therefore not a sufficient write
+criterion; replacement locality must also be preserved.
+
+Repeating the same full-warmup run without the pending buffer and halving
+N-cache to 500K nodes raised D-cache's gross hit rate from 21.87% to 25.98%
+and its net contribution from 1.60% to 3.99%. However, N-cache contribution
+fell from 33.77% to 27.97%; D-cache recovered only 41.2% of the lost N-cache
+savings. Overall QPS fell from 4,558 to 4,225 and reads/query rose from 75.81
+to 79.77.
+
+An experimental exclusive-tier run set
+`MERIT_DCACHE_EVICT_NCACHE_ON_COMMIT=1`, removing every newly committed
+D-cache page member from N-cache. It performed 1,077,050 removals, but
+D-cache hits stayed flat (17.13 to 17.10/query), net D-cache savings fell from
+1.87 to 1.73 reads/query, and QPS fell from 4,558 to 4,438. This workload
+therefore shows little useful N/D masking: most removed overlaps were not
+reused enough to benefit from forced D-cache routing.
+
+On the stronger moving Zipfian workload (`alpha=1.2`, top-ten share about
+48%), N-cache supplied 95.76% of estimated no-cache demand. Exclusive-tier
+mode performed 247,335 N-cache removals: D-cache hits rose only from 1.135 to
+1.186/query and net D-cache savings from 0.001 to 0.009/query, while physical
+reads rose from 5.01 to 5.05/query and QPS fell from 13,806 to 13,474. Strong
+skew makes N-cache more important, not forced N/D exclusivity more profitable.
+
+Replacing graph-discovery edges with sampled real storage co-access improved
+the 5M-query moderate-skew run from 4,558 to 4,930 QPS. D-cache net savings
+rose from 1.87 to 2.39 reads/query, useful nodes per D-cache read rose from
+1.13 to 1.17, CPU time fell from 904 to 591 us/query, and metadata edges fell
+from 50.4M to 2.27M. Recall@1 remained 99.97%.
 
 ## Build
 
@@ -141,6 +198,18 @@ See `experiments/test-scripts/README.md` for more scripts (eviction, Layout A/B,
 | `MERIT_MCACHE_ADAPTIVE_UPDATE=1` | Enable adaptive M-cache update frequency and D-cache net-I/O gate |
 | `MERIT_DCACHE_NET_GATE=0` | Explicitly disable the net-I/O gate |
 | `MERIT_DCACHE_PROBE_PERIOD` | Probe period while D-cache is disabled; default `100` |
+| `MERIT_PENDING_BUFFER_BYTES` | Pending seed-page payload buffer; default 4 MiB with deferred writes, `0` restores immediate first-eviction writes |
+| `MERIT_PENDING_BUFFER_READY_PERCENT` | Optional early-write fullness threshold; default `0` (pressure-only) |
+| `MERIT_PENDING_REQUIRE_FULL_PAGE` | Require every dynamic page to fill all physical slots before writing; default `1` with the pending buffer |
+| `MERIT_REQUIRE_FULL_DCACHE_WARMUP=1` | Require D-cache to reach 100% before timed queries |
+| `MERIT_FULL_WARMUP_MAX_QUERIES` | Fail if full warmup exceeds this many queries; default 100M |
+| `MERIT_DYNAMIC_PREFILL_STATIC=1` | Import a full static BFS layout into the dynamic D-cache before measurement |
+| `MERIT_REAL_IO_COACCESS` | Build dynamic pages from real per-query storage access; default `1` |
+| `MERIT_REAL_IO_WINDOW` / `MERIT_REAL_IO_SAMPLE_QUERIES` | Access-order neighborhood (default `4`) and query sampling denominator (default `64`) |
+| `MERIT_REAL_IO_MAX_PARTNERS` | Maximum retained real-I/O partners per metadata node; default `32` |
+| `MERIT_DCACHE_EVICT_NCACHE_ON_COMMIT=1` | Experimental exclusive-tier mode: erase committed D-cache page members from N-cache |
+| `MERIT_NCACHE_CAP_NODES` | Exact N-cache node cap for controlled experiments |
+| `MERIT_DCACHE_NODE_CAP` / `MERIT_DCACHE_CAP` | Exact D-cache node/page caps |
 
 Example Adaptive search (reuse a built seed-replica cache):
 

@@ -42,6 +42,10 @@ template <typename T> void MeritMemoryPool<T>::clear()
     _fast_miss_bypasses.store(0, std::memory_order_relaxed);
     _clock_second_chances.store(0, std::memory_order_relaxed);
     _next_free_slot.store(0, std::memory_order_relaxed);
+    {
+        std::lock_guard<std::mutex> free_lock(_free_slots_mu);
+        _free_slots.clear();
+    }
     _size.store(0, std::memory_order_relaxed);
     _eviction_count.store(0, std::memory_order_relaxed);
     _admission_rejections.store(0, std::memory_order_relaxed);
@@ -1146,6 +1150,10 @@ void MeritMemoryPool<T>::commit_initial_load(const std::vector<uint32_t> &node_i
         shard.lru_tail = slot;
         membership_set(node_id);
     }
+    {
+        std::lock_guard<std::mutex> free_lock(_free_slots_mu);
+        _free_slots.clear();
+    }
     _next_free_slot.store(static_cast<uint32_t>(load_count), std::memory_order_relaxed);
     _size.store(load_count, std::memory_order_relaxed);
     _eviction_count.store(0, std::memory_order_relaxed);
@@ -1193,12 +1201,24 @@ uint32_t MeritMemoryPool<T>::try_admit(uint32_t node_id, const char *node_disk_b
     uint32_t slot = INVALID_NODE;
     uint32_t evicted = INVALID_NODE;
 
+    {
+        std::lock_guard<std::mutex> free_lock(_free_slots_mu);
+        if (!_free_slots.empty())
+        {
+            slot = _free_slots.back();
+            _free_slots.pop_back();
+        }
+    }
     uint32_t next_free = _next_free_slot.load(std::memory_order_relaxed);
-    while (next_free < _slots.size() &&
+    while (slot == INVALID_NODE && next_free < _slots.size() &&
            !_next_free_slot.compare_exchange_weak(next_free, next_free + 1, std::memory_order_relaxed))
     {
     }
-    if (next_free < _slots.size())
+    if (slot != INVALID_NODE)
+    {
+        _size.fetch_add(1, std::memory_order_relaxed);
+    }
+    else if (next_free < _slots.size())
     {
         slot = next_free;
         _size.fetch_add(1, std::memory_order_relaxed);
@@ -1249,6 +1269,38 @@ uint32_t MeritMemoryPool<T>::try_admit(uint32_t node_id, const char *node_disk_b
         _recently_accessed[slot].store(low_priority ? 0 : 1, std::memory_order_relaxed);
 
     return finish(evicted, true);
+}
+
+template <typename T> bool MeritMemoryPool<T>::erase(uint32_t node_id)
+{
+    if (!membership_maybe_contains(node_id))
+        return false;
+    Shard &shard = _shards[shard_index(node_id)];
+    std::lock_guard<MeritNcacheMutex> lock(shard.mu);
+    const auto it = shard.id_to_slot.find(node_id);
+    if (it == shard.id_to_slot.end())
+        return false;
+
+    const uint32_t slot = it->second;
+    membership_clear(node_id);
+    unlink_lru_unlocked(shard, slot);
+    shard.id_to_slot.erase(it);
+    if (_ghost_stats_enabled)
+    {
+        note_ghost_admitted_slot_eviction(slot);
+        set_ghost_admitted_slot(slot, false);
+    }
+    if (_clock_enabled)
+        _recently_accessed[slot].store(0, std::memory_order_relaxed);
+    _slots[slot].node_id = INVALID_NODE;
+    _slots[slot].prev = INVALID_NODE;
+    _slots[slot].next = INVALID_NODE;
+    _size.fetch_sub(1, std::memory_order_relaxed);
+    {
+        std::lock_guard<std::mutex> free_lock(_free_slots_mu);
+        _free_slots.push_back(slot);
+    }
+    return true;
 }
 
 template <typename T> const char *MeritMemoryPool<T>::admission_policy_name() const

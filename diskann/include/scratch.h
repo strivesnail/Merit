@@ -169,6 +169,8 @@ template <typename T> class SSDQueryScratch : public AbstractScratch<T>
     bool merit_dcache_probe = false;
     uint32_t merit_dyn_physical_reads = 0;
     uint32_t merit_dyn_served_nodes = 0;
+    // Nodes actually served from base storage or D-cache, in per-query order.
+    std::vector<uint32_t> merit_storage_node_order;
     // Temporal order of sector ids for cache-miss disk reads (one query)
     std::vector<uint64_t> disk_read_sector_order;
 

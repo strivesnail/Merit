@@ -105,6 +105,7 @@ template <typename T> void SSDQueryScratch<T>::reset()
     merit_dcache_probe = false;
     merit_dyn_physical_reads = 0;
     merit_dyn_served_nodes = 0;
+    merit_storage_node_order.clear();
 }
 
 template <typename T> SSDQueryScratch<T>::SSDQueryScratch(size_t aligned_dim, size_t visited_reserve)

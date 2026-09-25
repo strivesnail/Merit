@@ -187,6 +187,15 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
             diskann::cerr << budget_report << std::endl;
             return -1;
         }
+        if (const char *cap_env = std::getenv("MERIT_NCACHE_CAP_NODES"))
+        {
+            const uint64_t requested_cap = std::strtoull(cap_env, nullptr, 10);
+            if (requested_cap > 0 && max_nodes > requested_cap)
+            {
+                max_nodes = requested_cap;
+                diskann::cout << "MERIT N-cache exact node cap: " << max_nodes << std::endl;
+            }
+        }
         diskann::cout << budget_report << std::endl;
 
         if (dyn3_cache || ncache_only)
@@ -251,7 +260,7 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
             !merit_profile_prefix.empty()
                 ? merit_profile_prefix
                 : (!access_profile_prefix.empty() ? access_profile_prefix : std::string(""));
-        if (profile.empty())
+        if (profile.empty() && merit_disk_cache_layout != "bfs")
         {
             diskann::cerr << "Error: --merit_disk_cache_ratio > 0 requires --merit_profile_prefix "
                              "(or --access_profile_prefix)."
@@ -266,6 +275,15 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
         {
             diskann::cerr << dc_report << std::endl;
             return -1;
+        }
+        if (const char *cap_env = std::getenv("MERIT_DCACHE_NODE_CAP"))
+        {
+            const uint64_t requested_cap = std::strtoull(cap_env, nullptr, 10);
+            if (requested_cap > 0)
+            {
+                dc_nodes = requested_cap;
+                diskann::cout << "MERIT d-cache exact node cap: " << dc_nodes << std::endl;
+            }
         }
         diskann::cout << dc_report << std::endl;
         diskann::cout << "MERIT disk-cache layout=" << merit_disk_cache_layout << " k_hops=" << merit_disk_cache_k_hops
@@ -441,6 +459,7 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
     uint32_t optimized_beamwidth = 2;
 
     double best_recall = 0.0;
+    bool dynamic_full_warmup_done = false;
 
     for (uint32_t test_id = 0; test_id < Lvec.size(); test_id++)
     {
@@ -460,6 +479,63 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
         }
         else
             optimized_beamwidth = beamwidth;
+
+        const char *full_warmup_env = std::getenv("MERIT_REQUIRE_FULL_DCACHE_WARMUP");
+        if (!dynamic_full_warmup_done && _pFlashIndex->merit_dynamic_3cache_enabled() &&
+            full_warmup_env != nullptr && std::strcmp(full_warmup_env, "0") != 0)
+        {
+            const char *max_env = std::getenv("MERIT_FULL_WARMUP_MAX_QUERIES");
+            const uint64_t max_warmup_queries =
+                max_env == nullptr ? 100000000ULL : std::strtoull(max_env, nullptr, 10);
+            const char *batch_env = std::getenv("MERIT_FULL_WARMUP_BATCH_QUERIES");
+            const uint64_t requested_batch =
+                batch_env == nullptr ? 10000ULL : std::strtoull(batch_env, nullptr, 10);
+            const uint64_t warmup_batch = std::max<uint64_t>(1, requested_batch);
+            std::vector<uint64_t> warmup_ids(static_cast<size_t>(warmup_batch));
+            std::vector<float> warmup_dists(static_cast<size_t>(warmup_batch));
+            uint64_t completed = 0;
+            uint64_t next_report = 1000000;
+            const auto warmup_start = std::chrono::high_resolution_clock::now();
+            diskann::cout << "MERIT full D-cache warmup: target="
+                          << _pFlashIndex->merit_dynamic_page_capacity() << " pages" << std::endl;
+            while (!_pFlashIndex->merit_dynamic_disk_full() && completed < max_warmup_queries)
+            {
+                const uint64_t current_batch =
+                    std::min<uint64_t>(warmup_batch, max_warmup_queries - completed);
+#pragma omp parallel for schedule(dynamic, 1)
+                for (int64_t i = 0; i < static_cast<int64_t>(current_batch); ++i)
+                {
+                    const size_t query_index =
+                        static_cast<size_t>((completed + static_cast<uint64_t>(i)) % query_num);
+                    _pFlashIndex->cached_beam_search(
+                        query + query_index * query_aligned_dim, 1, L,
+                        warmup_ids.data() + i, warmup_dists.data() + i,
+                        optimized_beamwidth, use_reorder_data, nullptr);
+                }
+                completed += current_batch;
+                if (completed >= next_report || _pFlashIndex->merit_dynamic_disk_full())
+                {
+                    diskann::cout << "MERIT full D-cache warmup progress: queries=" << completed
+                                  << " pages=" << _pFlashIndex->merit_dynamic_page_count() << "/"
+                                  << _pFlashIndex->merit_dynamic_page_capacity() << std::endl;
+                    next_report += 1000000;
+                }
+            }
+            if (!_pFlashIndex->merit_dynamic_disk_full())
+            {
+                diskann::cerr << "MERIT full D-cache warmup failed after " << completed
+                              << " queries: pages=" << _pFlashIndex->merit_dynamic_page_count() << "/"
+                              << _pFlashIndex->merit_dynamic_page_capacity() << std::endl;
+                return -1;
+            }
+            const auto warmup_end = std::chrono::high_resolution_clock::now();
+            const std::chrono::duration<double> warmup_elapsed = warmup_end - warmup_start;
+            diskann::cout << "MERIT full D-cache warmup complete: queries=" << completed
+                          << " seconds=" << warmup_elapsed.count()
+                          << "; measured query phase starts now." << std::endl;
+            _pFlashIndex->merit_dynamic_begin_measurement();
+            dynamic_full_warmup_done = true;
+        }
 
         query_result_ids[test_id].resize(recall_at * query_num);
         query_result_dists[test_id].resize(recall_at * query_num);
