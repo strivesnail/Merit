@@ -10,6 +10,7 @@
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <shared_mutex>
 #include <vector>
 
 namespace diskann
@@ -152,7 +153,7 @@ class MeritMetadataCache
 
     struct Shard
     {
-        mutable std::mutex mu;
+        mutable std::shared_mutex mu;
         uint64_t capacity = 0;
         std::vector<float> scores;
         std::unique_ptr<std::atomic<uint32_t>[]> slot_to_node;

@@ -3,13 +3,21 @@
 
 #pragma once
 #include "common_includes.h"
+#include <atomic>
+#include <condition_variable>
+#include <cstdint>
+#include <cstdlib>
+#include <deque>
 #include <limits>
 #include <list>
 #include <fstream>
+#include <memory>
 #include <mutex>
 #include <queue>
 #include <set>
 #include <shared_mutex>
+#include <thread>
+#include <vector>
 
 #include "aligned_file_reader.h"
 #include "concurrent_queue.h"
@@ -392,6 +400,11 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
     };
 
     bool _merit_dyn_enabled = false;
+    // After begin_measurement with a full D-cache, keep D lookups but stop
+    // M-cache/pair/heap maintenance that almost never flushes.
+    bool _merit_freeze_maintenance = false;
+    // Read-only membership filter built when maintenance is frozen (100M-bit).
+    std::vector<uint64_t> _merit_dyn_member_bits;
     bool _merit_dcache_net_gate_enabled = false;
     uint32_t _merit_dcache_probe_period = 100;
     std::atomic<bool> _merit_dcache_gate_active{true};
@@ -446,6 +459,36 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
     std::fstream _merit_dyn_write_stream;
     std::mutex _merit_dyn_writer_mu;
     uint64_t _merit_dyn_flush_count = 0;
+
+    // Dedicated D-cache page writer: all pwrite/fdatasync to _merit_dyn_write_fd
+    // (and Windows stream page writes) run only on this thread.
+    enum class MeritDynWriteOp : uint8_t
+    {
+        Write = 0,
+        Sync = 1
+    };
+    struct MeritDynWriteJob
+    {
+        MeritDynWriteOp op = MeritDynWriteOp::Write;
+        off_t offset = 0;
+        size_t nbytes = 0;
+        std::unique_ptr<char, void (*)(void *)> data{nullptr, ::free};
+        std::mutex mu;
+        std::condition_variable cv;
+        bool done = false;
+        bool ok = false;
+    };
+    std::thread _merit_dyn_writer_thread;
+    std::mutex _merit_dyn_write_q_mu;
+    std::condition_variable _merit_dyn_write_q_cv;
+    std::deque<std::shared_ptr<MeritDynWriteJob>> _merit_dyn_write_q;
+    size_t _merit_dyn_write_q_cap = 64;
+    std::atomic<bool> _merit_dyn_writer_stop{true};
+    bool _merit_dyn_writer_started = false;
+    void merit_dyn_writer_loop();
+    void start_merit_dyn_writer();
+    void stop_merit_dyn_writer();
+    bool merit_dyn_writer_submit_and_wait(MeritDynWriteOp op, off_t offset, const void *data, size_t nbytes);
     void merit_dyn_loc_clear_unlocked();
     void merit_dyn_loc_add_unlocked(uint32_t node_id, const MeritDiskLoc &loc);
     void merit_dyn_loc_erase_sector_unlocked(uint32_t node_id, uint32_t sector);
@@ -703,7 +746,7 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
 
     void update_merit_seed_first_lookup_flag();
 
-    bool merit_disk_cache_lookup_hit(uint32_t node_id, const SSDQueryScratch<T> *query_scratch) const;
+    bool merit_disk_cache_lookup_hit(uint32_t node_id, SSDQueryScratch<T> *query_scratch) const;
 
     bool merit_resolve_disk_cache_loc(uint32_t node_id, const SSDQueryScratch<T> *query_scratch,
                                       MeritDiskLoc &out_loc) const;

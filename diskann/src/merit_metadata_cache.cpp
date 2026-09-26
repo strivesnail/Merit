@@ -28,10 +28,11 @@ void MeritMetadataCache::clear()
 {
     _capacity.store(0, std::memory_order_relaxed);
 
-    std::vector<std::unique_ptr<MeritTimedMutexGuard>> locks;
+    std::vector<std::unique_ptr<MeritTimedSharedMutexGuard>> locks;
     locks.reserve(kShardCount);
     for (auto &shard : _shards)
-        locks.emplace_back(std::make_unique<MeritTimedMutexGuard>(shard->mu, MeritLockKind::Metadata));
+        locks.emplace_back(
+            std::make_unique<MeritTimedSharedMutexGuard>(shard->mu, MeritLockKind::Metadata, true));
 
     for (auto &shard_ptr : _shards)
     {
@@ -97,10 +98,11 @@ void MeritMetadataCache::init(uint64_t capacity, uint8_t sig_threshold, uint64_t
     const uint64_t base_capacity = effective_capacity / kShardCount;
     const uint64_t extra_shards = effective_capacity % kShardCount;
 
-    std::vector<std::unique_ptr<MeritTimedMutexGuard>> locks;
+    std::vector<std::unique_ptr<MeritTimedSharedMutexGuard>> locks;
     locks.reserve(kShardCount);
     for (auto &shard : _shards)
-        locks.emplace_back(std::make_unique<MeritTimedMutexGuard>(shard->mu, MeritLockKind::Metadata));
+        locks.emplace_back(
+            std::make_unique<MeritTimedSharedMutexGuard>(shard->mu, MeritLockKind::Metadata, true));
 
     _sig_t.store(sig_threshold == 0 ? kDefaultSigT : sig_threshold, std::memory_order_relaxed);
     _slot_stride.store(slot_stride, std::memory_order_relaxed);
@@ -298,7 +300,7 @@ MeritMetadataCache::TouchResult MeritMetadataCache::on_expand(uint32_t node_id,
 {
     const size_t shard_id = shard_index(node_id);
     Shard &shard = *_shards[shard_id];
-    MeritTimedMutexGuard lock(shard.mu, MeritLockKind::Metadata);
+    MeritTimedSharedMutexGuard lock(shard.mu, MeritLockKind::Metadata, true);
     return touch_or_insert_unlocked(shard, shard_id, node_id, score_unit.load(std::memory_order_acquire));
 }
 
@@ -470,7 +472,7 @@ MeritMetadataCache::TouchResult MeritMetadataCache::on_edge(uint32_t parent, uin
 
     const size_t shard_id = shard_index(parent);
     Shard &shard = *_shards[shard_id];
-    MeritTimedMutexGuard lock(shard.mu, MeritLockKind::Metadata);
+    MeritTimedSharedMutexGuard lock(shard.mu, MeritLockKind::Metadata, true);
     r = touch_or_insert_unlocked(shard, shard_id, parent, 0.0f);
     if (!r.present)
         return r;
@@ -503,7 +505,7 @@ MeritMetadataCache::TouchResult MeritMetadataCache::on_real_io_edge(uint32_t par
 
     const size_t shard_id = shard_index(parent);
     Shard &shard = *_shards[shard_id];
-    MeritTimedMutexGuard lock(shard.mu, MeritLockKind::Metadata);
+    MeritTimedSharedMutexGuard lock(shard.mu, MeritLockKind::Metadata, true);
     r = touch_or_insert_unlocked(shard, shard_id, parent, 0.0f);
     if (!r.present)
         return r;
@@ -539,14 +541,14 @@ MeritMetadataCache::TouchResult MeritMetadataCache::on_real_io_edge(uint32_t par
 bool MeritMetadataCache::contains(uint32_t node_id) const
 {
     const Shard &shard = *_shards[shard_index(node_id)];
-    MeritTimedMutexGuard lock(shard.mu, MeritLockKind::Metadata);
+    MeritTimedSharedMutexGuard lock(shard.mu, MeritLockKind::Metadata, false);
     return shard.node_to_slot.find(node_id) != shard.node_to_slot.end();
 }
 
 uint32_t MeritMetadataCache::slot_of(uint32_t node_id) const
 {
     const Shard &shard = *_shards[shard_index(node_id)];
-    MeritTimedMutexGuard lock(shard.mu, MeritLockKind::Metadata);
+    MeritTimedSharedMutexGuard lock(shard.mu, MeritLockKind::Metadata, false);
     const auto it = shard.node_to_slot.find(node_id);
     if (it == shard.node_to_slot.end())
         return kInvalid;
@@ -579,7 +581,7 @@ bool MeritMetadataCache::node_score_at(uint32_t slot_id, uint32_t &node_id, floa
     if (shard_id >= kShardCount)
         return false;
     const Shard &shard = *_shards[shard_id];
-    MeritTimedMutexGuard lock(shard.mu, MeritLockKind::Metadata);
+    MeritTimedSharedMutexGuard lock(shard.mu, MeritLockKind::Metadata, false);
     if (local_slot >= shard.capacity ||
         shard.slot_to_node[local_slot].load(std::memory_order_relaxed) == kInvalid)
         return false;
@@ -591,7 +593,7 @@ bool MeritMetadataCache::node_score_at(uint32_t slot_id, uint32_t &node_id, floa
 float MeritMetadataCache::score(uint32_t node_id) const
 {
     const Shard &shard = *_shards[shard_index(node_id)];
-    MeritTimedMutexGuard lock(shard.mu, MeritLockKind::Metadata);
+    MeritTimedSharedMutexGuard lock(shard.mu, MeritLockKind::Metadata, false);
     const auto it = shard.node_to_slot.find(node_id);
     return it == shard.node_to_slot.end() ? 0.0f : shard.scores[it->second];
 }
@@ -606,7 +608,7 @@ float MeritMetadataCache::score_at(uint32_t slot_id) const
     if (shard_id >= kShardCount)
         return 0.0f;
     const Shard &shard = *_shards[shard_id];
-    MeritTimedMutexGuard lock(shard.mu, MeritLockKind::Metadata);
+    MeritTimedSharedMutexGuard lock(shard.mu, MeritLockKind::Metadata, false);
     if (local_slot >= shard.capacity ||
         shard.slot_to_node[local_slot].load(std::memory_order_relaxed) == kInvalid)
         return 0.0f;
@@ -616,7 +618,7 @@ float MeritMetadataCache::score_at(uint32_t slot_id) const
 bool MeritMetadataCache::set_evictable(uint32_t node_id, bool evictable)
 {
     Shard &shard = *_shards[shard_index(node_id)];
-    MeritTimedMutexGuard lock(shard.mu, MeritLockKind::Metadata);
+    MeritTimedSharedMutexGuard lock(shard.mu, MeritLockKind::Metadata, true);
     auto it = shard.node_to_slot.find(node_id);
     if (it == shard.node_to_slot.end())
         return false;
@@ -639,10 +641,11 @@ bool MeritMetadataCache::set_evictable(uint32_t node_id, bool evictable)
 
 void MeritMetadataCache::scale_scores(float factor, std::atomic<float> &score_unit, float next_score_unit)
 {
-    std::vector<std::unique_ptr<MeritTimedMutexGuard>> locks;
+    std::vector<std::unique_ptr<MeritTimedSharedMutexGuard>> locks;
     locks.reserve(kShardCount);
     for (auto &shard : _shards)
-        locks.emplace_back(std::make_unique<MeritTimedMutexGuard>(shard->mu, MeritLockKind::Metadata));
+        locks.emplace_back(
+            std::make_unique<MeritTimedSharedMutexGuard>(shard->mu, MeritLockKind::Metadata, true));
 
     for (size_t shard_id = 0; shard_id < kShardCount; ++shard_id)
     {
@@ -659,7 +662,7 @@ void MeritMetadataCache::scale_scores(float factor, std::atomic<float> &score_un
 bool MeritMetadataCache::snapshot(uint32_t node_id, Snapshot &out) const
 {
     const Shard &shard = *_shards[shard_index(node_id)];
-    MeritTimedMutexGuard lock(shard.mu, MeritLockKind::Metadata);
+    MeritTimedSharedMutexGuard lock(shard.mu, MeritLockKind::Metadata, false);
     const auto it = shard.node_to_slot.find(node_id);
     if (it == shard.node_to_slot.end())
         return false;
