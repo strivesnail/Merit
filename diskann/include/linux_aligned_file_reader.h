@@ -42,4 +42,7 @@ class LinuxAlignedFileReader : public AlignedFileReader
     void read_multi(std::vector<FdAlignedRead> &read_reqs, IOContext &ctx) override;
 };
 
+// Per-request / per-batch read latency histogram, enabled by MERIT_IO_LAT_PROFILE=1.
+void merit_io_latency_report();
+
 #endif

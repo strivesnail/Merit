@@ -41,6 +41,12 @@ struct QueryStats
     unsigned n_merit_dc_hits = 0;     // nodes served from MERIT disk-cache file
     unsigned n_merit_mem_evictions = 0; // runtime evictions from MERIT memory pool
     unsigned n_merit_dyn_hits = 0;      // nodes served from runtime-flushed d-cache pages
+    // Beam-time classification (one increment per expanded beam neighbor):
+    // n-cache → n_cache_hits; same-query seed-page members → n_merit_prefetch_hits;
+    // d-cache directory (seed page not yet in query prefetch buffer) → n_merit_dcache_seed_hits.
+    unsigned n_merit_prefetch_hits = 0;     // hit in query-local merit_dcache_member_packed_loc
+    unsigned n_merit_dcache_seed_hits = 0;  // d-cache directory hit (triggers seed-page serve)
+    unsigned n_beam_lookups = 0;            // process_beam_neighbor invocations
     unsigned n_merit_dyn_flushes = 0;   // seed pages written at query end / n-cache evict
     unsigned n_merit_dyn_pages = 0;     // committed dynamic d-cache pages after this query
     unsigned n_merit_dyn_disk_reads = 0; // physical 4KB reads from the dynamic d-cache file

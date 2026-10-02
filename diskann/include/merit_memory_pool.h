@@ -387,6 +387,7 @@ template <typename T> class MeritMemoryPool
     std::atomic<uint32_t> _next_free_slot{0};
     std::mutex _free_slots_mu;
     std::vector<uint32_t> _free_slots;
+    std::atomic<size_t> _free_slots_count{0};
     std::atomic<uint64_t> _size{0};
     std::atomic<uint64_t> _eviction_count{0};
     std::atomic<uint64_t> _admission_rejections{0};

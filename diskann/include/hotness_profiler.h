@@ -22,6 +22,7 @@ class HotnessProfiler
 {
   public:
     DISKANN_DLLEXPORT void init(uint64_t num_points);
+    DISKANN_DLLEXPORT void reset();
     DISKANN_DLLEXPORT void set_enabled(bool enabled);
     DISKANN_DLLEXPORT bool enabled() const;
 

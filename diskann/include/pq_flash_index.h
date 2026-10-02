@@ -432,7 +432,7 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
     bool _merit_real_io_coaccess = true;
     uint32_t _merit_real_io_window = 4;
     uint32_t _merit_real_io_sample_queries = 64;
-    uint32_t _merit_real_io_max_partners = 32;
+    uint32_t _merit_real_io_max_partners = 64;
     std::atomic<uint64_t> _merit_real_io_queries{0};
     std::atomic<uint64_t> _merit_real_io_sampled_queries{0};
     std::atomic<uint64_t> _merit_real_io_nodes{0};
@@ -441,18 +441,37 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
     // Members are stored densely by physical page to avoid one heap-allocated
     // vector per live d-cache page.
     std::vector<uint32_t> _merit_dyn_page_members;
+    // Second page of a seed. INVALID if this page has no partner.
+    // Partners are adjacent physical pages so one read covers both.
+    std::vector<uint32_t> _merit_dyn_page_sibling;
+    std::vector<uint8_t> _merit_dyn_page_secondary;
+    // Contiguous on-demand span. Length is stored on every page of the span.
+    std::vector<uint8_t> _merit_dyn_page_span_len;
+    std::vector<uint32_t> _merit_dyn_page_span_base;
     std::vector<uint16_t> _merit_dyn_page_member_count;
     uint32_t _merit_dyn_members_per_page = 1;
+    // Member count of each seed's first successful page write. Same-seed rewrites keep it.
+    tsl::robin_map<uint32_t, uint16_t> _merit_seed_first_fill;
     tsl::robin_map<uint32_t, MeritDynLocChain> _merit_dyn_loc_map;
     std::vector<MeritDynLocNode> _merit_dyn_loc_pool;
     std::vector<uint32_t> _merit_dyn_loc_free;
     std::vector<uint32_t> _merit_dyn_free;
-    tsl::robin_set<uint32_t> _merit_dyn_retired;
     uint64_t _merit_dyn_committed_pages = 0;
     uint64_t _merit_dyn_page_cap = 4096;
     uint64_t _merit_dyn_physical_cap = 0;
     uint32_t _merit_dyn_next_page = 0;
     std::unique_ptr<std::atomic<uint32_t>[]> _merit_dyn_page_readers;
+    std::unique_ptr<std::atomic<uint8_t>[]> _merit_dyn_page_retired;
+    std::unique_ptr<std::atomic<uint32_t>[]> _merit_span_reads;
+    std::unique_ptr<std::atomic<uint32_t>[]> _merit_span_hits;
+    std::unique_ptr<std::atomic<uint32_t>[]> _merit_span_decisions;
+    bool _merit_span_adaptive = false;
+    float _merit_span_min_hits = 1.0f;
+    uint32_t _merit_span_explore = 16;
+    mutable std::atomic<uint64_t> _merit_span_full_reads{0};
+    mutable std::atomic<uint64_t> _merit_span_primary_only{0};
+    std::mutex _merit_dyn_reclaim_mu;
+    std::vector<uint32_t> _merit_dyn_reclaim;
     std::string _merit_dyn_path;
     std::shared_ptr<AlignedFileReader> _merit_dyn_reader;
     int _merit_dyn_write_fd = -1;
@@ -485,6 +504,10 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
     size_t _merit_dyn_write_q_cap = 64;
     std::atomic<bool> _merit_dyn_writer_stop{true};
     bool _merit_dyn_writer_started = false;
+    std::thread _merit_refresh_thread;
+    std::atomic<bool> _merit_refresh_thread_stop{true};
+    bool _merit_refresh_thread_on = false;
+    void merit_refresh_thread_loop();
     void merit_dyn_writer_loop();
     void start_merit_dyn_writer();
     void stop_merit_dyn_writer();
@@ -657,11 +680,65 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
     std::atomic<uint64_t> _merit_pending_buffer_drops{0};
     std::atomic<uint64_t> _merit_pending_member_refreshes{0};
     std::atomic<uint64_t> _merit_pending_became_full{0};
+    // Same-query D-page patch: fold neighbors onto a seed page served this query.
+    bool _merit_dcache_no_seed_replace = false;
+    // When a page is full, keep old neighbors and write overflow onto later pages.
+    bool _merit_dcache_second_page = false;
+    uint8_t _merit_dcache_max_pages = 1;
+    std::atomic<uint64_t> _merit_dcache_pair_ios{0};
+    uint64_t _merit_dcache_freeze_after = 0;
+    uint64_t _merit_member_snapshot_at = 0;
+    std::atomic<bool> _merit_member_snapshot_done{false};
+    tsl::robin_set<uint32_t> _merit_member_at_snapshot;
+    std::atomic<uint64_t> _merit_member_snapshot_slots{0};
+    std::atomic<uint64_t> _merit_prefetch_from_early{0};
+    std::atomic<uint64_t> _merit_prefetch_from_late{0};
+    std::atomic<uint64_t> _merit_early_hop_hist[128];
+    std::atomic<uint64_t> _merit_late_hop_hist[128];
+    bool _merit_dcache_query_patch = true;
+    bool _merit_dcache_query_patch_async = true;
+    uint32_t _merit_dcache_query_patch_max = 4;
+    std::atomic<uint64_t> _merit_dcache_query_patch_trig{0};
+    std::atomic<uint64_t> _merit_dcache_query_patch_ok{0};
+    std::atomic<uint64_t> _merit_dcache_query_patch_drop{0};
+    struct MeritPatchJob
+    {
+        uint32_t seed_id = 0;
+        std::vector<uint32_t> new_ids;
+        std::vector<uint32_t> prior_members;
+        std::vector<std::vector<uint32_t>> prior_extra;
+        uint32_t replacement_seed = MERIT_DYN_INVALID_PAGE;
+    };
+    std::mutex _merit_patch_q_mu;
+    std::condition_variable _merit_patch_q_cv;
+    std::deque<std::shared_ptr<MeritPatchJob>> _merit_patch_q;
+    size_t _merit_patch_q_cap = 64;
+    uint32_t _merit_patch_batch_us = 100;
+    bool _merit_patch_worker_no_disk = false;
+    std::thread _merit_patch_thread;
+    std::atomic<bool> _merit_patch_stop{true};
+    bool _merit_patch_started = false;
+    tsl::robin_map<uint32_t, uint32_t> _merit_patch_pin_count;
     uint32_t _merit_monitor_warmup_queries = 0;
     uint32_t _merit_monitor_interval_queries = 1000000;
     std::vector<tsl::robin_set<uint32_t>> _merit_pending_buffer_buckets;
     std::vector<MeritRecentChildren> _merit_parent_fetched_by_slot;
     std::vector<uint32_t> _merit_parent_fetched_owner;
+    struct alignas(64) MeritPaddedMutex
+    {
+        std::mutex mu;
+    };
+    static constexpr size_t MERIT_PARENT_FETCHED_STRIPES = 64;
+    mutable std::array<MeritPaddedMutex, MERIT_PARENT_FETCHED_STRIPES> _merit_parent_fetched_mu;
+    std::mutex &merit_parent_fetched_mu(uint32_t slot_id) const
+    {
+        return _merit_parent_fetched_mu[slot_id & (MERIT_PARENT_FETCHED_STRIPES - 1)].mu;
+    }
+    void merit_mark_refresh_needed()
+    {
+        if (!_merit_refresh_needed.load(std::memory_order_relaxed))
+            _merit_refresh_needed.store(true, std::memory_order_release);
+    }
     mutable std::mutex _merit_stash_mu;
     // Reader-writer lock (std::shared_mutex). Lookup/copy take shared; page
     // install takes exclusive. Not a spin/seqlock: robin_map rehash is not
@@ -682,7 +759,13 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
     bool merit_dyn_hotter_mismatch(const uint32_t *page_members, size_t page_member_count,
                                    const std::vector<uint32_t> &now_ids) const;
     void merit_dyn_invalidate_seed_page(uint32_t seed_id);
+    void merit_dyn_retire_secondary_unlocked(uint32_t page_idx);
     uint32_t merit_dyn_alloc_page_unlocked();
+    void merit_dyn_retire_page_unlocked(uint32_t page_idx);
+    bool merit_span_should_read_full(uint32_t base, uint32_t span) const;
+    void merit_span_carry_stats(uint32_t from_page, uint32_t to_page);
+    void merit_dyn_drain_reclaim_unlocked();
+    uint32_t merit_dyn_alloc_contiguous_unlocked(uint32_t count);
     void merit_dyn_maybe_mark_seed(uint32_t node_id);
     void merit_dyn_note_touch(const MeritMetadataCache::TouchResult &tr, SSDQueryScratch<T> *query_scratch);
     void merit_dyn_on_mcache_evict(uint32_t node_id, uint32_t slot_id);
@@ -711,6 +794,7 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
     void merit_dyn_set_state_unlocked(uint32_t node_id, uint32_t slot_id, MeritNodeState st);
     void merit_dyn_clear_ready_pair_unlocked(uint32_t insertion_slot, bool restore_states = true);
     bool merit_dyn_disk_is_full() const;
+    bool merit_dcache_updates_frozen() const;
     bool merit_dyn_build_pending_flush(uint32_t seed_id, const MeritMetadataCache::Snapshot &snap,
                                        MeritPendingFlush &pf) const;
     bool merit_dyn_refresh_pending_members(uint32_t insertion_slot);
@@ -722,9 +806,24 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
                                   SSDQueryScratch<T> *query_scratch, uint32_t search_hop);
     void merit_dyn_note_base_load(uint32_t node_id, uint32_t parent, const char *node_disk_buf,
                                   SSDQueryScratch<T> *query_scratch);
+    bool merit_dyn_note_patch_candidate(uint32_t node_id, uint32_t parent, SSDQueryScratch<T> *query_scratch);
+    void merit_dyn_apply_query_patches(QueryStats *stats, SSDQueryScratch<T> *query_scratch);
+    std::vector<uint32_t> merit_dyn_assemble_patch_members(
+        uint32_t seed_id, const std::vector<uint32_t> &new_ids, const std::vector<uint32_t> &prior_members,
+        const std::vector<std::vector<uint32_t>> &prior_extra = {},
+        std::vector<std::vector<uint32_t>> *extra_out = nullptr) const;
+    void merit_dyn_patch_pin(const std::vector<uint32_t> &member_ids);
+    void merit_dyn_patch_unpin(const std::vector<uint32_t> &member_ids);
+    void merit_dyn_patch_loop();
+    void start_merit_dyn_patch_worker();
+    void stop_merit_dyn_patch_worker();
+    bool merit_dyn_enqueue_patch(uint32_t seed_id, std::vector<uint32_t> new_ids,
+                                 std::vector<uint32_t> prior_members,
+                                 std::vector<std::vector<uint32_t>> prior_extra, uint32_t replacement_seed);
     void merit_dyn_record_real_io_coaccess(SSDQueryScratch<T> *query_scratch);
     bool merit_dyn_has_payload(uint32_t node_id) const;
-    bool merit_dyn_copy_member_payload(uint32_t node_id, std::vector<T> &coords, std::vector<uint32_t> &nbrs) const;
+    bool merit_dyn_copy_member_payload(uint32_t node_id, std::vector<T> &coords, std::vector<uint32_t> &nbrs,
+                                       bool allow_disk = true) const;
     bool merit_dyn_extract_overlay_payload(uint32_t node_id, std::vector<T> &coords,
                                            std::vector<uint32_t> &nbrs) const;
     int merit_dyn_import_static_prefill();
@@ -740,6 +839,7 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
     void merit_dyn_on_query_end(QueryStats *stats, SSDQueryScratch<T> *query_scratch);
     void merit_dyn_log_monitor(uint32_t query_epoch) const;
     bool merit_dyn_commit_one(MeritPendingFlush &pf, uint32_t replacement_seed = MERIT_DYN_INVALID_PAGE);
+    bool merit_dyn_commit_span(std::vector<MeritPendingFlush> &pages, uint32_t replacement_seed);
 
     void merit_get_expand_neighbors(uint32_t expand_id, char *node_disk_buf, const uint32_t *&out_nbrs,
                                     uint64_t &out_nnbrs) const;
@@ -747,6 +847,10 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
     void update_merit_seed_first_lookup_flag();
 
     bool merit_disk_cache_lookup_hit(uint32_t node_id, SSDQueryScratch<T> *query_scratch) const;
+    bool merit_dyn_query_local_dcache_hit(uint32_t node_id, SSDQueryScratch<T> *query_scratch) const;
+    // Register all members of a dyn page into the query-local prefetch map so
+    // same-hop / later-hop co-members count as prefetch instead of another seed hit.
+    void merit_pack_dyn_page_into_query_prefetch(uint32_t sector, SSDQueryScratch<T> *query_scratch) const;
 
     bool merit_resolve_disk_cache_loc(uint32_t node_id, const SSDQueryScratch<T> *query_scratch,
                                       MeritDiskLoc &out_loc) const;

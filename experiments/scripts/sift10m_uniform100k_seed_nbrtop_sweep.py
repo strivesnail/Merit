@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""SIFT10M uniform_100k seed/nbrTop sweep: disk-only then mem=0.1GB. Resume-safe."""
+"""SIFT10M uniform_100k seed/nbrTop sweep: disk-only then mem=0.1GB. Resume-safe.
+
+nbrTop ranks children of selected seeds by seed→child edge heat.
+"""
 import csv
 import json
 import os
@@ -112,19 +115,34 @@ def run_case(
     case.mkdir(parents=True, exist_ok=True)
     qstats = case / "qstats.csv"
     dc = case / "run_merit_dc.data"
+    meta = case / "cache_meta.json"
     skip = case / "SKIP"
     if skip.exists():
-        print(f"reuse-skip {out_root.name}/{tag}: {skip.read_text().strip()}", flush=True)
-        return None
-    if qstats.exists() and qstats.stat().st_size > 1000 and (ratio == 0 or dc.exists()):
+        txt = skip.read_text().strip()
+        if txt:
+            print(f"reuse-skip {out_root.name}/{tag}: {txt}", flush=True)
+            return None
+        skip.unlink(missing_ok=True)
+
+    def _cache_bytes():
+        if dc.exists():
+            return dc.stat().st_size
+        if meta.exists():
+            try:
+                return int(json.loads(meta.read_text()).get("cache_bytes", 0))
+            except Exception:
+                return 0
+        return 0
+
+    if qstats.exists() and qstats.stat().st_size > 1000:
         try:
             s = stats_from_qstats(qstats)
             if s["n_queries"] >= 90000:
-                mb = dc.stat().st_size / 1024 / 1024 if dc.exists() else 0
+                sz = _cache_bytes()
                 r = {
                     **s,
-                    "cache_mb": mb,
-                    "vs_base": (dc.stat().st_size / IDX if dc.exists() else 0),
+                    "cache_mb": sz / 1024 / 1024,
+                    "vs_base": (sz / IDX if sz else 0),
                 }
                 print(
                     f"reuse {out_root.name}/{tag}: ios={r['n_ios']:.1f} "
@@ -200,13 +218,22 @@ def run_case(
         return None
 
     dc = case / "run_merit_dc.data"
-    mb = dc.stat().st_size / 1024 / 1024 if dc.exists() else 0
+    sz = dc.stat().st_size if dc.exists() else 0
+    if sz:
+        meta.write_text(json.dumps({"cache_bytes": sz}) + "\n")
+    mb = sz / 1024 / 1024
     s = stats_from_qstats(qstats)
     r = {
         **s,
         "cache_mb": mb,
-        "vs_base": (dc.stat().st_size / IDX if dc.exists() else 0),
+        "vs_base": (sz / IDX if sz else 0),
     }
+    # Drop multi-GB cache blobs after stats are recorded so resume can keep going.
+    for blob in case.glob("run_merit_dc*"):
+        try:
+            blob.unlink()
+        except OSError:
+            pass
     print(
         f"RESULT {out_root.name}/{tag}: ios={r['n_ios']:.1f} reads={r['reads']:.2f} "
         f"mem={r['mem_hits']:.1f} cache={mb:.0f}MB",
@@ -220,14 +247,6 @@ def run_sweep(out_root, mem_gb=0.0, prof_prefix="sweep100k"):
     us = read_u32(str(PROF_SRC) + "_edge_u.bin")
     vs = read_u32(str(PROF_SRC) + "_edge_v.bin")
     cs = read_u64(str(PROF_SRC) + "_edge_count.bin")
-    expand = read_u64(str(PROF_SRC) + "_node_expand.bin")
-    visit_path = Path(str(PROF_SRC) + "_node_visit.bin")
-    if visit_path.exists():
-        nbr_score = read_u64(visit_path)
-        nbr_score_name = "visit"
-    else:
-        nbr_score = expand
-        nbr_score_name = "expand"
     heat = defaultdict(int)
     out = defaultdict(list)
     for u, v, c in zip(us, vs, cs):
@@ -237,7 +256,7 @@ def run_sweep(out_root, mem_gb=0.0, prof_prefix="sweep100k"):
     parents = sorted(heat.keys(), key=lambda p: (-heat[p], p))
     print(
         f"[{out_root.name}] parents={len(parents)} edges={len(us)} mem={mem_gb}GB "
-        f"nbrTop_by={nbr_score_name}",
+        f"nbrTop_by=edge_heat",
         flush=True,
     )
     baselines = {
@@ -257,9 +276,13 @@ def run_sweep(out_root, mem_gb=0.0, prof_prefix="sweep100k"):
     all_results = {}
     for sp in seed_pcts:
         seeds = parents[: max(1, int(len(parents) * sp / 100))]
+        edge_score = defaultdict(int)
+        for p in seeds:
+            for v, c in out[p]:
+                edge_score[v] += c
         nbr_list = sorted(
-            set(v for p in seeds for v, _ in out[p]),
-            key=lambda n: (-(nbr_score[n] if n < len(nbr_score) else 0), n),
+            edge_score.keys(),
+            key=lambda n: (-edge_score[n], n),
         )
         series = []
         for npct in nbr_pcts:

@@ -45,6 +45,7 @@ template <typename T> void MeritMemoryPool<T>::clear()
     {
         std::lock_guard<std::mutex> free_lock(_free_slots_mu);
         _free_slots.clear();
+        _free_slots_count.store(0, std::memory_order_relaxed);
     }
     _size.store(0, std::memory_order_relaxed);
     _eviction_count.store(0, std::memory_order_relaxed);
@@ -1153,6 +1154,7 @@ void MeritMemoryPool<T>::commit_initial_load(const std::vector<uint32_t> &node_i
     {
         std::lock_guard<std::mutex> free_lock(_free_slots_mu);
         _free_slots.clear();
+        _free_slots_count.store(0, std::memory_order_relaxed);
     }
     _next_free_slot.store(static_cast<uint32_t>(load_count), std::memory_order_relaxed);
     _size.store(load_count, std::memory_order_relaxed);
@@ -1201,12 +1203,14 @@ uint32_t MeritMemoryPool<T>::try_admit(uint32_t node_id, const char *node_disk_b
     uint32_t slot = INVALID_NODE;
     uint32_t evicted = INVALID_NODE;
 
+    if (_free_slots_count.load(std::memory_order_acquire) != 0)
     {
         std::lock_guard<std::mutex> free_lock(_free_slots_mu);
         if (!_free_slots.empty())
         {
             slot = _free_slots.back();
             _free_slots.pop_back();
+            _free_slots_count.store(_free_slots.size(), std::memory_order_release);
         }
     }
     uint32_t next_free = _next_free_slot.load(std::memory_order_relaxed);
@@ -1299,6 +1303,7 @@ template <typename T> bool MeritMemoryPool<T>::erase(uint32_t node_id)
     {
         std::lock_guard<std::mutex> free_lock(_free_slots_mu);
         _free_slots.push_back(slot);
+        _free_slots_count.store(_free_slots.size(), std::memory_order_release);
     }
     return true;
 }

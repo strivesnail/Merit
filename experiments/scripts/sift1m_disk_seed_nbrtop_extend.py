@@ -2,7 +2,8 @@
 """Extend SIFT1M disk-only seed/nbrTop sweep with Top5/10/70/80/90%.
 
 Resume-safe: reuses existing Top20–60 under seed_nbrtop_multi_sweep.
-nbrTop ranking prefers node_visit (access heat) when profile has _node_visit.bin.
+nbrTop: among children of selected seeds, rank by seed→child edge heat
+(sum of profile edge counts from those seeds), then take top y%.
 Regenerates:
   seed_nbrtop_disk_reads.png
   seed_nbrtop_vs_base.png
@@ -41,10 +42,7 @@ for k in [
 
 SEARCH = Path("/home/jianz/Merit/diskann/build/apps/search_disk_index")
 DATA = Path("/home/jianz/Merit/data/sift1m")
-# Prefer visitstat profile (has _node_visit.bin) for nbrTop-by-visit.
-PROF_SRC = DATA / "workloads/profiles/uniform_10k_visitstat"
-if not (Path(str(PROF_SRC) + "_node_expand.bin")).exists():
-    PROF_SRC = DATA / "workloads/profiles/uniform_10k"
+PROF_SRC = DATA / "workloads/profiles/uniform_10k"
 FULL_PROF = str(PROF_SRC)
 IDX = (DATA / "sift1m_index_disk.index").stat().st_size
 OUT = DATA / "runs/adaptive_reduction_sweep/uniform/seed_nbrtop_multi_sweep"
@@ -283,14 +281,6 @@ def main():
     us = read_u32(str(PROF_SRC) + "_edge_u.bin")
     vs = read_u32(str(PROF_SRC) + "_edge_v.bin")
     cs = read_u64(str(PROF_SRC) + "_edge_count.bin")
-    expand = read_u64(str(PROF_SRC) + "_node_expand.bin")
-    visit_path = Path(str(PROF_SRC) + "_node_visit.bin")
-    if visit_path.exists():
-        nbr_score = read_u64(visit_path)
-        nbr_score_name = "visit"
-    else:
-        nbr_score = expand
-        nbr_score_name = "expand"
     heat = defaultdict(int)
     out = defaultdict(list)
     for u, v, c in zip(us, vs, cs):
@@ -300,7 +290,7 @@ def main():
     parents = sorted(heat.keys(), key=lambda p: (-heat[p], p))
     print(
         f"[seed_nbrtop_multi_sweep] parents={len(parents)} edges={len(us)} "
-        f"disk-only nbrTop_by={nbr_score_name}",
+        f"disk-only nbrTop_by=edge_heat",
         flush=True,
     )
 
@@ -335,9 +325,13 @@ def main():
     all_results = {}
     for sp in seed_pcts:
         seeds = parents[: max(1, int(len(parents) * sp / 100))]
+        edge_score = defaultdict(int)
+        for p in seeds:
+            for v, c in out[p]:
+                edge_score[v] += c
         nbr_list = sorted(
-            set(v for p in seeds for v, _ in out[p]),
-            key=lambda n: (-(nbr_score[n] if n < len(nbr_score) else 0), n),
+            edge_score.keys(),
+            key=lambda n: (-edge_score[n], n),
         )
         series = []
         for npct in nbr_pcts:

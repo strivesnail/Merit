@@ -153,6 +153,15 @@ template <typename T> class SSDQueryScratch : public AbstractScratch<T>
     tsl::robin_map<uint32_t, uint32_t> profile_parent;
     // node_id -> packed D-loc from lookup (sector in high 32, slot in low 16).
     tsl::robin_map<uint32_t, uint64_t> merit_dcache_loc_cache;
+    // Same-query members already packed when a seed page was served (prefetch buffer).
+    tsl::robin_map<uint32_t, uint64_t> merit_dcache_member_packed_loc;
+    // Query patch: seed -> members seen on a served D page, and the reverse map.
+    tsl::robin_map<uint32_t, std::vector<uint32_t>> merit_dcache_seed_members;
+    // Later pages of the same seed, allocated only when the previous page is full.
+    tsl::robin_map<uint32_t, std::vector<std::vector<uint32_t>>> merit_dcache_seed_extra;
+    tsl::robin_set<uint32_t> merit_dyn_full_span;
+    tsl::robin_map<uint32_t, uint32_t> merit_dcache_member_to_seed;
+    tsl::robin_map<uint32_t, std::vector<uint32_t>> merit_dcache_patch_new;
     tsl::robin_set<uint64_t> read_sectors; // distinct base _disk.index sectors (frontier reads / base sector cache)
     tsl::robin_set<uint32_t> read_merit_disk_cache_sectors; // distinct MERIT disk cache file sectors
     tsl::robin_set<uint64_t> merit_avoided_base_sectors;

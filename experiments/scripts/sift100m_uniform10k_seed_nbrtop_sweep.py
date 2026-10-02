@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""SIFT100M uniform_10k seed/nbrTop sweep: disk-only then mem=0.5GB. Resume-safe."""
+"""SIFT100M uniform_10k seed/nbrTop sweep: disk-only then mem=0.5GB. Resume-safe.
+
+nbrTop ranks children of selected seeds by seed→child edge heat.
+"""
 import csv
 import json
 import os
@@ -204,14 +207,6 @@ def run_sweep(out_root, mem_gb=0.0, prof_prefix="sweep10k"):
     us = read_u32(str(PROF_SRC) + "_edge_u.bin")
     vs = read_u32(str(PROF_SRC) + "_edge_v.bin")
     cs = read_u64(str(PROF_SRC) + "_edge_count.bin")
-    expand = read_u64(str(PROF_SRC) + "_node_expand.bin")
-    visit_path = Path(str(PROF_SRC) + "_node_visit.bin")
-    if visit_path.exists():
-        nbr_score = read_u64(visit_path)
-        nbr_score_name = "visit"
-    else:
-        nbr_score = expand
-        nbr_score_name = "expand"
     heat = defaultdict(int)
     out = defaultdict(list)
     for u, v, c in zip(us, vs, cs):
@@ -221,7 +216,7 @@ def run_sweep(out_root, mem_gb=0.0, prof_prefix="sweep10k"):
     parents = sorted(heat.keys(), key=lambda p: (-heat[p], p))
     print(
         f"[{out_root.name}] parents={len(parents)} edges={len(us)} mem={mem_gb}GB "
-        f"nbrTop_by={nbr_score_name}",
+        f"nbrTop_by=edge_heat",
         flush=True,
     )
     baselines = {
@@ -241,9 +236,13 @@ def run_sweep(out_root, mem_gb=0.0, prof_prefix="sweep10k"):
     all_results = {}
     for sp in seed_pcts:
         seeds = parents[: max(1, int(len(parents) * sp / 100))]
+        edge_score = defaultdict(int)
+        for p in seeds:
+            for v, c in out[p]:
+                edge_score[v] += c
         nbr_list = sorted(
-            set(v for p in seeds for v, _ in out[p]),
-            key=lambda n: (-(nbr_score[n] if n < len(nbr_score) else 0), n),
+            edge_score.keys(),
+            key=lambda n: (-edge_score[n], n),
         )
         series = []
         for npct in nbr_pcts:

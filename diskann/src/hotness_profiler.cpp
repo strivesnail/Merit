@@ -30,6 +30,13 @@ void HotnessProfiler::init(uint64_t num_points)
     _frontier_templates.clear();
 }
 
+void HotnessProfiler::reset()
+{
+    if (_num_points == 0)
+        return;
+    init(_num_points);
+}
+
 void HotnessProfiler::set_enabled(bool enabled)
 {
     _enabled = enabled;

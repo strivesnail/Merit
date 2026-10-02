@@ -93,6 +93,12 @@ template <typename T> void SSDQueryScratch<T>::reset()
     full_retset.clear();
     profile_parent.clear();
     merit_dcache_loc_cache.clear();
+    merit_dcache_member_packed_loc.clear();
+    merit_dcache_seed_members.clear();
+    merit_dcache_seed_extra.clear();
+    merit_dyn_full_span.clear();
+    merit_dcache_member_to_seed.clear();
+    merit_dcache_patch_new.clear();
     read_sectors.clear();
     read_merit_disk_cache_sectors.clear();
     merit_avoided_base_sectors.clear();
