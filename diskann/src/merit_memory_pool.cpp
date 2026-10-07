@@ -33,11 +33,11 @@ template <typename T> void MeritMemoryPool<T>::clear()
     _node_count = 0;
     _aligned_dim = 0;
     _max_degree = 0;
-    _membership_words.reset();
+    _membership_counters.reset();
     _recently_accessed.reset();
     _ghost_admitted_slot_words.reset();
     _ghost_admitted_hit_words.reset();
-    _membership_word_count = 0;
+    _membership_counter_count = 0;
     _ghost_slot_word_count = 0;
     _fast_miss_bypasses.store(0, std::memory_order_relaxed);
     _clock_second_chances.store(0, std::memory_order_relaxed);
@@ -228,10 +228,13 @@ void MeritMemoryPool<T>::init(uint64_t capacity, uint64_t aligned_dim, uint64_t 
 
     if (_fast_miss_enabled && _node_count > 0)
     {
-        _membership_word_count = (_node_count + 63) / 64;
-        _membership_words = std::make_unique<std::atomic<uint64_t>[]>(_membership_word_count);
-        for (uint64_t index = 0; index < _membership_word_count; ++index)
-            _membership_words[index].store(0, std::memory_order_relaxed);
+        uint64_t counters = 64;
+        while (counters < capacity * 8)
+            counters <<= 1;
+        _membership_counter_count = counters;
+        _membership_counters = std::make_unique<std::atomic<uint8_t>[]>(_membership_counter_count);
+        for (uint64_t index = 0; index < _membership_counter_count; ++index)
+            _membership_counters[index].store(0, std::memory_order_relaxed);
     }
     if (_clock_enabled)
     {
@@ -295,26 +298,63 @@ void MeritMemoryPool<T>::init(uint64_t capacity, uint64_t aligned_dim, uint64_t 
     }
 }
 
+namespace
+{
+inline void membership_positions(uint32_t node_id, uint64_t mask, uint64_t &a, uint64_t &b)
+{
+    uint64_t h = static_cast<uint64_t>(node_id) * 0x9E3779B97F4A7C15ULL;
+    h ^= h >> 29;
+    a = h & mask;
+    b = (h >> 32) & mask;
+    if (b == a)
+        b = (a + 1) & mask;
+}
+} // namespace
+
 template <typename T> bool MeritMemoryPool<T>::membership_maybe_contains(uint32_t node_id) const
 {
-    if (!_fast_miss_enabled || _membership_words == nullptr || node_id >= _node_count)
+    if (!_fast_miss_enabled || _membership_counters == nullptr)
         return true;
-    const uint64_t word = _membership_words[node_id >> 6].load(std::memory_order_acquire);
-    return (word & (uint64_t{1} << (node_id & 63))) != 0;
+    uint64_t a, b;
+    membership_positions(node_id, _membership_counter_count - 1, a, b);
+    return _membership_counters[a].load(std::memory_order_acquire) != 0 &&
+           _membership_counters[b].load(std::memory_order_acquire) != 0;
 }
 
+// Callers must pair each set with exactly one clear (set only on a fresh insert).
+// A counter that reaches 255 stays saturated, which can only cause false positives.
 template <typename T> void MeritMemoryPool<T>::membership_set(uint32_t node_id)
 {
-    if (!_fast_miss_enabled || _membership_words == nullptr || node_id >= _node_count)
+    if (!_fast_miss_enabled || _membership_counters == nullptr)
         return;
-    _membership_words[node_id >> 6].fetch_or(uint64_t{1} << (node_id & 63), std::memory_order_release);
+    uint64_t pos[2];
+    membership_positions(node_id, _membership_counter_count - 1, pos[0], pos[1]);
+    for (uint64_t p : pos)
+    {
+        uint8_t v = _membership_counters[p].load(std::memory_order_relaxed);
+        while (v != 255 && !_membership_counters[p].compare_exchange_weak(v, static_cast<uint8_t>(v + 1),
+                                                                          std::memory_order_release,
+                                                                          std::memory_order_relaxed))
+        {
+        }
+    }
 }
 
 template <typename T> void MeritMemoryPool<T>::membership_clear(uint32_t node_id)
 {
-    if (!_fast_miss_enabled || _membership_words == nullptr || node_id >= _node_count)
+    if (!_fast_miss_enabled || _membership_counters == nullptr)
         return;
-    _membership_words[node_id >> 6].fetch_and(~(uint64_t{1} << (node_id & 63)), std::memory_order_release);
+    uint64_t pos[2];
+    membership_positions(node_id, _membership_counter_count - 1, pos[0], pos[1]);
+    for (uint64_t p : pos)
+    {
+        uint8_t v = _membership_counters[p].load(std::memory_order_relaxed);
+        while (v != 0 && v != 255 &&
+               !_membership_counters[p].compare_exchange_weak(v, static_cast<uint8_t>(v - 1),
+                                                              std::memory_order_release, std::memory_order_relaxed))
+        {
+        }
+    }
 }
 
 template <typename T> bool MeritMemoryPool<T>::ghost_admitted_slot(uint32_t slot) const
@@ -1117,8 +1157,8 @@ void MeritMemoryPool<T>::commit_initial_load(const std::vector<uint32_t> &node_i
                                              const std::vector<uint64_t> &importance)
 {
     (void)importance;
-    for (uint64_t index = 0; index < _membership_word_count; ++index)
-        _membership_words[index].store(0, std::memory_order_relaxed);
+    for (uint64_t index = 0; index < _membership_counter_count; ++index)
+        _membership_counters[index].store(0, std::memory_order_relaxed);
     for (Shard &shard : _shards)
     {
         std::lock_guard<MeritNcacheMutex> lock(shard.mu);
@@ -1142,6 +1182,7 @@ void MeritMemoryPool<T>::commit_initial_load(const std::vector<uint32_t> &node_i
         Shard &shard = _shards[shard_index(node_id)];
         const uint32_t slot = static_cast<uint32_t>(i);
         _slots[slot].node_id = node_id;
+        const bool fresh = shard.id_to_slot.find(node_id) == shard.id_to_slot.end();
         shard.id_to_slot[node_id] = slot;
         _slots[slot].prev = shard.lru_tail;
         if (shard.lru_tail != INVALID_NODE)
@@ -1149,7 +1190,8 @@ void MeritMemoryPool<T>::commit_initial_load(const std::vector<uint32_t> &node_i
         else
             shard.lru_head = slot;
         shard.lru_tail = slot;
-        membership_set(node_id);
+        if (fresh)
+            membership_set(node_id);
     }
     {
         std::lock_guard<std::mutex> free_lock(_free_slots_mu);
@@ -1191,7 +1233,6 @@ uint32_t MeritMemoryPool<T>::try_admit(uint32_t node_id, const char *node_disk_b
     if (existing != shard.id_to_slot.end())
     {
         touch_or_mark_unlocked(shard, existing->second);
-        membership_set(node_id);
         return finish(INVALID_NODE, false);
     }
 

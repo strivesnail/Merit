@@ -33,6 +33,22 @@
 
 namespace po = boost::program_options;
 
+static void log_rss(const char *stage)
+{
+#ifndef _WINDOWS
+    std::ifstream status("/proc/self/status");
+    std::string line, rss, hwm;
+    while (std::getline(status, line))
+    {
+        if (line.rfind("VmRSS:", 0) == 0)
+            rss = line.substr(6);
+        else if (line.rfind("VmHWM:", 0) == 0)
+            hwm = line.substr(6);
+    }
+    diskann::cout << "MEM_STAGE " << stage << " rss=" << rss << " hwm=" << hwm << std::endl;
+#endif
+}
+
 void print_stats(std::string category, std::vector<float> percentiles, std::vector<float> results)
 {
     diskann::cout << std::setw(20) << category << ": " << std::flush;
@@ -133,6 +149,7 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
     {
         return res;
     }
+    log_rss("after_load");
 
     if (enable_access_profile)
     {
@@ -241,6 +258,14 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
         {
             diskann::cout << "MERIT memory pool: runtime admit/evict enabled (prefer num_threads=1)." << std::endl;
         }
+        if (num_nodes_to_cache > 0 && (dyn3_cache || ncache_only))
+        {
+            std::vector<uint32_t> static_list;
+            diskann::cout << "MERIT static BFS cache: " << num_nodes_to_cache << " nodes around medoid(s)"
+                          << std::endl;
+            _pFlashIndex->cache_bfs_levels(num_nodes_to_cache, static_list);
+            _pFlashIndex->load_cache_list(static_list);
+        }
     }
     else
     {
@@ -253,6 +278,7 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
     }
     node_list.clear();
     node_list.shrink_to_fit();
+    log_rss("after_ncache");
 
     if (merit_disk_cache_ratio > 0.0)
     {
@@ -331,6 +357,7 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
         }
     }
 
+    log_rss("after_static_dcache");
     {
         const char *dyn_env = std::getenv("MERIT_DYNAMIC_3CACHE");
         if (dyn_env != nullptr && std::strcmp(dyn_env, "0") != 0)
@@ -340,6 +367,7 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
                           << std::endl;
         }
     }
+    log_rss("after_dyn_init");
 
     omp_set_num_threads(num_threads);
 
@@ -888,6 +916,7 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
         delete[] stats;
     }
 
+    log_rss("after_search");
     diskann::cout << "Done searching. Now saving results " << std::endl;
     uint64_t test_id = 0;
     for (auto L : Lvec)

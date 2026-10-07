@@ -214,7 +214,7 @@ template <typename T> class MeritMemoryPool
     }
     uint64_t fast_miss_bitmap_bytes() const
     {
-        return _membership_word_count * sizeof(uint64_t);
+        return _membership_counter_count * sizeof(uint8_t);
     }
     uint64_t fast_miss_bypasses() const
     {
@@ -419,11 +419,12 @@ template <typename T> class MeritMemoryPool
     bool _shadow_controller_ready = false;
     size_t _shadow_candidate_mode = 3;
     uint32_t _shadow_candidate_windows = 0;
-    std::unique_ptr<std::atomic<uint64_t>[]> _membership_words;
+    // Counting Bloom filter over resident node ids, sized to the cache capacity rather than the index.
+    std::unique_ptr<std::atomic<uint8_t>[]> _membership_counters;
     std::unique_ptr<std::atomic<uint8_t>[]> _recently_accessed;
     std::unique_ptr<std::atomic<uint64_t>[]> _ghost_admitted_slot_words;
     std::unique_ptr<std::atomic<uint64_t>[]> _ghost_admitted_hit_words;
-    uint64_t _membership_word_count = 0;
+    uint64_t _membership_counter_count = 0;
     uint64_t _ghost_slot_word_count = 0;
     std::atomic<uint64_t> _fast_miss_bypasses{0};
     std::atomic<uint64_t> _clock_second_chances{0};

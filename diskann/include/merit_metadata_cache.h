@@ -77,8 +77,9 @@ class MeritMetadataCache
     }
 
     TouchResult on_expand(uint32_t node_id, const std::atomic<float> &score_unit);
-    TouchResult on_edge(uint32_t parent, uint32_t child);
-    TouchResult on_real_io_edge(uint32_t parent, uint32_t child, size_t max_edges = 64);
+    // Edge heat grows by the current forward-decay unit, stochastically rounded to an integer.
+    TouchResult on_edge(uint32_t parent, uint32_t child, float unit = 1.0f);
+    TouchResult on_real_io_edge(uint32_t parent, uint32_t child, size_t max_edges = 64, float unit = 1.0f);
     UpdateDecision plan_expand_update(uint32_t node_id, bool force_update = false,
                                       bool suppress_update = false);
     void on_query_end();
@@ -113,7 +114,10 @@ class MeritMetadataCache
     float score(uint32_t node_id) const;
     float score_at(uint32_t slot_id) const;
     bool set_evictable(uint32_t node_id, bool evictable);
+    // Scales node scores and (unless MERIT_EDGE_HEAT_DECAY=0) edge heat, dropping edges that reach zero.
     void scale_scores(float factor, std::atomic<float> &score_unit, float next_score_unit);
+    uint64_t edge_saturations() const;
+    bool edge_saturation_pending() const;
     bool snapshot(uint32_t node_id, Snapshot &out) const;
 
   private:
@@ -144,6 +148,11 @@ class MeritMetadataCache
             uint8_t &value = _bytes[sizeof(uint32_t)];
             if (value < std::numeric_limits<uint8_t>::max())
                 ++value;
+        }
+
+        void set_heat(uint8_t heat)
+        {
+            _bytes[sizeof(uint32_t)] = heat;
         }
 
       private:
@@ -185,6 +194,8 @@ class MeritMetadataCache
     uint32_t evict_one_unlocked(Shard &shard, size_t shard_id, uint32_t &evicted_slot,
                                 uint32_t &reclaimed_local_slot);
     TouchResult touch_or_insert_unlocked(Shard &shard, size_t shard_id, uint32_t node_id, float score_delta);
+    uint8_t edge_increment(float unit) const;
+    void add_edge_heat_unlocked(Edge &edge, uint8_t increment);
 
     std::array<std::unique_ptr<Shard>, kShardCount> _shards;
     std::atomic<uint64_t> _capacity{0};
@@ -194,6 +205,10 @@ class MeritMetadataCache
     std::atomic<uint32_t> _slot_stride{0};
     std::atomic<uint8_t> _sig_t{kDefaultSigT};
     bool _adaptive_update_enabled = false;
+    bool _edge_heat_decay = true;
+    size_t _max_edges = 64;
+    std::atomic<uint64_t> _edge_saturations{0};
+    std::atomic<bool> _edge_saturation_pending{false};
     uint64_t _node_count = 0;
     std::unique_ptr<std::atomic<uint64_t>[]> _membership_words;
     uint64_t _membership_word_count = 0;

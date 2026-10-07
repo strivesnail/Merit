@@ -84,6 +84,13 @@ void MeritMetadataCache::init(uint64_t capacity, uint8_t sig_threshold, uint64_t
     const char *adaptive_update = std::getenv("MERIT_MCACHE_ADAPTIVE_UPDATE");
     _adaptive_update_enabled =
         adaptive_update != nullptr && std::strtoull(adaptive_update, nullptr, 10) != 0;
+    const char *edge_heat_decay = std::getenv("MERIT_EDGE_HEAT_DECAY");
+    _edge_heat_decay = edge_heat_decay == nullptr || std::strtoull(edge_heat_decay, nullptr, 10) != 0;
+    const char *max_edges = std::getenv("MERIT_MCACHE_MAX_EDGES");
+    _max_edges = max_edges == nullptr
+                     ? 64
+                     : static_cast<size_t>(std::max<unsigned long long>(
+                           1, std::min<unsigned long long>(256, std::strtoull(max_edges, nullptr, 10))));
     _node_count = node_count;
     if (_adaptive_update_enabled && _node_count > 0)
     {
@@ -460,7 +467,7 @@ uint64_t MeritMetadataCache::adaptive_transition_count() const
     return _adaptive_transitions;
 }
 
-MeritMetadataCache::TouchResult MeritMetadataCache::on_edge(uint32_t parent, uint32_t child)
+MeritMetadataCache::TouchResult MeritMetadataCache::on_edge(uint32_t parent, uint32_t child, float unit)
 {
     thread_local std::mt19937 rng{std::random_device{}()};
     TouchResult r;
@@ -481,23 +488,34 @@ MeritMetadataCache::TouchResult MeritMetadataCache::on_edge(uint32_t parent, uin
     if (eit == shard.node_to_slot.end())
         return r;
     std::vector<Edge> &edges = shard.edges_by_slot[eit->second];
+    const uint8_t increment = edge_increment(unit);
 
     for (Edge &edge : edges)
     {
         if (edge.child() == child)
         {
-            edge.bump_heat();
+            add_edge_heat_unlocked(edge, increment);
             return r;
         }
     }
 
-    edges.emplace_back(child, 1);
-    _total_edges.fetch_add(1, std::memory_order_relaxed);
+    if (edges.size() < _max_edges)
+    {
+        edges.emplace_back(child, increment);
+        _total_edges.fetch_add(1, std::memory_order_relaxed);
+        return r;
+    }
+
+    auto weakest = std::min_element(edges.begin(), edges.end(),
+                                    [](const Edge &a, const Edge &b) { return a.heat() < b.heat(); });
+    const uint8_t inherited_heat = weakest->heat();
+    *weakest = Edge(child, inherited_heat);
+    add_edge_heat_unlocked(*weakest, increment);
     return r;
 }
 
 MeritMetadataCache::TouchResult MeritMetadataCache::on_real_io_edge(uint32_t parent, uint32_t child,
-                                                                    size_t max_edges)
+                                                                    size_t max_edges, float unit)
 {
     TouchResult r;
     if (parent == child || max_edges == 0)
@@ -514,18 +532,19 @@ MeritMetadataCache::TouchResult MeritMetadataCache::on_real_io_edge(uint32_t par
     if (parent_it == shard.node_to_slot.end())
         return r;
     std::vector<Edge> &edges = shard.edges_by_slot[parent_it->second];
+    const uint8_t increment = edge_increment(unit);
     for (Edge &edge : edges)
     {
         if (edge.child() == child)
         {
-            edge.bump_heat();
+            add_edge_heat_unlocked(edge, increment);
             return r;
         }
     }
 
     if (edges.size() < max_edges)
     {
-        edges.emplace_back(child, 1);
+        edges.emplace_back(child, increment);
         _total_edges.fetch_add(1, std::memory_order_relaxed);
         return r;
     }
@@ -534,7 +553,7 @@ MeritMetadataCache::TouchResult MeritMetadataCache::on_real_io_edge(uint32_t par
                                     [](const Edge &a, const Edge &b) { return a.heat() < b.heat(); });
     const uint8_t inherited_heat = weakest->heat();
     *weakest = Edge(child, inherited_heat);
-    weakest->bump_heat();
+    add_edge_heat_unlocked(*weakest, increment);
     return r;
 }
 
@@ -656,7 +675,68 @@ void MeritMetadataCache::scale_scores(float factor, std::atomic<float> &score_un
             shard.scores[local_slot] *= factor;
         }
     }
+    if (_edge_heat_decay)
+    {
+        // Fixed-point floor so that heat-1 edges reach zero for any divisor >= 2.
+        const uint32_t mul = static_cast<uint32_t>(factor * 65536.0f);
+        uint64_t removed_edges = 0;
+        for (size_t shard_id = 0; shard_id < kShardCount; ++shard_id)
+        {
+            Shard &shard = *_shards[shard_id];
+            for (auto it = shard.node_to_slot.begin(); it != shard.node_to_slot.end(); ++it)
+            {
+                std::vector<Edge> &edges = shard.edges_by_slot[it->second];
+                size_t kept = 0;
+                for (size_t index = 0; index < edges.size(); ++index)
+                {
+                    edges[index].set_heat(static_cast<uint8_t>((edges[index].heat() * mul) >> 16));
+                    if (edges[index].heat() != 0)
+                        edges[kept++] = edges[index];
+                }
+                removed_edges += edges.size() - kept;
+                edges.resize(kept);
+            }
+        }
+        if (removed_edges != 0)
+            _total_edges.fetch_sub(removed_edges, std::memory_order_relaxed);
+        _edge_saturation_pending.store(false, std::memory_order_relaxed);
+    }
     score_unit.store(next_score_unit, std::memory_order_release);
+}
+
+uint64_t MeritMetadataCache::edge_saturations() const
+{
+    return _edge_saturations.load(std::memory_order_relaxed);
+}
+
+bool MeritMetadataCache::edge_saturation_pending() const
+{
+    return _edge_saturation_pending.load(std::memory_order_relaxed);
+}
+
+uint8_t MeritMetadataCache::edge_increment(float unit) const
+{
+    if (!_edge_heat_decay || unit <= 1.0f)
+        return 1;
+    thread_local std::mt19937 rng{std::random_device{}()};
+    const float whole = std::floor(unit);
+    const float frac = unit - whole;
+    const bool round_up = frac > 0.0f && static_cast<float>(rng() >> 8) * (1.0f / 16777216.0f) < frac;
+    return static_cast<uint8_t>(std::min(255.0f, whole + (round_up ? 1.0f : 0.0f)));
+}
+
+void MeritMetadataCache::add_edge_heat_unlocked(Edge &edge, uint8_t increment)
+{
+    const uint32_t next = static_cast<uint32_t>(edge.heat()) + increment;
+    if (next > std::numeric_limits<uint8_t>::max())
+    {
+        edge.set_heat(std::numeric_limits<uint8_t>::max());
+        _edge_saturations.fetch_add(1, std::memory_order_relaxed);
+        if (_edge_heat_decay)
+            _edge_saturation_pending.store(true, std::memory_order_relaxed);
+        return;
+    }
+    edge.set_heat(static_cast<uint8_t>(next));
 }
 
 bool MeritMetadataCache::snapshot(uint32_t node_id, Snapshot &out) const

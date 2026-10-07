@@ -12,17 +12,29 @@
 namespace diskann
 {
 
+// The per-node counters take 24 bytes per point (24 GB at 1B points), so they are
+// allocated only while profiling is enabled.
+static void alloc_counters(std::unique_ptr<std::atomic<uint64_t>[]> &a, uint64_t n)
+{
+    a = std::make_unique<std::atomic<uint64_t>[]>(n);
+    for (uint64_t i = 0; i < n; i++)
+        a[i].store(0, std::memory_order_relaxed);
+}
+
 void HotnessProfiler::init(uint64_t num_points)
 {
     _num_points = num_points;
-    _node_expand = std::make_unique<std::atomic<uint64_t>[]>(num_points);
-    _node_visit = std::make_unique<std::atomic<uint64_t>[]>(num_points);
-    _node_out_heat = std::make_unique<std::atomic<uint64_t>[]>(num_points);
-    for (uint64_t i = 0; i < num_points; i++)
+    if (_enabled)
     {
-        _node_expand[i].store(0, std::memory_order_relaxed);
-        _node_visit[i].store(0, std::memory_order_relaxed);
-        _node_out_heat[i].store(0, std::memory_order_relaxed);
+        alloc_counters(_node_expand, num_points);
+        alloc_counters(_node_visit, num_points);
+        alloc_counters(_node_out_heat, num_points);
+    }
+    else
+    {
+        _node_expand.reset();
+        _node_visit.reset();
+        _node_out_heat.reset();
     }
     std::lock_guard<std::mutex> lock(_edge_mutex);
     _directed_edges.clear();
@@ -39,6 +51,12 @@ void HotnessProfiler::reset()
 
 void HotnessProfiler::set_enabled(bool enabled)
 {
+    if (enabled && !_node_expand && _num_points > 0)
+    {
+        alloc_counters(_node_expand, _num_points);
+        alloc_counters(_node_visit, _num_points);
+        alloc_counters(_node_out_heat, _num_points);
+    }
     _enabled = enabled;
 }
 
@@ -107,6 +125,8 @@ static void print_count_cdf(const std::string &name, std::vector<uint64_t> count
 
 void HotnessProfiler::print_cdf_summary() const
 {
+    if (!_node_expand)
+        return;
     std::vector<uint64_t> node_counts;
     node_counts.reserve(_num_points);
     for (uint64_t i = 0; i < _num_points; i++)
@@ -158,6 +178,8 @@ void HotnessProfiler::print_cdf_summary() const
 
 int HotnessProfiler::save(const std::string &output_prefix) const
 {
+    if (!_node_expand)
+        return -1;
     std::vector<uint64_t> node_counts(_num_points, 0);
     for (uint64_t i = 0; i < _num_points; i++)
     {
