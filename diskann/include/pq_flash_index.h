@@ -386,6 +386,7 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
         uint16_t retained_members = 0;
         MeritPendingFlush snap;
         bool committing = false;
+        bool queued = false;
     };
 
     struct MeritPayloadStashEntry
@@ -851,6 +852,7 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
     std::vector<std::thread> _merit_commit_threads;
     size_t _merit_commit_thread_count = 1;
     size_t _merit_commit_q_cap = 256;
+    bool _merit_commit_inline = false;
     std::atomic<bool> _merit_commit_stop{true};
     bool _merit_commit_started = false;
     std::atomic<uint64_t> _merit_commit_enqueued{0};
@@ -858,6 +860,7 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
     std::atomic<uint64_t> _merit_commit_dropped{0};
     std::atomic<uint64_t> _merit_commit_completed{0};
     std::atomic<uint64_t> _merit_commit_failed{0};
+    std::array<std::atomic<uint64_t>, 6> _merit_commit_fail_why{};
     std::atomic<uint64_t> _merit_commit_queue_ns{0};
     std::atomic<uint64_t> _merit_commit_work_ns{0};
     std::array<std::atomic<uint64_t>, 3> _merit_commit_source_enqueued{};

@@ -4290,7 +4290,8 @@ void PQFlashIndex<T, LabelT>::merit_dyn_loc_add_unlocked(uint32_t node_id, const
     for (const MeritDiskLoc &candidate : locations)
         if (candidate.sector == loc.sector && candidate.slot == loc.slot)
             return;
-    locations.push_back(loc);
+    // Lookup takes the first live location; newest pages carry the current co-access group.
+    locations.insert(locations.begin(), loc);
 }
 
 template <typename T, typename LabelT>
@@ -4921,6 +4922,7 @@ void PQFlashIndex<T, LabelT>::enable_merit_dynamic_3cache(bool enable, const std
             "MERIT_DCACHE_COMMIT_THREADS", _merit_dyn_writer_thread_count))));
     _merit_commit_q_cap = static_cast<size_t>(
         std::max<uint64_t>(8, std::min<uint64_t>(65536, merit_env_u64("MERIT_DCACHE_COMMIT_QUEUE", 256))));
+    _merit_commit_inline = merit_env_u64("MERIT_DCACHE_COMMIT_INLINE", 0) != 0;
     _merit_dyn_writer_enqueued.store(0, std::memory_order_relaxed);
     _merit_dyn_writer_queue_ns.store(0, std::memory_order_relaxed);
     _merit_dyn_writer_io_ns.store(0, std::memory_order_relaxed);
@@ -5651,7 +5653,13 @@ template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::print_merit
                   << " enqueued=" << _merit_commit_enqueued.load(std::memory_order_relaxed)
                   << " coalesced=" << _merit_commit_coalesced.load(std::memory_order_relaxed)
                   << " dropped=" << _merit_commit_dropped.load(std::memory_order_relaxed)
-                  << " completed=" << commit_done << " failed=" << commit_failed
+                  << " completed=" << commit_done << " failed=" << commit_failed << " fail_why(missing/notfull/slot/score/payload/write)="
+                  << _merit_commit_fail_why[0].load(std::memory_order_relaxed) << "/"
+                  << _merit_commit_fail_why[1].load(std::memory_order_relaxed) << "/"
+                  << _merit_commit_fail_why[2].load(std::memory_order_relaxed) << "/"
+                  << _merit_commit_fail_why[3].load(std::memory_order_relaxed) << "/"
+                  << _merit_commit_fail_why[4].load(std::memory_order_relaxed) << "/"
+                  << _merit_commit_fail_why[5].load(std::memory_order_relaxed)
                   << " queue_us="
                   << (commit_attempted == 0
                           ? 0.0
@@ -6581,7 +6589,7 @@ void PQFlashIndex<T, LabelT>::merit_dyn_clear_ready_pair_unlocked(uint32_t inser
     auto pair_it = _merit_ready_pairs.find(insertion_slot);
     if (pair_it == _merit_ready_pairs.end())
         return;
-    if (restore_states && pair_it->second.committing)
+    if (restore_states && (pair_it->second.committing || pair_it->second.queued))
         return;
 
     MeritReadyPair pair = std::move(pair_it->second);
@@ -6996,6 +7004,32 @@ bool PQFlashIndex<T, LabelT>::merit_dyn_enqueue_ready_pair(uint32_t insertion_sl
         merit_dcache_updates_frozen())
         return false;
 
+    if (_merit_commit_inline)
+    {
+        _merit_commit_enqueued.fetch_add(1, std::memory_order_relaxed);
+        _merit_commit_source_enqueued[static_cast<size_t>(source)].fetch_add(1, std::memory_order_relaxed);
+        if (merit_dyn_commit_ready_pair(insertion_slot))
+        {
+            _merit_commit_completed.fetch_add(1, std::memory_order_relaxed);
+            _merit_commit_source_completed[static_cast<size_t>(source)].fetch_add(1, std::memory_order_relaxed);
+            return true;
+        }
+        _merit_commit_failed.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+
+    auto set_queued = [this, insertion_slot](bool queued) {
+        MeritTimedSharedMutexGuard plock(_merit_pair_mu, MeritLockKind::Pair, true);
+        auto pair_it = _merit_ready_pairs.find(insertion_slot);
+        if (pair_it == _merit_ready_pairs.end() || pair_it->second.committing)
+            return false;
+        pair_it.value().queued = queued;
+        return true;
+    };
+    if (!set_queued(true))
+        return false;
+
+    bool dropped = false;
     {
         std::lock_guard<std::mutex> lock(_merit_commit_q_mu);
         if (_merit_commit_pending_slots.find(insertion_slot) != _merit_commit_pending_slots.end())
@@ -7003,10 +7037,21 @@ bool PQFlashIndex<T, LabelT>::merit_dyn_enqueue_ready_pair(uint32_t insertion_sl
             _merit_commit_coalesced.fetch_add(1, std::memory_order_relaxed);
             return true;
         }
-        if (_merit_commit_q.size() >= _merit_commit_q_cap)
-        {
+        dropped = _merit_commit_q.size() >= _merit_commit_q_cap;
+        if (dropped)
             _merit_commit_dropped.fetch_add(1, std::memory_order_relaxed);
-            return false;
+    }
+    if (dropped)
+    {
+        set_queued(false);
+        return false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(_merit_commit_q_mu);
+        if (_merit_commit_pending_slots.find(insertion_slot) != _merit_commit_pending_slots.end())
+        {
+            _merit_commit_coalesced.fetch_add(1, std::memory_order_relaxed);
+            return true;
         }
         MeritPairCommitJob job;
         job.insertion_slot = insertion_slot;
@@ -7116,24 +7161,33 @@ template <typename T, typename LabelT> bool PQFlashIndex<T, LabelT>::merit_dyn_c
         MeritTimedSharedMutexGuard plock(_merit_pair_mu, MeritLockKind::Pair, true);
         auto pair_it = _merit_ready_pairs.find(insertion_slot);
         if (pair_it == _merit_ready_pairs.end() || pair_it->second.committing)
+        {
+            _merit_commit_fail_why[0].fetch_add(1, std::memory_order_relaxed);
             return false;
+        }
+        pair_it.value().queued = false;
         const MeritReadyPair &candidate = pair_it->second;
         const size_t page_capacity = static_cast<size_t>(
             (_nnodes_per_sector > 0) ? _nnodes_per_sector : 1);
         if (_merit_pending_require_full_page &&
             candidate.snap.member_ids.size() < page_capacity)
+        {
+            _merit_commit_fail_why[1].fetch_add(1, std::memory_order_relaxed);
             return false;
+        }
         const float insertion_score = _merit_mcache.score_at(candidate.insertion_slot);
         if (_merit_mcache.node_at(candidate.insertion_slot) != candidate.insertion_id ||
             (candidate.deletion_id != std::numeric_limits<uint32_t>::max() &&
              _merit_mcache.node_at(candidate.deletion_slot) != candidate.deletion_id))
         {
+            _merit_commit_fail_why[2].fetch_add(1, std::memory_order_relaxed);
             merit_dyn_clear_ready_pair_unlocked(insertion_slot);
             return false;
         }
         if (candidate.deletion_id != std::numeric_limits<uint32_t>::max() &&
             insertion_score <= _merit_mcache.score_at(candidate.deletion_slot))
         {
+            _merit_commit_fail_why[3].fetch_add(1, std::memory_order_relaxed);
             merit_dyn_clear_ready_pair_unlocked(insertion_slot);
             return false;
         }
@@ -7172,6 +7226,7 @@ template <typename T, typename LabelT> bool PQFlashIndex<T, LabelT>::merit_dyn_c
         }
         if (pf.member_coords.size() != pf.member_ids.size())
         {
+            _merit_commit_fail_why[4].fetch_add(1, std::memory_order_relaxed);
             MeritTimedSharedMutexGuard plock(_merit_pair_mu, MeritLockKind::Pair, true);
             auto pair_it = _merit_ready_pairs.find(insertion_slot);
             if (pair_it != _merit_ready_pairs.end())
@@ -7188,9 +7243,13 @@ template <typename T, typename LabelT> bool PQFlashIndex<T, LabelT>::merit_dyn_c
         MeritTimedSharedMutexGuard plock(_merit_pair_mu, MeritLockKind::Pair, true);
         auto pair_it = _merit_ready_pairs.find(insertion_slot);
         if (pair_it == _merit_ready_pairs.end())
+        {
+            _merit_commit_fail_why[0].fetch_add(1, std::memory_order_relaxed);
             return false;
+        }
         if (!wrote)
         {
+            _merit_commit_fail_why[5].fetch_add(1, std::memory_order_relaxed);
             pair_it.value().committing = false;
             merit_dyn_clear_ready_pair_unlocked(insertion_slot);
             return false;
@@ -7641,7 +7700,7 @@ template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::merit_dyn_t
             for (uint32_t insertion_slot : dependent_slots)
             {
                 const auto pair_it = _merit_ready_pairs.find(insertion_slot);
-                if (pair_it != _merit_ready_pairs.end() && pair_it->second.committing)
+                if (pair_it != _merit_ready_pairs.end() && (pair_it->second.committing || pair_it->second.queued))
                     return;
             }
             for (uint32_t insertion_slot : dependent_slots)
