@@ -19,8 +19,24 @@
 #include "timer.h"
 #include "tsl/robin_set.h"
 
+#include <dlfcn.h>
+#include <malloc.h>
+
 namespace diskann
 {
+
+// tcmalloc keeps freed shard graphs in its cache, so a long build's RSS climbs
+// until the OOM killer fires. Return that cache to the OS after each shard.
+static void release_build_heap()
+{
+    using Fn = void (*)();
+    static Fn release = reinterpret_cast<Fn>(dlsym(RTLD_DEFAULT, "MallocExtension_ReleaseFreeMemory"));
+    if (release != nullptr)
+        release();
+    else
+        malloc_trim(0);
+}
+
 
 void add_new_file_to_single_index(std::string index_file, std::string new_file)
 {
@@ -338,11 +354,25 @@ int merge_shards(const std::string &vamana_prefix, const std::string &vamana_suf
         mapping_writer.close();
     }
 
+    // Cap total reader cache so many shards do not OOM (default 1GiB/shard × 47 ≈ 47GiB).
+    // Prefer streaming from disk: keep a small per-shard buffer, total budget ~8GiB.
+    const size_t merge_cache_budget = []() -> size_t {
+        if (const char *e = getenv("DISKANN_MERGE_CACHE_BUDGET_MB"))
+            return (size_t)std::max(64, atoi(e)) * (size_t)1048576;
+        return (size_t)8 * (size_t)1048576 * (size_t)1024;
+    }();
+    const size_t per_shard_cache = std::max(
+        (size_t)4 * (size_t)1048576,
+        std::min(BUFFER_SIZE_FOR_CACHED_IO, merge_cache_budget / std::max<size_t>(1, (size_t)nshards)));
+    const size_t writer_cache = std::min(BUFFER_SIZE_FOR_CACHED_IO, (size_t)256 * (size_t)1048576);
+    diskann::cout << "merge_shards: nshards=" << nshards << " per_shard_cache_MB=" << (per_shard_cache / 1048576)
+                  << " writer_cache_MB=" << (writer_cache / 1048576) << std::endl;
+
     // create cached vamana readers
     std::vector<cached_ifstream> vamana_readers(nshards);
     for (size_t i = 0; i < nshards; i++)
     {
-        vamana_readers[i].open(vamana_names[i], BUFFER_SIZE_FOR_CACHED_IO);
+        vamana_readers[i].open(vamana_names[i], per_shard_cache);
         size_t expected_file_size;
         vamana_readers[i].read((char *)&expected_file_size, sizeof(uint64_t));
     }
@@ -352,7 +382,7 @@ int merge_shards(const std::string &vamana_prefix, const std::string &vamana_suf
                                                                                    // medoid_id + frozen_point info
 
     // create cached vamana writers
-    cached_ofstream merged_vamana_writer(output_vamana, BUFFER_SIZE_FOR_CACHED_IO);
+    cached_ofstream merged_vamana_writer(output_vamana, writer_cache);
 
     size_t merged_index_size = vamana_metadata_size; // we initialize the size of the merged index to
                                                      // the metadata size
@@ -687,8 +717,19 @@ int build_merged_vamana_index(std::string base_file, diskann::Metric compareMetr
     std::string merged_index_prefix = mem_index_path + "_tempFiles";
 
     Timer timer;
-    int num_parts =
-        partition_with_ram_budget<T>(base_file, sampling_rate, ram_budget, 2 * R / 3, merged_index_prefix, 2);
+    // DISKANN_BUILD_RESUME: reuse the shard id files of an interrupted build (shards may have been split
+    // offline, so count the files) and skip shards whose index was already saved.
+    const bool resume_build = getenv("DISKANN_BUILD_RESUME") != nullptr;
+    int num_parts = 0;
+    if (resume_build && file_exists(merged_index_prefix + "_subshard-0_ids_uint32.bin"))
+    {
+        while (file_exists(merged_index_prefix + "_subshard-" + std::to_string(num_parts) + "_ids_uint32.bin"))
+            num_parts++;
+        diskann::cout << "DISKANN_BUILD_RESUME: reusing " << num_parts << " shard id files" << std::endl;
+    }
+    else
+        num_parts =
+            partition_with_ram_budget<T>(base_file, sampling_rate, ram_budget, 2 * R / 3, merged_index_prefix, 2);
     diskann::cout << timer.elapsed_seconds_for_step("partitioning data ") << std::endl;
 
     std::string cur_centroid_filepath = merged_index_prefix + "_centroids.bin";
@@ -697,6 +738,9 @@ int build_merged_vamana_index(std::string base_file, diskann::Metric compareMetr
     timer.reset();
     for (int p = 0; p < num_parts; p++)
     {
+        // Index must be destroyed before the heap cache is released.
+        {
+
 #if defined(DISKANN_RELEASE_UNUSED_TCMALLOC_MEMORY_AT_CHECKPOINTS) && defined(DISKANN_BUILD)
         MallocExtension::instance()->ReleaseFreeMemory();
 #endif
@@ -707,9 +751,14 @@ int build_merged_vamana_index(std::string base_file, diskann::Metric compareMetr
 
         std::string shard_labels_file = merged_index_prefix + "_subshard-" + std::to_string(p) + "_labels.txt";
 
-        retrieve_shard_data_from_ids<T>(base_file, shard_ids_file, shard_base_file);
-
         std::string shard_index_file = merged_index_prefix + "_subshard-" + std::to_string(p) + "_mem.index";
+        if (resume_build && file_exists(shard_index_file) && file_exists(shard_index_file + ".data"))
+        {
+            diskann::cout << "DISKANN_BUILD_RESUME: shard " << p << " already built" << std::endl;
+            continue;
+        }
+
+        retrieve_shard_data_from_ids<T>(base_file, shard_ids_file, shard_base_file);
 
         diskann::IndexWriteParameters low_degree_params = diskann::IndexWriteParametersBuilder(L, 2 * R / 3)
                                                               .with_filter_list_size(Lf)
@@ -751,6 +800,9 @@ int build_merged_vamana_index(std::string base_file, diskann::Metric compareMetr
         }
 
         std::remove(shard_base_file.c_str());
+        }
+        release_build_heap();
+        diskann::cout << "released heap after shard " << p << std::endl;
     }
     diskann::cout << timer.elapsed_seconds_for_step("building indices on shards") << std::endl;
 
@@ -1489,8 +1541,13 @@ int build_disk_index(const char *dataFilePath, const char *indexFilePath, const 
     diskann::cout << "Compressing " << dim << "-dimensional data into " << num_pq_chunks << " bytes per vector."
                   << std::endl;
 
-    generate_quantized_data<T>(data_file_to_use, pq_pivots_path, pq_compressed_vectors_path, compareMetric, p_val,
-                               num_pq_chunks, use_opq, codebook_prefix);
+    const bool resume_build = getenv("DISKANN_BUILD_RESUME") != nullptr;
+    if (resume_build && file_exists(pq_pivots_path) && file_exists(pq_compressed_vectors_path) &&
+        get_file_size(pq_compressed_vectors_path) == 8 + (uint64_t)points_num * num_pq_chunks)
+        diskann::cout << "DISKANN_BUILD_RESUME: reusing " << pq_compressed_vectors_path << std::endl;
+    else
+        generate_quantized_data<T>(data_file_to_use, pq_pivots_path, pq_compressed_vectors_path, compareMetric, p_val,
+                                   num_pq_chunks, use_opq, codebook_prefix);
     diskann::cout << timer.elapsed_seconds_for_step("generating quantized data") << std::endl;
 
 // Gopal. Splitting diskann_dll into separate DLLs for search and build.

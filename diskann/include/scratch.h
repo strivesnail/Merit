@@ -4,6 +4,7 @@
 #pragma once
 
 #include <array>
+#include <deque>
 #include <vector>
 
 #include "boost_dynamic_bitset_fwd.h"
@@ -155,6 +156,8 @@ template <typename T> class SSDQueryScratch : public AbstractScratch<T>
     tsl::robin_map<uint32_t, uint64_t> merit_dcache_loc_cache;
     // Same-query members already packed when a seed page was served (prefetch buffer).
     tsl::robin_map<uint32_t, uint64_t> merit_dcache_member_packed_loc;
+    // page index -> generation last copied into merit_dcache_member_packed_loc.
+    tsl::robin_map<uint32_t, uint32_t> merit_prefetched_page_gen;
     // Query patch: seed -> members seen on a served D page, and the reverse map.
     tsl::robin_map<uint32_t, std::vector<uint32_t>> merit_dcache_seed_members;
     // Later pages of the same seed, allocated only when the previous page is full.
@@ -162,13 +165,18 @@ template <typename T> class SSDQueryScratch : public AbstractScratch<T>
     tsl::robin_set<uint32_t> merit_dyn_full_span;
     tsl::robin_map<uint32_t, uint32_t> merit_dcache_member_to_seed;
     tsl::robin_map<uint32_t, std::vector<uint32_t>> merit_dcache_patch_new;
+    tsl::robin_set<uint32_t> merit_repack_sectors;
+    uint32_t merit_repack_used = 0;
     tsl::robin_set<uint64_t> read_sectors; // distinct base _disk.index sectors (frontier reads / base sector cache)
     tsl::robin_set<uint32_t> read_merit_disk_cache_sectors; // distinct MERIT disk cache file sectors
     tsl::robin_set<uint64_t> merit_avoided_base_sectors;
     // Per-query sector cache: key = base _disk.index sector id
     tsl::robin_map<uint64_t, std::array<char, defaults::SECTOR_LEN>> sector_cache;
-    // Per-query MERIT disk cache: key = disk cache sector id (not base sector)
+    // Per-query MERIT disk cache: key = disk cache sector id (not base sector).
+    // With the shared page cache on, only dynamic D-cache sectors live here.
     tsl::robin_map<uint32_t, std::array<char, defaults::SECTOR_LEN>> merit_sector_cache;
+    // Static D-cache sectors this query read from disk itself.
+    tsl::robin_set<uint32_t> merit_fetched_sectors;
     std::vector<uint32_t> merit_dyn_pinned_sectors;
     std::vector<uint32_t> merit_heap_dirty_slots;
     std::vector<uint32_t> merit_heap_dirty_nodes;
@@ -181,10 +189,20 @@ template <typename T> class SSDQueryScratch : public AbstractScratch<T>
     uint32_t merit_dyn_physical_reads = 0;
     uint32_t merit_dyn_served_nodes = 0;
     uint32_t merit_expand_count = 0;
+    // This query was chosen for the 1/N real-IO coaccess sample.
+    bool merit_record_real_io = false;
     // Nodes actually served from base storage or D-cache, in per-query order.
     std::vector<uint32_t> merit_storage_node_order;
+    // Adjacency of each node in merit_storage_node_order: nbrs[off[i] .. off[i+1]).
+    std::vector<uint32_t> merit_storage_nbrs;
+    std::vector<uint32_t> merit_storage_nbr_off;
     // Temporal order of sector ids for cache-miss disk reads (one query)
     std::vector<uint64_t> disk_read_sector_order;
+    // Bytes copied out of the separate seed-page LRU for this hop. Deque so a
+    // later push does not move the pointers already stored in cached_nhoods.
+    std::deque<std::vector<T>> merit_seed_page_coords;
+    std::deque<std::vector<uint32_t>> merit_seed_page_nbrs;
+    tsl::robin_map<uint32_t, T *> merit_seed_page_coord_ptr;
 
     SSDQueryScratch(size_t aligned_dim, size_t visited_reserve);
     ~SSDQueryScratch();

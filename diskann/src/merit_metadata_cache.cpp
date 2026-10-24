@@ -28,11 +28,11 @@ void MeritMetadataCache::clear()
 {
     _capacity.store(0, std::memory_order_relaxed);
 
-    std::vector<std::unique_ptr<MeritTimedSharedMutexGuard>> locks;
+    std::vector<std::unique_ptr<MeritTimedSharedMutexGuard<std::shared_mutex>>> locks;
     locks.reserve(kShardCount);
     for (auto &shard : _shards)
         locks.emplace_back(
-            std::make_unique<MeritTimedSharedMutexGuard>(shard->mu, MeritLockKind::Metadata, true));
+            std::make_unique<MeritTimedSharedMutexGuard<std::shared_mutex>>(shard->mu, MeritLockKind::Metadata, true));
 
     for (auto &shard_ptr : _shards)
     {
@@ -105,11 +105,11 @@ void MeritMetadataCache::init(uint64_t capacity, uint8_t sig_threshold, uint64_t
     const uint64_t base_capacity = effective_capacity / kShardCount;
     const uint64_t extra_shards = effective_capacity % kShardCount;
 
-    std::vector<std::unique_ptr<MeritTimedSharedMutexGuard>> locks;
+    std::vector<std::unique_ptr<MeritTimedSharedMutexGuard<std::shared_mutex>>> locks;
     locks.reserve(kShardCount);
     for (auto &shard : _shards)
         locks.emplace_back(
-            std::make_unique<MeritTimedSharedMutexGuard>(shard->mu, MeritLockKind::Metadata, true));
+            std::make_unique<MeritTimedSharedMutexGuard<std::shared_mutex>>(shard->mu, MeritLockKind::Metadata, true));
 
     _sig_t.store(sig_threshold == 0 ? kDefaultSigT : sig_threshold, std::memory_order_relaxed);
     _slot_stride.store(slot_stride, std::memory_order_relaxed);
@@ -660,11 +660,11 @@ bool MeritMetadataCache::set_evictable(uint32_t node_id, bool evictable)
 
 void MeritMetadataCache::scale_scores(float factor, std::atomic<float> &score_unit, float next_score_unit)
 {
-    std::vector<std::unique_ptr<MeritTimedSharedMutexGuard>> locks;
+    std::vector<std::unique_ptr<MeritTimedSharedMutexGuard<std::shared_mutex>>> locks;
     locks.reserve(kShardCount);
     for (auto &shard : _shards)
         locks.emplace_back(
-            std::make_unique<MeritTimedSharedMutexGuard>(shard->mu, MeritLockKind::Metadata, true));
+            std::make_unique<MeritTimedSharedMutexGuard<std::shared_mutex>>(shard->mu, MeritLockKind::Metadata, true));
 
     for (size_t shard_id = 0; shard_id < kShardCount; ++shard_id)
     {

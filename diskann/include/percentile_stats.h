@@ -39,6 +39,9 @@ struct QueryStats
     unsigned n_sector_cache_hits = 0; // query-local sector cache hits (no disk read)
     unsigned n_disk_reads = 0;        // actual disk read operations (frontier misses)
     unsigned n_merit_dc_hits = 0;     // nodes served from MERIT disk-cache file
+    unsigned n_merit_sector_cache_hits = 0; // subset of n_sector_cache_hits served from cached D-cache pages
+    unsigned n_merit_disk_reads = 0;        // subset of n_disk_reads issued to the D-cache file
+    unsigned n_merit_shared_cross_hits = 0; // subset of n_merit_sector_cache_hits on pages read by other queries
     unsigned n_merit_mem_evictions = 0; // runtime evictions from MERIT memory pool
     unsigned n_merit_dyn_hits = 0;      // nodes served from runtime-flushed d-cache pages
     // Beam-time classification (one increment per expanded beam neighbor):

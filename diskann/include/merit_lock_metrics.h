@@ -91,10 +91,10 @@ class MeritTimedMutexGuard
     uint64_t _locked_at = 0;
 };
 
-class MeritTimedSharedMutexGuard
+template <typename Mutex> class MeritTimedSharedMutexGuard
 {
   public:
-    MeritTimedSharedMutexGuard(std::shared_mutex &mu, MeritLockKind kind, bool exclusive)
+    MeritTimedSharedMutexGuard(Mutex &mu, MeritLockKind kind, bool exclusive)
         : _mu(mu), _kind(kind), _exclusive(exclusive)
     {
         _sampled = merit_lock_should_sample(kind);
@@ -140,7 +140,7 @@ class MeritTimedSharedMutexGuard
     MeritTimedSharedMutexGuard &operator=(const MeritTimedSharedMutexGuard &) = delete;
 
   private:
-    std::shared_mutex &_mu;
+    Mutex &_mu;
     MeritLockKind _kind;
     bool _exclusive = false;
     bool _sampled = false;

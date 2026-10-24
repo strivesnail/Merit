@@ -3,6 +3,7 @@
 #include "common_includes.h"
 #include "utils.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstring>
@@ -877,12 +878,27 @@ template <typename T> void MeritMemoryPool<T>::bump(uint32_t node_id, uint64_t d
     touch_lru_unlocked(shard, it->second);
 }
 
-template <typename T> uint32_t MeritMemoryPool<T>::lru_victim_unlocked(const Shard &shard) const
+template <typename T>
+uint32_t MeritMemoryPool<T>::lru_victim_unlocked(const Shard &shard, bool *hit_hot_prefix) const
 {
+    if (hit_hot_prefix != nullptr)
+        *hit_hot_prefix = false;
+    const size_t live = shard.id_to_slot.size();
+    size_t budget = live;
+    if (_seed_hold_limit && live >= 10)
+        budget = live - std::max<size_t>(1, live / 10);
+    size_t scanned = 0;
     for (uint32_t slot = shard.lru_tail; slot != INVALID_NODE; slot = _slots[slot].prev)
     {
+        if (scanned >= budget)
+        {
+            if (hit_hot_prefix != nullptr)
+                *hit_hot_prefix = true;
+            return INVALID_NODE;
+        }
+        ++scanned;
         const uint32_t node_id = _slots[slot].node_id;
-        if (_pinned.find(node_id) == _pinned.end())
+        if (_slots[slot].hold_count == 0 && _pinned.find(node_id) == _pinned.end())
             return node_id;
     }
     return INVALID_NODE;
@@ -895,7 +911,7 @@ template <typename T> uint32_t MeritMemoryPool<T>::clock_victim_unlocked(Shard &
     {
         const uint32_t slot = shard.lru_tail;
         const uint32_t node_id = _slots[slot].node_id;
-        if (_pinned.find(node_id) != _pinned.end())
+        if (_slots[slot].hold_count > 0 || _pinned.find(node_id) != _pinned.end())
         {
             unlink_lru_unlocked(shard, slot);
             push_lru_front_unlocked(shard, slot);
@@ -924,18 +940,102 @@ template <typename T> bool MeritMemoryPool<T>::is_pinned(uint32_t node_id) const
     return _pinned.find(node_id) != _pinned.end();
 }
 
-template <typename T> uint32_t MeritMemoryPool<T>::peek_lru_victim(uint32_t incoming_node_id) const
+template <typename T> void MeritMemoryPool<T>::enable_seed_hold_limit(bool on)
 {
+    _seed_hold_limit = on;
+}
+
+template <typename T> bool MeritMemoryPool<T>::hold_seed_neighbor(uint32_t node_id, uint32_t times)
+{
+    if (times == 0)
+        return false;
+    Shard &shard = _shards[shard_index(node_id)];
+    std::lock_guard<MeritNcacheMutex> lock(shard.mu);
+    const auto it = shard.id_to_slot.find(node_id);
+    if (it == shard.id_to_slot.end())
+        return false;
+    Slot &slot = _slots[it->second];
+    const uint32_t sum = static_cast<uint32_t>(slot.hold_count) + times;
+    slot.hold_count = static_cast<uint16_t>(std::min<uint32_t>(sum, 65535));
+    return true;
+}
+
+template <typename T> void MeritMemoryPool<T>::release_seed_neighbor(uint32_t node_id)
+{
+    Shard &shard = _shards[shard_index(node_id)];
+    std::lock_guard<MeritNcacheMutex> lock(shard.mu);
+    const auto it = shard.id_to_slot.find(node_id);
+    if (it == shard.id_to_slot.end())
+        return;
+    Slot &slot = _slots[it->second];
+    if (slot.hold_count > 0)
+        --slot.hold_count;
+    if (slot.hold_count == 0 && shard.lru_tail != it->second)
+    {
+        unlink_lru_unlocked(shard, it->second);
+        push_lru_back_unlocked(shard, it->second);
+    }
+}
+
+template <typename T> void MeritMemoryPool<T>::demote_lru_tail(uint32_t node_id)
+{
+    Shard &shard = _shards[shard_index(node_id)];
+    std::lock_guard<MeritNcacheMutex> lock(shard.mu);
+    const auto it = shard.id_to_slot.find(node_id);
+    if (it == shard.id_to_slot.end() || _slots[it->second].hold_count > 0)
+        return;
+    if (shard.lru_tail == it->second)
+        return;
+    unlink_lru_unlocked(shard, it->second);
+    push_lru_back_unlocked(shard, it->second);
+}
+
+template <typename T> uint32_t MeritMemoryPool<T>::drop_coldest_seed_hold(uint32_t incoming_node_id)
+{
+    Shard &shard = _shards[shard_index(incoming_node_id)];
+    std::lock_guard<MeritNcacheMutex> lock(shard.mu);
+    for (uint32_t slot = shard.lru_tail; slot != INVALID_NODE; slot = _slots[slot].prev)
+    {
+        if (_slots[slot].hold_count == 0)
+            continue;
+        _slots[slot].hold_count = 0;
+        if (shard.lru_tail != slot)
+        {
+            unlink_lru_unlocked(shard, slot);
+            push_lru_back_unlocked(shard, slot);
+        }
+        return _slots[slot].node_id;
+    }
+    return INVALID_NODE;
+}
+
+template <typename T> uint32_t MeritMemoryPool<T>::coldest_held_node(uint32_t incoming_node_id) const
+{
+    if (!_seed_hold_limit || _size.load(std::memory_order_relaxed) < _capacity)
+        return INVALID_NODE;
+    const Shard &shard = _shards[shard_index(incoming_node_id)];
+    std::lock_guard<MeritNcacheMutex> lock(shard.mu);
+    const uint32_t slot = shard.lru_tail;
+    if (slot == INVALID_NODE || _slots[slot].hold_count == 0)
+        return INVALID_NODE;
+    return _slots[slot].node_id;
+}
+
+template <typename T>
+uint32_t MeritMemoryPool<T>::peek_lru_victim(uint32_t incoming_node_id, bool *hit_hot_prefix) const
+{
+    if (hit_hot_prefix != nullptr)
+        *hit_hot_prefix = false;
     if (_size.load(std::memory_order_relaxed) < _capacity)
         return INVALID_NODE;
     const Shard &shard = _shards[shard_index(incoming_node_id)];
-    if (_clock_enabled)
+    if (_clock_enabled && !_seed_hold_limit)
     {
         std::shared_lock<MeritNcacheMutex> lock(shard.mu);
-        return lru_victim_unlocked(shard);
+        return lru_victim_unlocked(shard, hit_hot_prefix);
     }
     std::lock_guard<MeritNcacheMutex> lock(shard.mu);
-    return lru_victim_unlocked(shard);
+    return lru_victim_unlocked(shard, hit_hot_prefix);
 }
 
 template <typename T>
@@ -1270,13 +1370,15 @@ uint32_t MeritMemoryPool<T>::try_admit(uint32_t node_id, const char *node_disk_b
     }
     else
     {
-        evicted = _clock_enabled ? clock_victim_unlocked(shard) : lru_victim_unlocked(shard);
+        evicted = _clock_enabled && !_seed_hold_limit ? clock_victim_unlocked(shard)
+                                                     : lru_victim_unlocked(shard, nullptr);
         if (evicted == INVALID_NODE)
             return finish(INVALID_NODE, false);
         const auto eit = shard.id_to_slot.find(evicted);
         if (eit == shard.id_to_slot.end())
             return finish(INVALID_NODE, false);
         slot = eit->second;
+        _slots[slot].hold_count = 0;
         membership_clear(evicted);
         unlink_lru_unlocked(shard, slot);
         shard.id_to_slot.erase(eit);
@@ -1327,6 +1429,7 @@ template <typename T> bool MeritMemoryPool<T>::erase(uint32_t node_id)
         return false;
 
     const uint32_t slot = it->second;
+    _slots[slot].hold_count = 0;
     membership_clear(node_id);
     unlink_lru_unlocked(shard, slot);
     shard.id_to_slot.erase(it);

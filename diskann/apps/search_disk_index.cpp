@@ -17,6 +17,8 @@
 #include "relayout_utils.h"
 
 #ifndef _WINDOWS
+#include <omp.h>
+#include <pthread.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -32,6 +34,49 @@
 #define WARMUP false
 
 namespace po = boost::program_options;
+
+#ifndef _WINDOWS
+// MERIT_QUERY_CPUS="0-9" pins OpenMP thread i to the i-th listed core.
+static void merit_pin_this_query_thread()
+{
+    thread_local bool pinned = false;
+    if (pinned)
+        return;
+    pinned = true;
+    const char *spec = std::getenv("MERIT_QUERY_CPUS");
+    if (spec == nullptr || *spec == '\0')
+        return;
+    std::vector<int> cpus;
+    const char *p = spec;
+    while (*p != '\0')
+    {
+        char *end = nullptr;
+        const long lo = std::strtol(p, &end, 10);
+        long hi = lo;
+        if (end != nullptr && *end == '-')
+            hi = std::strtol(end + 1, &end, 10);
+        if (end == p)
+            break;
+        for (long c = lo; c <= hi; ++c)
+            if (c >= 0 && c < CPU_SETSIZE)
+                cpus.push_back(static_cast<int>(c));
+        p = end;
+        if (*p == ',')
+            ++p;
+        else if (*p != '\0')
+            break;
+    }
+    if (cpus.empty())
+        return;
+    const int tid = omp_get_thread_num();
+    const int cpu = cpus[static_cast<size_t>(tid) % cpus.size()];
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    CPU_SET(cpu, &set);
+    if (pthread_setaffinity_np(pthread_self(), sizeof(set), &set) == 0)
+        diskann::cout << "MERIT pin query thread=" << tid << " cpu=" << cpu << std::endl;
+}
+#endif
 
 static void log_rss(const char *stage)
 {
@@ -519,6 +564,10 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
             const uint64_t requested_batch =
                 batch_env == nullptr ? 10000ULL : std::strtoull(batch_env, nullptr, 10);
             const uint64_t warmup_batch = std::max<uint64_t>(1, requested_batch);
+            // Fixed-length warmup: run exactly MERIT_FULL_WARMUP_MAX_QUERIES queries even if the D-cache
+            // never fills (or is disabled, as in the N-cache-only configuration).
+            const char *fixed_env = std::getenv("MERIT_FULL_WARMUP_FIXED");
+            const bool fixed_warmup = fixed_env != nullptr && std::strcmp(fixed_env, "0") != 0;
             std::vector<uint64_t> warmup_ids(static_cast<size_t>(warmup_batch));
             std::vector<float> warmup_dists(static_cast<size_t>(warmup_batch));
             uint64_t completed = 0;
@@ -526,7 +575,7 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
             const auto warmup_start = std::chrono::high_resolution_clock::now();
             diskann::cout << "MERIT full D-cache warmup: target="
                           << _pFlashIndex->merit_dynamic_page_capacity() << " pages" << std::endl;
-            while (!_pFlashIndex->merit_dynamic_disk_full() && completed < max_warmup_queries)
+            while ((fixed_warmup || !_pFlashIndex->merit_dynamic_disk_full()) && completed < max_warmup_queries)
             {
                 const uint64_t current_batch =
                     std::min<uint64_t>(warmup_batch, max_warmup_queries - completed);
@@ -541,7 +590,7 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
                         optimized_beamwidth, use_reorder_data, nullptr);
                 }
                 completed += current_batch;
-                if (completed >= next_report || _pFlashIndex->merit_dynamic_disk_full())
+                if (completed >= next_report || (!fixed_warmup && _pFlashIndex->merit_dynamic_disk_full()))
                 {
                     diskann::cout << "MERIT full D-cache warmup progress: queries=" << completed
                                   << " pages=" << _pFlashIndex->merit_dynamic_page_count() << "/"
@@ -549,7 +598,7 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
                     next_report += 1000000;
                 }
             }
-            if (!_pFlashIndex->merit_dynamic_disk_full())
+            if (!fixed_warmup && !_pFlashIndex->merit_dynamic_disk_full())
             {
                 diskann::cerr << "MERIT full D-cache warmup failed after " << completed
                               << " queries: pages=" << _pFlashIndex->merit_dynamic_page_count() << "/"
@@ -576,6 +625,9 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
 #pragma omp parallel for schedule(dynamic, 1)
         for (int64_t i = 0; i < (int64_t)query_num; i++)
         {
+#ifndef _WINDOWS
+            merit_pin_this_query_thread();
+#endif
             if (!filtered_search)
             {
                 _pFlashIndex->cached_beam_search(query + (i * query_aligned_dim), recall_at, L,
@@ -703,6 +755,53 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
         }
         diskann::cout << std::endl;
         {
+            auto mean_of = [&](auto f) { return diskann::get_mean_stats<uint32_t>(stats, query_num, f); };
+            const double reads = mean_of([](const diskann::QueryStats &s) { return s.n_disk_reads; });
+            const double dc_reads = mean_of([](const diskann::QueryStats &s) { return s.n_merit_disk_reads; });
+            const double scratch = mean_of([](const diskann::QueryStats &s) { return s.n_sector_cache_hits; });
+            const double dc_scratch =
+                mean_of([](const diskann::QueryStats &s) { return s.n_merit_sector_cache_hits; });
+            const double dc_cross =
+                mean_of([](const diskann::QueryStats &s) { return s.n_merit_shared_cross_hits; });
+            diskann::cout << "      breakdown: base_reads=" << (reads - dc_reads) << " dcache_reads=" << dc_reads
+                          << " base_scratch_hits=" << (scratch - dc_scratch)
+                          << " dcache_scratch_hits=" << dc_scratch << " dcache_cross_query_hits=" << dc_cross
+                          << " ncache_hits=" << mean_of([](const diskann::QueryStats &s) { return s.n_cache_hits; })
+                          << " beam_lookups=" << mean_of([](const diskann::QueryStats &s) { return s.n_beam_lookups; })
+                          << std::endl;
+            if (const char *halves = std::getenv("MERIT_STATS_HALVES");
+                halves != nullptr && std::strcmp(halves, "0") != 0 && query_num >= 2)
+            {
+                const size_t mid = query_num / 2;
+                auto mean_range = [&](size_t begin, size_t end, auto pick) {
+                    double sum = 0;
+                    for (size_t qi = begin; qi < end; ++qi)
+                        sum += static_cast<double>(pick(stats[qi]));
+                    return sum / static_cast<double>(end - begin);
+                };
+                auto report_half = [&](const char *tag, size_t begin, size_t end) {
+                    const double half_reads =
+                        mean_range(begin, end, [](const diskann::QueryStats &s) { return s.n_disk_reads; });
+                    const double half_dc =
+                        mean_range(begin, end, [](const diskann::QueryStats &s) { return s.n_merit_disk_reads; });
+                    const double half_us =
+                        mean_range(begin, end, [](const diskann::QueryStats &s) { return s.total_us; });
+                    diskann::cout << "      " << tag << ": queries=" << (end - begin) << " disk_reads=" << half_reads
+                                  << " base_reads=" << (half_reads - half_dc) << " dcache_reads=" << half_dc
+                                  << " dyn_hits="
+                                  << mean_range(begin, end,
+                                                [](const diskann::QueryStats &s) { return s.n_merit_dyn_hits; })
+                                  << " ncache_hits="
+                                  << mean_range(begin, end, [](const diskann::QueryStats &s) { return s.n_cache_hits; })
+                                  << " mean_us=" << half_us
+                                  << " qps=" << (half_us > 0 ? 1e6 / half_us : 0.0) << std::endl;
+                };
+                report_half("pass1", 0, mid);
+                report_half("pass2", mid, query_num);
+            }
+            _pFlashIndex->print_merit_shared_cache_stats();
+        }
+        {
             auto mean_disk_reads_all = diskann::get_mean_stats<uint32_t>(
                 stats, query_num, [](const diskann::QueryStats &s) { return s.n_disk_reads; });
             auto mean_dyn_hits = diskann::get_mean_stats<uint32_t>(
@@ -737,6 +836,7 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
                 if (calc_recall_flag)
                     diskann::cout << " recall@" << recall_at << "=" << recall;
                 diskann::cout << std::endl;
+                _pFlashIndex->flush_merit_coread_writes();
                 _pFlashIndex->print_merit_dynamic_3cache_stats();
             }
             _pFlashIndex->print_merit_memory_cache_stats();

@@ -3158,6 +3158,50 @@ static uint64_t parent_outgoing_heat(const std::vector<std::pair<uint32_t, uint6
     return total;
 }
 
+// MERIT_SEED_REPLICA_GRANDCHILD=1: a seed group holds the seed, its profile children and then their
+// profile children, capped at MERIT_SEED_REPLICA_MAX_PAGES pages (default 2). Grandchildren are not
+// graph neighbors of the seed, so the neighbor check is skipped in this mode.
+static bool seed_replica_grandchild_mode()
+{
+    static const bool on = [] {
+        const char *e = std::getenv("MERIT_SEED_REPLICA_GRANDCHILD");
+        return e != nullptr && std::strcmp(e, "0") != 0;
+    }();
+    return on;
+}
+
+static uint8_t seed_replica_max_pages()
+{
+    static const uint8_t n = [] {
+        const char *e = std::getenv("MERIT_SEED_REPLICA_MAX_PAGES");
+        return static_cast<uint8_t>(e != nullptr ? std::atoi(e) : 2);
+    }();
+    return n;
+}
+
+// Never drop profile children: a seed with more children than the page cap gets as many pages as
+// its children need (grandchildren only fill groups that are under the cap).
+static bool seed_replica_all_children()
+{
+    static const bool on = [] {
+        const char *e = std::getenv("MERIT_SEED_REPLICA_ALL_CHILDREN");
+        return e != nullptr && std::strcmp(e, "0") != 0;
+    }();
+    return on;
+}
+
+// Keep only the hottest fraction (by count) of each seed's profile children, without grandchild fill.
+// Returns 0 when unset or >= 1.
+static double seed_replica_child_frac()
+{
+    static const double frac = [] {
+        const char *e = std::getenv("MERIT_SEED_REPLICA_CHILD_FRAC");
+        const double v = e != nullptr ? std::strtod(e, nullptr) : 0.0;
+        return (v > 0.0 && v < 1.0) ? v : 0.0;
+    }();
+    return frac;
+}
+
 static bool seed_replica_materialize_page(const std::vector<std::vector<uint32_t>> &adj, uint32_t parent,
                                           const std::vector<uint32_t> &template_page, const PagePackConfig &cfg,
                                           std::vector<uint32_t> &page_nodes)
@@ -3177,7 +3221,7 @@ static bool seed_replica_materialize_page(const std::vector<std::vector<uint32_t
         }
         if (!disk_cache_node_eligible(node, cfg))
             continue;
-        if (!graph_has_edge(adj, parent, node))
+        if (!seed_replica_grandchild_mode() && !graph_has_edge(adj, parent, node))
             continue;
         place_node_on_page(page_nodes, on_page, cfg.page_cap, node, &cfg, nullptr);
     }
@@ -3305,11 +3349,44 @@ static int directed_beam_pct_seed_replica_pack_pages(
             directed_nbrs.push_back(child);
         }
 
+        uint8_t max_pages = MERIT_DC_PCT_UNLIMITED_PAGES;
+        if (seed_replica_child_frac() > 0.0)
+        {
+            const size_t keep = static_cast<size_t>(
+                std::ceil(seed_replica_child_frac() * static_cast<double>(directed_nbrs.size())));
+            directed_nbrs.resize(std::min(directed_nbrs.size(), keep));
+        }
+        else if (seed_replica_grandchild_mode())
+        {
+            max_pages = seed_replica_max_pages();
+            size_t cap = static_cast<size_t>(max_pages) * cfg.page_cap - 1;
+            if (seed_replica_all_children() && directed_nbrs.size() > cap)
+            {
+                cap = directed_nbrs.size();
+                max_pages = MERIT_DC_PCT_UNLIMITED_PAGES;
+            }
+            std::unordered_set<uint32_t> seen(directed_nbrs.begin(), directed_nbrs.end());
+            seen.insert(parent);
+            const size_t nchildren = directed_nbrs.size();
+            for (size_t ci = 0; ci < nchildren && directed_nbrs.size() < cap; ++ci)
+            {
+                const auto git = out_edges.find(directed_nbrs[ci]);
+                if (git == out_edges.end())
+                    continue;
+                for (const auto &gc : git->second)
+                {
+                    if (directed_nbrs.size() >= cap)
+                        break;
+                    if (disk_cache_node_eligible(gc.first, cfg) && seen.insert(gc.first).second)
+                        directed_nbrs.push_back(gc.first);
+                }
+            }
+        }
+
         SeedReplicaPackPlan plan;
         plan.parent = parent;
         plan.out_heat = parent_outgoing_heat(it->second);
-        split_directed_neighbors_into_pages(parent, directed_nbrs, cfg.page_cap, MERIT_DC_PCT_UNLIMITED_PAGES,
-                                            plan.template_pages);
+        split_directed_neighbors_into_pages(parent, directed_nbrs, cfg.page_cap, max_pages, plan.template_pages);
         if (plan.template_pages.empty())
             continue;
         plan.benefit_score =
@@ -3342,6 +3419,62 @@ static int directed_beam_pct_seed_replica_pack_pages(
                 return a.out_heat > b.out_heat;
             return a.parent < b.parent;
         });
+    }
+
+    // Seeds are the hottest fraction of visited nodes (by expand count), not the
+    // hottest fraction of profile parents by outgoing edge heat.
+    bool visit_top_applied = false;
+    if (const char *visit_env = std::getenv("MERIT_SEED_REPLICA_VISIT_FRAC"))
+    {
+        const double vfrac = std::atof(visit_env);
+        if (vfrac > 0.0 && vfrac <= 1.0 && !node_expand.empty())
+        {
+            std::vector<std::pair<uint64_t, uint32_t>> ranked;
+            uint64_t visited = 0;
+            const uint32_t npts = static_cast<uint32_t>(std::min(node_expand.size(), static_cast<size_t>(graph.num_points)));
+            for (uint32_t id = 0; id < npts; ++id)
+            {
+                const uint64_t heat = node_heat(node_expand, id);
+                if (heat == 0)
+                    continue;
+                visited++;
+                ranked.emplace_back(heat, id);
+            }
+            std::sort(ranked.begin(), ranked.end(), [](const std::pair<uint64_t, uint32_t> &a,
+                                                       const std::pair<uint64_t, uint32_t> &b) {
+                if (a.first != b.first)
+                    return a.first > b.first;
+                return a.second < b.second;
+            });
+            const size_t keep_n =
+                std::min(ranked.size(), static_cast<size_t>(std::ceil(vfrac * static_cast<double>(ranked.size()))));
+            std::unordered_set<uint32_t> keep;
+            keep.reserve(keep_n * 2 + 1);
+            for (size_t i = 0; i < keep_n; ++i)
+                keep.insert(ranked[i].second);
+            const size_t before = plans.size();
+            plans.erase(std::remove_if(plans.begin(), plans.end(),
+                                       [&](const SeedReplicaPackPlan &plan) { return keep.count(plan.parent) == 0; }),
+                        plans.end());
+            visit_top_applied = true;
+            diskann::cout << "MERIT disk-cache seed_replica: visit-top keeping " << plans.size() << " / " << before
+                          << " seeds from the hottest " << keep_n << " / " << visited
+                          << " visited nodes (MERIT_SEED_REPLICA_VISIT_FRAC=" << vfrac << ")" << std::endl;
+        }
+    }
+
+    // Keep only the top fraction of ranked seeds; the space budget no longer decides which seeds exist.
+    if (!visit_top_applied)
+    if (const char *frac_env = std::getenv("MERIT_SEED_REPLICA_SEED_FRAC"))
+    {
+        const double frac = std::atof(frac_env);
+        if (frac > 0.0 && frac < 1.0)
+        {
+            const size_t keep = static_cast<size_t>(std::ceil(frac * static_cast<double>(plans.size())));
+            diskann::cout << "MERIT disk-cache seed_replica: keeping top " << keep << " / " << plans.size()
+                          << " seeds (MERIT_SEED_REPLICA_SEED_FRAC=" << frac << ")" << std::endl;
+            plans.resize(keep);
+        }
     }
 
     const auto budget_left = [&]() {

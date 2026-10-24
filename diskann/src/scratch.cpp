@@ -94,11 +94,14 @@ template <typename T> void SSDQueryScratch<T>::reset()
     profile_parent.clear();
     merit_dcache_loc_cache.clear();
     merit_dcache_member_packed_loc.clear();
+    merit_prefetched_page_gen.clear();
     merit_dcache_seed_members.clear();
     merit_dcache_seed_extra.clear();
     merit_dyn_full_span.clear();
     merit_dcache_member_to_seed.clear();
     merit_dcache_patch_new.clear();
+    merit_repack_sectors.clear();
+    merit_repack_used = 0;
     read_sectors.clear();
     read_merit_disk_cache_sectors.clear();
     merit_avoided_base_sectors.clear();
@@ -113,7 +116,13 @@ template <typename T> void SSDQueryScratch<T>::reset()
     merit_dyn_physical_reads = 0;
     merit_dyn_served_nodes = 0;
     merit_expand_count = 0;
+    merit_record_real_io = false;
     merit_storage_node_order.clear();
+    merit_storage_nbrs.clear();
+    merit_storage_nbr_off.assign(1, 0);
+    merit_seed_page_coords.clear();
+    merit_seed_page_nbrs.clear();
+    merit_seed_page_coord_ptr.clear();
 }
 
 template <typename T> SSDQueryScratch<T>::SSDQueryScratch(size_t aligned_dim, size_t visited_reserve)

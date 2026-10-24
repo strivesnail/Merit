@@ -179,7 +179,13 @@ template <typename T> class MeritMemoryPool
 
     void bump(uint32_t node_id, uint64_t delta = 1);
 
-    uint32_t peek_lru_victim(uint32_t incoming_node_id) const;
+    uint32_t peek_lru_victim(uint32_t incoming_node_id, bool *hit_hot_prefix = nullptr) const;
+    uint32_t coldest_held_node(uint32_t incoming_node_id) const;
+    void enable_seed_hold_limit(bool on);
+    bool hold_seed_neighbor(uint32_t node_id, uint32_t times = 1);
+    void release_seed_neighbor(uint32_t node_id);
+    void demote_lru_tail(uint32_t node_id);
+    uint32_t drop_coldest_seed_hold(uint32_t incoming_node_id);
 
     bool copy_payload(uint32_t node_id, std::vector<T> &coords, std::vector<uint32_t> &nbrs) const;
 
@@ -296,6 +302,7 @@ template <typename T> class MeritMemoryPool
         uint32_t node_id = INVALID_NODE;
         uint32_t prev = INVALID_NODE;
         uint32_t next = INVALID_NODE;
+        uint16_t hold_count = 0;
     };
 
     struct GhostEntry
@@ -357,7 +364,7 @@ template <typename T> class MeritMemoryPool
     void push_lru_back_unlocked(Shard &shard, uint32_t slot);
     void touch_lru_unlocked(Shard &shard, uint32_t slot);
     void touch_or_mark_unlocked(Shard &shard, uint32_t slot);
-    uint32_t lru_victim_unlocked(const Shard &shard) const;
+    uint32_t lru_victim_unlocked(const Shard &shard, bool *hit_hot_prefix) const;
     uint32_t clock_victim_unlocked(Shard &shard);
     bool low_priority_insert_unlocked(Shard &shard, uint32_t search_hop);
     bool membership_maybe_contains(uint32_t node_id) const;
@@ -383,6 +390,7 @@ template <typename T> class MeritMemoryPool
 
     std::array<Shard, kMaxShardCount> _shards;
     tsl::robin_set<uint32_t> _pinned;
+    bool _seed_hold_limit = false;
 
     std::atomic<uint32_t> _next_free_slot{0};
     std::mutex _free_slots_mu;
