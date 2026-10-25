@@ -6,11 +6,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 DISKANN_BUILD="${DISKANN_BUILD:-$(cd "${SCRIPT_DIR}/../../diskann/build" && pwd)}"
 DATA_DIR="${DATA_DIR:-${REPO_ROOT}/data/sift1m}"
-# shellcheck source=merit_ramfs_env.sh disable=SC1091
-source "${SCRIPT_DIR}/merit_ramfs_env.sh"
+# shellcheck source=neighborcache_ramfs_env.sh disable=SC1091
+source "${SCRIPT_DIR}/neighborcache_ramfs_env.sh"
 PERSIST_DATA_DIR="${DATA_DIR}"
-merit_ramfs_activate "${PERSIST_DATA_DIR}"
-DATA_DIR="${MERIT_RAMFS_ACTIVE_DATA_DIR}"
+neighborcache_ramfs_activate "${PERSIST_DATA_DIR}"
+DATA_DIR="${NEIGHBORCACHE_RAMFS_ACTIVE_DATA_DIR}"
 WORKLOAD_DIR="${WORKLOAD_DIR:-${DATA_DIR}/workloads}"
 INDEX="${INDEX:-${DATA_DIR}/sift1m_index}"
 OUT_ROOT="${OUT_ROOT:-${PERSIST_DATA_DIR}/workloads_disk01_runs}"
@@ -49,7 +49,7 @@ COMMON=(
 mkdir -p "${OUT_ROOT}"
 SUMMARY="${OUT_ROOT}/summary.tsv"
 : > "${SUMMARY}"
-echo -e "workload\tphase\tqps\tmean_lat\tp99\tmean_io\tdisk_reads\tbase_pages\tdisk_cache_pg\tmerit_hits\trecall" >> "${SUMMARY}"
+echo -e "workload\tphase\tqps\tmean_lat\tp99\tmean_io\tdisk_reads\tbase_pages\tdisk_cache_pg\tneighborcache_hits\trecall" >> "${SUMMARY}"
 
 append_row() {
   local wl="$1" phase="$2" out="$3"
@@ -59,7 +59,7 @@ append_row() {
     echo -e "${wl}\t${phase}\tMISSING\t-\t-\t-\t-\t-\t-\t-\t-" >> "${SUMMARY}"
     return
   fi
-  # baseline: no DiskCachePg/MeritDcHit; disk01: has both
+  # baseline: no DiskCachePg/NeighborCacheDcHit; disk01: has both
   echo "${row}" | awk -v wl="${wl}" -v phase="${phase}" '{
     rec=$NF
     if (NF >= 17) {
@@ -111,7 +111,7 @@ append_row() {
       --gt_file "${GT}" \
       --result_path "${OUT}/baseline" \
       >"${OUT}/baseline.out" 2>&1
-    grep -E 'MERIT disk-cache ready|^\s+'"${L}"'\s+'"${W}"'' "${OUT}/baseline.out" | tail -3 || true
+    grep -E 'NEIGHBORCACHE disk-cache ready|^\s+'"${L}"'\s+'"${W}"'' "${OUT}/baseline.out" | tail -3 || true
     append_row "${wl}" baseline "${OUT}/baseline.out"
 
     echo "======== ${wl}: disk ${DISK_RATIO} ========"
@@ -120,12 +120,12 @@ append_row() {
       --query_file "${QF}" \
       --gt_file "${GT}" \
       --result_path "${OUT}/disk01" \
-      --merit_profile_prefix "${PROFILE}" \
-      --merit_disk_cache_ratio "${DISK_RATIO}" \
-      --merit_disk_cache_layout "${DISK_LAYOUT}" \
-      --merit_disk_cache_k_hops "${DISK_K_HOPS}" \
+      --neighborcache_profile_prefix "${PROFILE}" \
+      --neighborcache_disk_cache_ratio "${DISK_RATIO}" \
+      --neighborcache_disk_cache_layout "${DISK_LAYOUT}" \
+      --neighborcache_disk_cache_k_hops "${DISK_K_HOPS}" \
       >"${OUT}/disk01.out" 2>&1
-    grep -E 'hot-node|appended|MERIT disk-cache ready|^\s+'"${L}"'\s+'"${W}"'' "${OUT}/disk01.out" | tail -5 || true
+    grep -E 'hot-node|appended|NEIGHBORCACHE disk-cache ready|^\s+'"${L}"'\s+'"${W}"'' "${OUT}/disk01.out" | tail -5 || true
     append_row "${wl}" disk01 "${OUT}/disk01.out"
     echo ""
   done

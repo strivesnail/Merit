@@ -1,4 +1,4 @@
-// Dump MERIT disk-cache disk cache pages for layout verification.
+// Dump NEIGHBORCACHE disk-cache disk cache pages for layout verification.
 #include "common_includes.h"
 #include <boost/program_options.hpp>
 #include <fstream>
@@ -68,10 +68,10 @@ int main(int argc, char **argv)
     std::unordered_set<uint32_t> exclude_ids;
     std::vector<std::vector<uint32_t>> pages;
     const std::string layout = diskann::normalize_disk_cache_layout(layout_mode);
-    if (diskann::merit_dump_disk_cache_pages(graph, node_expand, directed_edges, layout, nnodes_per_sector, k_hops,
+    if (diskann::neighborcache_dump_disk_cache_pages(graph, node_expand, directed_edges, layout, nnodes_per_sector, k_hops,
                                              max_nodes, exclude_ids, pages) != 0)
     {
-        std::cerr << "merit_dump_disk_cache_pages failed for layout=" << layout << std::endl;
+        std::cerr << "neighborcache_dump_disk_cache_pages failed for layout=" << layout << std::endl;
         return -1;
     }
 

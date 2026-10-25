@@ -9,7 +9,7 @@ LOG="${DATA_DIR}/pipeline100m_bg_${STAMP}.log"
 chmod +x "${SCRIPT_DIR}/run_sift100m_full_pipeline.sh" \
   "${SCRIPT_DIR}/build_sift100m_index_and_profile.sh" \
   "${SCRIPT_DIR}/build_sift100m_background.sh" \
-  "${SCRIPT_DIR}/run_sift100m_merit_background.sh" 2>/dev/null || true
+  "${SCRIPT_DIR}/run_sift100m_neighborcache_background.sh" 2>/dev/null || true
 
 if [[ "${1:-}" == "--fg" ]]; then
   bash "${SCRIPT_DIR}/run_sift100m_full_pipeline.sh" 2>&1 | tee "${LOG}"

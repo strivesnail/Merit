@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Collect the SIFT10M equal-memory comparison (run_10m_compare.sh): MERIT, DiskANN BFS, Starling, MARGO.
+"""Collect the SIFT10M equal-memory comparison (run_10m_compare.sh): NEIGHBORCACHE, DiskANN BFS, Starling, MARGO.
 
 Per (workload, system, L): sampled Recall@10, QPS, mean latency, mean SSD page reads per query, peak RSS.
 Writes <runs>/compare_10m.json and the bar figure docs/figures/report/fig_10m_starling_margo.{png,pdf}.
@@ -20,7 +20,7 @@ WORKLOADS = ["zipf_a1p2_1m_s24", "zipf_a1p0_1m_s24", "zipf_a0p8_1m_s24", "zipf_a
              "union_a1p2_uniform_2m_s24"]
 LABEL = {"zipf_a1p2_1m_s24": "Zipf 1.2", "zipf_a1p0_1m_s24": "Zipf 1.0", "zipf_a0p8_1m_s24": "Zipf 0.8",
          "zipf_a0p6_1m_s24": "Zipf 0.6", "uniform_1m_s24": "Uniform", "union_a1p2_uniform_2m_s24": "Mixed"}
-SYSTEMS = [("bfs", "DiskANN"), ("starling", "Starling"), ("margo", "MARGO"), ("merit", "MERIT")]
+SYSTEMS = [("bfs", "DiskANN"), ("starling", "Starling"), ("margo", "MARGO"), ("neighborcache", "NEIGHBORCACHE")]
 NUM = r"(\d+(?:\.\d+)?)"
 
 
@@ -51,8 +51,8 @@ def collect(runs: Path, wl: Path, Ls: list[int]) -> list[dict]:
         gt = read_bin_u32(wl / f"{w}_sample_gt10.bin")
         for s, _ in SYSTEMS:
             for L in Ls:
-                if s in ("merit", "bfs"):
-                    d = runs / "diskann" / w / f"{'bfs_eqmem' if s == 'bfs' else 'merit'}_L{L}"
+                if s in ("neighborcache", "bfs"):
+                    d = runs / "diskann" / w / f"{'bfs_eqmem' if s == 'bfs' else 'neighborcache'}_L{L}"
                     r = diskann_row(d / "run.out", L) if (d / "run.out").exists() else None
                 else:
                     d, r = None, None
@@ -90,7 +90,7 @@ def figure(rows: list[dict], title: str, path: Path) -> None:
     ws = [w for w in WORKLOADS if any(r["workload"] == w for r in rows)]
     fig, axes = plt.subplots(1, 2, figsize=(11, 3.2))
     width = 0.2
-    colors = {"bfs": "#9e9e9e", "starling": "#6baed6", "margo": "#fd8d3c", "merit": "#d62728"}
+    colors = {"bfs": "#9e9e9e", "starling": "#6baed6", "margo": "#fd8d3c", "neighborcache": "#d62728"}
     for ax, key, ylab in ((axes[0], "qps", "QPS"), (axes[1], "mean_ios", "SSD reads / query")):
         for i, (s, name) in enumerate(SYSTEMS):
             vals = [next((r[key] for r in rows if r["workload"] == w and r["system"] == s), 0) for w in ws]

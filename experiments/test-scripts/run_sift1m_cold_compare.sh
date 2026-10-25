@@ -8,11 +8,11 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DISKANN_BUILD="${DISKANN_BUILD:-${REPO_ROOT}/diskann/build}"
 DATA_DIR="${DATA_DIR:-${REPO_ROOT}/data/sift1m}"
-# shellcheck source=merit_ramfs_env.sh disable=SC1091
-source "${SCRIPT_DIR}/merit_ramfs_env.sh"
+# shellcheck source=neighborcache_ramfs_env.sh disable=SC1091
+source "${SCRIPT_DIR}/neighborcache_ramfs_env.sh"
 PERSIST_DATA_DIR="${DATA_DIR}"
-merit_ramfs_activate "${PERSIST_DATA_DIR}"
-DATA_DIR="${MERIT_RAMFS_ACTIVE_DATA_DIR}"
+neighborcache_ramfs_activate "${PERSIST_DATA_DIR}"
+DATA_DIR="${NEIGHBORCACHE_RAMFS_ACTIVE_DATA_DIR}"
 DROP_SCRIPT="${DROP_SCRIPT:-${REPO_ROOT}/scripts/drop_system_caches.sh}"
 LOG="${LOG:-${PERSIST_DATA_DIR}/run_1m_cold_edge_vs_node.log}"
 

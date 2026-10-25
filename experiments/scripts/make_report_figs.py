@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Numbered report figures (Fig. 1-7) for MERIT, styled for ACM acmart sigconf (SIGMOD)."""
+"""Numbered report figures (Fig. 1-7) for NEIGHBORCACHE, styled for ACM acmart sigconf (SIGMOD)."""
 
 import csv
 import json
@@ -20,7 +20,7 @@ SWEEP = f"{RUNS}/moving_a0p8_5x1m_sweep_20261002"
 ZIPF = f"{RUNS}/moving_zipf_n2p5_d100_hsweep_20261003"
 ROUNDLEN = f"{RUNS}/moving_a0p8_roundlen_n2p5_d100_hsweep_20261003"
 S1B = "/mnt/graid_single/sift1b/runs/stable_a1p2_n2p5_d100_t20/bloom_20261004"
-OUT = "/home/jianz/workload/code/Merit/docs/figures/report"
+OUT = "/home/jianz/workload/code/NeighborCache/docs/figures/report"
 CACHE = "/tmp/report_fig_cache.json"
 FONT_DIR = os.path.expanduser("~/.fonts/libertinus")
 SKIP = 10000
@@ -63,7 +63,7 @@ plt.rcParams.update({
 })
 
 # Paul Tol high-contrast palette (colour-blind safe, distinct in greyscale).
-MODE_STYLE = {"DiskANN": ("#4477AA", ""), "MERIT-N": ("#DDAA33", ""), "MERIT": ("#BB5566", "")}
+MODE_STYLE = {"DiskANN": ("#4477AA", ""), "NEIGHBORCACHE-N": ("#DDAA33", ""), "NEIGHBORCACHE": ("#BB5566", "")}
 STACK = [("io", "I/O", "#4477AA", ""), ("cpu", "CPU", "#BBBBBB", ""), ("other", "Other", "#BB5566", "")]
 BAR_EDGE = dict(edgecolor="black", linewidth=0.5)
 VAL_FS = 6
@@ -121,22 +121,22 @@ def bar(ax, x, h, w, mode, **kw):
     ax.bar(x, h, w, color=color, hatch=hatch, **BAR_EDGE, **kw)
 
 
-# Each workload: DiskANN BFS given MERIT's N+M-cache memory, MERIT-N (N-cache only), full MERIT.
+# Each workload: DiskANN BFS given NEIGHBORCACHE's N+M-cache memory, NEIGHBORCACHE-N (N-cache only), full NEIGHBORCACHE.
 WORKLOADS = [
     ("Zipf $\\alpha$=1.2",
      [("DiskANN", f"{STABLE}/bloom_20261004/diskann_bfs_eqmem_nm"),
-      ("MERIT-N", f"{STABLE}/bloom_20261004/diskann_ncache"),
-      ("MERIT", f"{STABLE}/bloom_20261004/vanilla_merit")]),
+      ("NEIGHBORCACHE-N", f"{STABLE}/bloom_20261004/diskann_ncache"),
+      ("NEIGHBORCACHE", f"{STABLE}/bloom_20261004/vanilla_neighborcache")]),
     ("Hotspot shift ($\\alpha$=0.8)",
      [("DiskANN", f"{MOVING}/diskann_bfs"),
-      ("MERIT-N", f"{MOVING}/diskann_ncache"),
-      ("MERIT", f"{MOVING}/vanilla_merit")]),
+      ("NEIGHBORCACHE-N", f"{MOVING}/diskann_ncache"),
+      ("NEIGHBORCACHE", f"{MOVING}/vanilla_neighborcache")]),
 ]
 
 # Fig. 1: overall throughput on SIFT100M and SIFT1B
 SCALES = [("SIFT100M", WORKLOADS[0][1]),
-          ("SIFT1B", [("DiskANN", f"{S1B}/diskann_bfs_eqmem_nm"), ("MERIT-N", f"{S1B}/diskann_ncache"),
-                      ("MERIT", f"{S1B}/vanilla_merit")])]
+          ("SIFT1B", [("DiskANN", f"{S1B}/diskann_bfs_eqmem_nm"), ("NEIGHBORCACHE-N", f"{S1B}/diskann_ncache"),
+                      ("NEIGHBORCACHE", f"{S1B}/vanilla_neighborcache")])]
 fig, ax = plt.subplots(figsize=(COL, 1.7))
 width = 0.26
 for g, (name, modes) in enumerate(SCALES):
@@ -178,8 +178,8 @@ save(fig, "fig2_latency_breakdown")
 fig, ax = plt.subplots(figsize=(COL, 1.6))
 window = 50000
 SHIFT1B = "/mnt/graid_single/sift1b/runs/shift_a1p2_5x1m_n2p5_d100_t20"
-shift_modes = [("DiskANN", f"{SHIFT1B}/diskann_bfs_eqmem_nm"), ("MERIT-N", f"{SHIFT1B}/diskann_ncache"),
-               ("MERIT", f"{SHIFT1B}/vanilla_merit")]
+shift_modes = [("DiskANN", f"{SHIFT1B}/diskann_bfs_eqmem_nm"), ("NEIGHBORCACHE-N", f"{SHIFT1B}/diskann_ncache"),
+               ("NEIGHBORCACHE", f"{SHIFT1B}/vanilla_neighborcache")]
 if not all(os.path.exists(f"{d}/qstats.csv") and "Beamwidth" in open(f"{d}/run.out", errors="ignore").read()
            for _, d in shift_modes):
     shift_modes = WORKLOADS[1][1]
@@ -192,7 +192,7 @@ for label, d in shift_modes:
     est = (20e6 / w) * (stats(d)["qps"] / (20e6 / lat[SKIP:].mean()))
     x = (np.arange(len(w)) + 0.5) * window / 1e6
     ax.plot(x, est, color=MODE_STYLE[label][0], label=label,
-            ls={"DiskANN": "-", "MERIT-N": "--", "MERIT": "-"}[label], lw=1.1 if label == "MERIT" else 0.9)
+            ls={"DiskANN": "-", "NEIGHBORCACHE-N": "--", "NEIGHBORCACHE": "-"}[label], lw=1.1 if label == "NEIGHBORCACHE" else 0.9)
 for b in range(1, 5):
     ax.axvline(b, color="gray", ls=":", lw=0.6)
 ax.set_xlim(0, 5)
@@ -268,7 +268,7 @@ caps = [("8", "p8_r2"), ("16", "p16"), ("32", "p32_r2"), ("64", "p64")]
 fig, ax = plt.subplots(figsize=(COL, 1.5))
 vals = [stats(f"{STABLE}/partners_20261002/{d}") for _, d in caps]
 for k, v in enumerate(vals):
-    bar(ax, k, v["qps"], 0.5, "MERIT")
+    bar(ax, k, v["qps"], 0.5, "NEIGHBORCACHE")
     ax.text(k, v["qps"] + 120, f"{v['qps']:.0f}", ha="center", va="bottom", fontsize=VAL_FS)
 ax.set_xticks(range(len(caps)))
 ax.set_xticklabels([c for c, _ in caps])
@@ -280,11 +280,11 @@ ax.set_axisbelow(True)
 save(fig, "fig6_partner_cap_sensitivity")
 
 # Fig. 7: edge-heat decay design
-designs = [("Global", f"{STABLE}/edgedecay25k_20261002/stable_decay1", f"{MOVING}/vanilla_merit"),
+designs = [("Global", f"{STABLE}/edgedecay25k_20261002/stable_decay1", f"{MOVING}/vanilla_neighborcache"),
            ("Local", f"{STABLE}/accdecay_20261003/stable",
-            f"{MOVING}/accdecay_20261003/vanilla_merit"),
+            f"{MOVING}/accdecay_20261003/vanilla_neighborcache"),
            ("Unified", f"{STABLE}/unifdecay_20261003/stable",
-            f"{MOVING}/unifdecay_20261003/vanilla_merit")]
+            f"{MOVING}/unifdecay_20261003/vanilla_neighborcache")]
 DESIGN_STYLE = [("#4477AA", ""), ("#DDAA33", ""), ("#BB5566", "")]
 fig, axes = plt.subplots(1, 2, figsize=(COL, 1.7))
 for g, wl in enumerate(["Zipf", "Shift"]):

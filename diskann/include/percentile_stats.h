@@ -28,9 +28,9 @@ struct QueryStats
     unsigned n_4k = 0;         // # of 4kB reads
     unsigned n_8k = 0;         // # of 8kB reads
     unsigned n_12k = 0;        // # of 12kB reads
-    unsigned n_ios = 0; // disk-tier node fetches (one per base frontier node or MERIT disk cache node, + reorder)
+    unsigned n_ios = 0; // disk-tier node fetches (one per base frontier node or NEIGHBORCACHE disk cache node, + reorder)
     unsigned n_unique_sectors = 0;      // distinct base _disk.index 4KB sectors (frontier path only)
-    unsigned n_unique_merit_sectors = 0; // distinct MERIT disk cache 4KB sectors touched in one query
+    unsigned n_unique_neighborcache_sectors = 0; // distinct NEIGHBORCACHE disk cache 4KB sectors touched in one query
     unsigned read_size = 0;    // total # of bytes read
     unsigned n_cmps_saved = 0; // # cmps saved
     unsigned n_cmps = 0;       // # cmps
@@ -38,29 +38,29 @@ struct QueryStats
     unsigned n_hops = 0;       // # search hops
     unsigned n_sector_cache_hits = 0; // query-local sector cache hits (no disk read)
     unsigned n_disk_reads = 0;        // actual disk read operations (frontier misses)
-    unsigned n_merit_dc_hits = 0;     // nodes served from MERIT disk-cache file
-    unsigned n_merit_sector_cache_hits = 0; // subset of n_sector_cache_hits served from cached D-cache pages
-    unsigned n_merit_disk_reads = 0;        // subset of n_disk_reads issued to the D-cache file
-    unsigned n_merit_shared_cross_hits = 0; // subset of n_merit_sector_cache_hits on pages read by other queries
-    unsigned n_merit_mem_evictions = 0; // runtime evictions from MERIT memory pool
-    unsigned n_merit_dyn_hits = 0;      // nodes served from runtime-flushed d-cache pages
+    unsigned n_neighborcache_dc_hits = 0;     // nodes served from NEIGHBORCACHE disk-cache file
+    unsigned n_neighborcache_sector_cache_hits = 0; // subset of n_sector_cache_hits served from cached D-cache pages
+    unsigned n_neighborcache_disk_reads = 0;        // subset of n_disk_reads issued to the D-cache file
+    unsigned n_neighborcache_shared_cross_hits = 0; // subset of n_neighborcache_sector_cache_hits on pages read by other queries
+    unsigned n_neighborcache_mem_evictions = 0; // runtime evictions from NEIGHBORCACHE memory pool
+    unsigned n_neighborcache_dyn_hits = 0;      // nodes served from runtime-flushed d-cache pages
     // Beam-time classification (one increment per expanded beam neighbor):
-    // n-cache → n_cache_hits; same-query seed-page members → n_merit_prefetch_hits;
-    // d-cache directory (seed page not yet in query prefetch buffer) → n_merit_dcache_seed_hits.
-    unsigned n_merit_prefetch_hits = 0;     // hit in query-local merit_dcache_member_packed_loc
-    unsigned n_merit_dcache_seed_hits = 0;  // d-cache directory hit (triggers seed-page serve)
+    // n-cache → n_cache_hits; same-query seed-page members → n_neighborcache_prefetch_hits;
+    // d-cache directory (seed page not yet in query prefetch buffer) → n_neighborcache_dcache_seed_hits.
+    unsigned n_neighborcache_prefetch_hits = 0;     // hit in query-local neighborcache_dcache_member_packed_loc
+    unsigned n_neighborcache_dcache_seed_hits = 0;  // d-cache directory hit (triggers seed-page serve)
     unsigned n_beam_lookups = 0;            // process_beam_neighbor invocations
-    unsigned n_merit_dyn_flushes = 0;   // seed pages written at query end / n-cache evict
-    unsigned n_merit_dyn_pages = 0;     // committed dynamic d-cache pages after this query
-    unsigned n_merit_dyn_disk_reads = 0; // physical 4KB reads from the dynamic d-cache file
-    unsigned n_merit_base_pages_avoided = 0; // base pages not read because dynamic d-cache served them
-    unsigned n_merit_dcache_probe = 0;   // query sampled while the dynamic d-cache gate was off
-    unsigned n_merit_mcache_hits = 0;    // expanded nodes whose metadata was already resident
-    unsigned n_merit_mcache_misses = 0;  // expanded nodes inserted into the metadata cache
-    unsigned n_merit_multiread_ios = 0;   // disk reads spanning nsectors>1 (pct80 seed groups)
-    unsigned n_merit_io_avoided = 0;      // continuation sectors not re-read (grouped under multiread)
-    unsigned n_merit_setcover_grouped = 0; // nodes pulled into set-cover via multiread span
-    unsigned n_merit_finalize_skipped = 0; // merit pending nodes dropped in finalize (sec_buf null)
+    unsigned n_neighborcache_dyn_flushes = 0;   // seed pages written at query end / n-cache evict
+    unsigned n_neighborcache_dyn_pages = 0;     // committed dynamic d-cache pages after this query
+    unsigned n_neighborcache_dyn_disk_reads = 0; // physical 4KB reads from the dynamic d-cache file
+    unsigned n_neighborcache_base_pages_avoided = 0; // base pages not read because dynamic d-cache served them
+    unsigned n_neighborcache_dcache_probe = 0;   // query sampled while the dynamic d-cache gate was off
+    unsigned n_neighborcache_mcache_hits = 0;    // expanded nodes whose metadata was already resident
+    unsigned n_neighborcache_mcache_misses = 0;  // expanded nodes inserted into the metadata cache
+    unsigned n_neighborcache_multiread_ios = 0;   // disk reads spanning nsectors>1 (pct80 seed groups)
+    unsigned n_neighborcache_io_avoided = 0;      // continuation sectors not re-read (grouped under multiread)
+    unsigned n_neighborcache_setcover_grouped = 0; // nodes pulled into set-cover via multiread span
+    unsigned n_neighborcache_finalize_skipped = 0; // neighborcache pending nodes dropped in finalize (sec_buf null)
     // Consecutive disk-read sector id gaps (only recorded with query sector cache + stats)
     uint64_t sum_abs_sector_jump = 0;
     unsigned n_sector_jump_samples = 0;
@@ -87,11 +87,11 @@ struct QueryStats
     struct HopFrontierRecord
     {
         unsigned hop = 0;
-        std::vector<uint32_t> merit_nodes;
+        std::vector<uint32_t> neighborcache_nodes;
         std::vector<uint32_t> base_nodes;
         struct PhysicalRead
         {
-            bool merit = false;
+            bool neighborcache = false;
             uint64_t sector = 0;
             uint16_t nsectors = 1;
         };

@@ -49,13 +49,13 @@ def last_int(pattern: str, text: str) -> int | None:
 rows = []
 for point in sorted(ROOT.glob("n[0-9][0-9][0-9]")):
     result = point / "recall_qps.json"
-    run = point / "merit_L100/run.out"
+    run = point / "neighborcache_L100/run.out"
     if not result.exists() or not run.exists():
         continue
-    perf = next(r for r in json.loads(result.read_text()) if r["system"] == "merit" and r["L"] == 100)
+    perf = next(r for r in json.loads(result.read_text()) if r["system"] == "neighborcache" and r["L"] == 100)
     text = run.read_text(errors="ignore")
     pct_n = int(point.name[1:])
-    ncap = last_int(r"MERIT N-cache exact node cap: (\d+)", text)
+    ncap = last_int(r"NEIGHBORCACHE N-cache exact node cap: (\d+)", text)
     dcap = last_int(r"d-cache pages<=(\d+)", text)
     mcap = last_int(r"m-cache cap=(\d+)", text)
     after_load = last_int(r"after_load rss=\s*(\d+) kB", text)

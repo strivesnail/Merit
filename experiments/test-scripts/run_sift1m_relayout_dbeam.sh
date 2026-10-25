@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# 1M: base index relayout (directed_beam / edge_star / hotnode) vs MERIT disk cache baseline.
+# 1M: base index relayout (directed_beam / edge_star / hotnode) vs NEIGHBORCACHE disk cache baseline.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DISKANN_BUILD="${DISKANN_BUILD:-$(cd "${SCRIPT_DIR}/../../diskann/build" && pwd)}"
 PERSIST_DATA_DIR="${DATA_DIR:-/home/jianz/workplace/diskann/anndisk/data/sift1m}"
-# shellcheck source=merit_ramfs_env.sh disable=SC1091
-source "${SCRIPT_DIR}/merit_ramfs_env.sh"
-merit_ramfs_activate "${PERSIST_DATA_DIR}"
-DATA_DIR="${MERIT_RAMFS_ACTIVE_DATA_DIR}"
+# shellcheck source=neighborcache_ramfs_env.sh disable=SC1091
+source "${SCRIPT_DIR}/neighborcache_ramfs_env.sh"
+neighborcache_ramfs_activate "${PERSIST_DATA_DIR}"
+DATA_DIR="${NEIGHBORCACHE_RAMFS_ACTIVE_DATA_DIR}"
 INDEX_PREFIX="${DATA_DIR}/sift1m_index"
 PROFILE="${DATA_DIR}/run2_profile_same_trace"
 BASE_FILE="${PERSIST_DATA_DIR}/sift_base.fbin"
@@ -36,13 +36,13 @@ COMMON=(
   --enable_query_sector_cache
 )
 
-MERIT=(
-  --merit_memory_gb 0.01
-  --merit_disk_cache_ratio "${DISK_RATIO}"
-  --merit_profile_prefix "${PROFILE}"
-  --merit_disk_cache_exclude_memory true
-  --merit_disk_cache_layout directed_beam
-  --merit_disk_cache_k_hops 1
+NEIGHBORCACHE=(
+  --neighborcache_memory_gb 0.01
+  --neighborcache_disk_cache_ratio "${DISK_RATIO}"
+  --neighborcache_profile_prefix "${PROFILE}"
+  --neighborcache_disk_cache_exclude_memory true
+  --neighborcache_disk_cache_layout directed_beam
+  --neighborcache_disk_cache_k_hops 1
 )
 
 parse_row() {
@@ -74,17 +74,17 @@ offline_relayout() {
 }
 
 run_search() {
-  local tag="$1" index="$2" order="${3:-}" merit="${4:-0}"
+  local tag="$1" index="$2" order="${3:-}" neighborcache="${4:-0}"
   local out="${OUT_ROOT}/${tag}"
   mkdir -p "${out}"
-  echo "======== search ${tag} index=${index} merit=${merit} ========"
+  echo "======== search ${tag} index=${index} neighborcache=${neighborcache} ========"
   local extra=()
   if [[ -n "${order}" ]]; then
     extra+=(--relayout_order_prefix "${order}")
   fi
-  if [[ "${merit}" == "1" ]]; then
+  if [[ "${neighborcache}" == "1" ]]; then
     /usr/bin/time -f "elapsed=%es" "${SEARCH}" \
-      "${COMMON[@]}" "${MERIT[@]}" \
+      "${COMMON[@]}" "${NEIGHBORCACHE[@]}" \
       --index_path_prefix "${index}" \
       --result_path "${out}/run" \
       "${extra[@]}" \
@@ -114,14 +114,14 @@ run_search() {
   offline_relayout node 1 "${ORDER_NODE}" "${INDEX_NODE}"
 
   run_search orig_plain "${INDEX_PREFIX}"
-  run_search orig_merit "${INDEX_PREFIX}" "" 1
+  run_search orig_neighborcache "${INDEX_PREFIX}" "" 1
   run_search dbeam_plain "${INDEX_DBEAM}" "${ORDER_DBEAM}"
-  run_search dbeam_merit "${INDEX_DBEAM}" "${ORDER_DBEAM}" 1
+  run_search dbeam_neighborcache "${INDEX_DBEAM}" "${ORDER_DBEAM}" 1
   run_search node_plain "${INDEX_NODE}" "${ORDER_NODE}"
 
   echo "===== SUMMARY L=${L} W=${W} ====="
   printf "%-16s %10s %10s %10s %10s %8s\n" "case" "MeanIOs" "BasePages" "DiskReads" "DiskCachePg" "Recall"
-  for tag in orig_plain orig_merit dbeam_plain dbeam_merit node_plain; do
+  for tag in orig_plain orig_neighborcache dbeam_plain dbeam_neighborcache node_plain; do
     row=$(parse_row "${OUT_ROOT}/${tag}.out")
     ios=$(echo "$row" | awk '{print $6}')
     bp=$(echo "$row" | awk '{print $7}')

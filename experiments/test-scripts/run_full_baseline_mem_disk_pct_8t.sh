@@ -59,40 +59,40 @@ print_row() {
   run_one baseline
 
   run_one mem001 \
-    --merit_profile_prefix "${PROFILE}" \
-    --merit_memory_gb 0.01
+    --neighborcache_profile_prefix "${PROFILE}" \
+    --neighborcache_memory_gb 0.01
 
   run_one mem001_disk01_E \
-    --merit_profile_prefix "${PROFILE}" \
-    --merit_memory_gb 0.01 \
-    --merit_disk_cache_ratio 0.1 \
-    --merit_disk_cache_exclude_memory true \
-    --merit_disk_cache_k_hops 1 \
-    --merit_disk_cache_layout directed_beam
+    --neighborcache_profile_prefix "${PROFILE}" \
+    --neighborcache_memory_gb 0.01 \
+    --neighborcache_disk_cache_ratio 0.1 \
+    --neighborcache_disk_cache_exclude_memory true \
+    --neighborcache_disk_cache_k_hops 1 \
+    --neighborcache_disk_cache_layout directed_beam
 
   run_one disk01_E \
-    --merit_profile_prefix "${PROFILE}" \
-    --merit_disk_cache_ratio 0.1 \
-    --merit_disk_cache_k_hops 1 \
-    --merit_disk_cache_layout directed_beam
+    --neighborcache_profile_prefix "${PROFILE}" \
+    --neighborcache_disk_cache_ratio 0.1 \
+    --neighborcache_disk_cache_k_hops 1 \
+    --neighborcache_disk_cache_layout directed_beam
 
   run_one disk01_pct80 \
-    --merit_profile_prefix "${PROFILE}" \
-    --merit_disk_cache_ratio 0.1 \
-    --merit_disk_cache_k_hops 1 \
-    --merit_disk_cache_layout directed_beam_pct80
+    --neighborcache_profile_prefix "${PROFILE}" \
+    --neighborcache_disk_cache_ratio 0.1 \
+    --neighborcache_disk_cache_k_hops 1 \
+    --neighborcache_disk_cache_layout directed_beam_pct80
 
   run_one disk01_pct90 \
-    --merit_profile_prefix "${PROFILE}" \
-    --merit_disk_cache_ratio 0.1 \
-    --merit_disk_cache_k_hops 1 \
-    --merit_disk_cache_layout directed_beam_pct90
+    --neighborcache_profile_prefix "${PROFILE}" \
+    --neighborcache_disk_cache_ratio 0.1 \
+    --neighborcache_disk_cache_k_hops 1 \
+    --neighborcache_disk_cache_layout directed_beam_pct90
 
   run_one disk01_pct100 \
-    --merit_profile_prefix "${PROFILE}" \
-    --merit_disk_cache_ratio 0.1 \
-    --merit_disk_cache_k_hops 1 \
-    --merit_disk_cache_layout directed_beam_pct100
+    --neighborcache_profile_prefix "${PROFILE}" \
+    --neighborcache_disk_cache_ratio 0.1 \
+    --neighborcache_disk_cache_k_hops 1 \
+    --neighborcache_disk_cache_layout directed_beam_pct100
 
   echo ""
   printf "%-22s %12s %12s %10s\n" "Config" "Disk Reads" "DiskCachePg" "Recall@1"

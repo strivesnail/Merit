@@ -16,7 +16,7 @@ CURVE = "/mnt/graid_single/sift1b/runs/motivation_bfs_curve_a1p2"
 SIM = "/mnt/graid_single/sift1b/runs/motivation_trace_a1p2/dcache_sim.json"
 PARENT = "/mnt/graid_single/sift1b/runs/motivation_trace_a1p2/motivation_parent.json"
 MEM_NODES = 1173
-OUT = "/home/jianz/workload/code/Merit/docs/figures/report"
+OUT = "/home/jianz/workload/code/NeighborCache/docs/figures/report"
 FONT_DIR = os.path.expanduser("~/.fonts/libertinus")
 COL = 3.33
 

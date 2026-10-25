@@ -5,7 +5,7 @@ cd "$(dirname "$0")"
 
 WL=/home/jianz/workload/data/sift10m/workloads/core/zipf_a1p2_1m_s24
 ROOT=${ROOT:-/mnt/graid_single/sift10m/runs/dcache_optimization_a1p2}
-NEW_SEARCH=${NEW_SEARCH:-/home/jianz/workload/code/Merit/diskann/build/apps/search_disk_index}
+NEW_SEARCH=${NEW_SEARCH:-/home/jianz/workload/code/NeighborCache/diskann/build/apps/search_disk_index}
 OLD_SEARCH=${OLD_SEARCH:-/tmp/search_disk_index.wgate}
 NCAP=6835
 DPAGES=6721
@@ -20,7 +20,7 @@ run_one() { # tag, binary, system, writer threads, commit threads, loc shards
   fi
   echo "$tag writers=$writers commits=$commits loc_shards=$shards $(date -Is)"
   env INDEX=/mnt/graid_single/sift10m/sift10m_index \
-      SEARCH="$search" NET_GATE=1 NET_WRITE_WEIGHT=1 MERIT_BFS=1000 \
+      SEARCH="$search" NET_GATE=1 NET_WRITE_WEIGHT=1 NEIGHBORCACHE_BFS=1000 \
       NCAP="$NCAP" DPAGES="$DPAGES" UNIQUE=46929 \
       WRITER_THREADS="$writers" COMMIT_THREADS="$commits" LOC_SHARDS="$shards" \
       QUERY="$WL.u8bin" OUTROOT="$out" LS=100 SYSTEMS="$system" \
@@ -34,10 +34,10 @@ run_one() { # tag, binary, system, writer threads, commit threads, loc shards
 
 run_one n_only "$NEW_SEARCH" ncache 1 1 64
 if [ -x "$OLD_SEARCH" ]; then
-  run_one legacy "$OLD_SEARCH" merit 1 1 64
+  run_one legacy "$OLD_SEARCH" neighborcache 1 1 64
 fi
-run_one async_w1 "$NEW_SEARCH" merit 1 1 64
-run_one async_w2 "$NEW_SEARCH" merit 2 2 64
-run_one async_w4 "$NEW_SEARCH" merit 4 4 64
+run_one async_w1 "$NEW_SEARCH" neighborcache 1 1 64
+run_one async_w2 "$NEW_SEARCH" neighborcache 2 2 64
+run_one async_w4 "$NEW_SEARCH" neighborcache 4 4 64
 
 echo ALLDONE

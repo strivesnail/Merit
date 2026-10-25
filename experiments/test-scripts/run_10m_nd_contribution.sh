@@ -17,7 +17,7 @@ run_point() { # tag, N, D, system
   fi
   env INDEX=/mnt/graid_single/sift10m/sift10m_index \
       SEARCH=/tmp/search_disk_index.wgate \
-      NET_GATE=1 NET_WRITE_WEIGHT=1 MERIT_BFS=1000 \
+      NET_GATE=1 NET_WRITE_WEIGHT=1 NEIGHBORCACHE_BFS=1000 \
       NCAP="$n" DPAGES="$d" UNIQUE=46929 \
       QUERY="$WL.u8bin" OUTROOT="$out" LS=100 SYSTEMS="$system" \
       ./run_1b_perturbed.sh
@@ -33,7 +33,7 @@ run_point q00_none 1 0 ncache
 # Q10: all extra 18 MiB assigned to n-cache.
 run_point q10_n 48359 0 ncache
 # Q01: baseline d-cache, n-cache effectively off.
-run_point q01_d 1 4693 merit
+run_point q01_d 1 4693 neighborcache
 # Q11: selected final configuration.
-run_point q11_both 48359 4693 merit
+run_point q11_both 48359 4693 neighborcache
 echo ALLDONE

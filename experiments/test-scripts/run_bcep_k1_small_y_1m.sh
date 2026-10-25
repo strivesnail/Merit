@@ -4,10 +4,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DISKANN_BUILD="${DISKANN_BUILD:-$(cd "${SCRIPT_DIR}/../../diskann/build" && pwd)}"
 PERSIST_DATA_DIR="${DATA_DIR:-/home/jianz/workplace/diskann/anndisk/data/sift1m}"
-# shellcheck source=merit_ramfs_env.sh disable=SC1091
-source "${SCRIPT_DIR}/merit_ramfs_env.sh"
-merit_ramfs_activate "${PERSIST_DATA_DIR}"
-DATA_DIR="${MERIT_RAMFS_ACTIVE_DATA_DIR}"
+# shellcheck source=neighborcache_ramfs_env.sh disable=SC1091
+source "${SCRIPT_DIR}/neighborcache_ramfs_env.sh"
+neighborcache_ramfs_activate "${PERSIST_DATA_DIR}"
+DATA_DIR="${NEIGHBORCACHE_RAMFS_ACTIVE_DATA_DIR}"
 SEARCH="${DISKANN_BUILD}/apps/search_disk_index"
 STAMP="$(date +%Y%m%d_%H%M%S)"
 OUT_ROOT="${PERSIST_DATA_DIR}/workloads_disk01_runs/bcep_k1_${STAMP}"
@@ -25,8 +25,8 @@ run_case() {
   echo "======== ${suite}/${tag} layout=${layout} k_hops=${KH} ========"
   /usr/bin/time -f "elapsed=%es" "${SEARCH}" \
     "$@" \
-    --merit_disk_cache_layout "${layout}" \
-    --merit_disk_cache_k_hops "${KH}" \
+    --neighborcache_disk_cache_layout "${layout}" \
+    --neighborcache_disk_cache_k_hops "${KH}" \
     --result_path "${out}/run" \
     >"${OUT_ROOT}/${suite}/${tag}.out" 2>&1
   grep -E 'Layout E|packing|selected|^\s+' "${OUT_ROOT}/${suite}/${tag}.out" | tail -3
@@ -38,7 +38,7 @@ run_baseline() {
   local out="${OUT_ROOT}/${suite}/baseline"
   shift
   mkdir -p "${out}"
-  echo "======== ${suite}/baseline (no MERIT) ========"
+  echo "======== ${suite}/baseline (no NEIGHBORCACHE) ========"
   /usr/bin/time -f "elapsed=%es" "${SEARCH}" \
     "$@" \
     --result_path "${out}/run" \
@@ -88,8 +88,8 @@ print_summary_row() {
     --recall_at 1 --search_list 50 --beamwidth 4
     --num_threads 8 --num_nodes_to_cache 0
     --enable_query_sector_cache
-    --merit_profile_prefix "${DATA_DIR}/workloads/profiles/small_y_10k"
-    --merit_disk_cache_ratio 0.1
+    --neighborcache_profile_prefix "${DATA_DIR}/workloads/profiles/small_y_10k"
+    --neighborcache_disk_cache_ratio 0.1
   )
 
   SMALL_BASE=(
@@ -110,9 +110,9 @@ print_summary_row() {
     --recall_at 10 --search_list 100 --beamwidth 2
     --num_threads 16 --num_nodes_to_cache 0
     --enable_query_sector_cache
-    --merit_memory_gb 0
-    --merit_disk_cache_ratio 0.1
-    --merit_profile_prefix "${DATA_DIR}/run2_profile_same_trace"
+    --neighborcache_memory_gb 0
+    --neighborcache_disk_cache_ratio 0.1
+    --neighborcache_profile_prefix "${DATA_DIR}/run2_profile_same_trace"
   )
 
   M1M_BASE=(
@@ -141,7 +141,7 @@ print_summary_row() {
   done
 
   echo "===== small_y L=50 W=4 (no memory) ====="
-  printf "%-10s %12s %12s %12s %12s %10s\n" "Layout" "DiskReads" "BasePages" "DiskCachePg" "MeritDcHit" "Recall"
+  printf "%-10s %12s %12s %12s %12s %10s\n" "Layout" "DiskReads" "BasePages" "DiskCachePg" "NeighborCacheDcHit" "Recall"
   print_summary_row baseline "${OUT_ROOT}/small_y/baseline.out" small_y
   for spec in "${LAYOUTS[@]}"; do
     letter="${spec%%:*}"
@@ -150,7 +150,7 @@ print_summary_row() {
 
   echo ""
   echo "===== 1M L=100 W=2 (no memory, disk0.1 for B/C/E/P) ====="
-  printf "%-10s %12s %12s %12s %12s %10s\n" "Layout" "DiskReads" "BasePages" "DiskCachePg" "MeritDcHit" "Recall"
+  printf "%-10s %12s %12s %12s %12s %10s\n" "Layout" "DiskReads" "BasePages" "DiskCachePg" "NeighborCacheDcHit" "Recall"
   print_summary_row baseline "${OUT_ROOT}/1m/baseline.out" 1m
   for spec in "${LAYOUTS[@]}"; do
     letter="${spec%%:*}"

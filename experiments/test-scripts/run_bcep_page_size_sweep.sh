@@ -8,14 +8,14 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 PERSIST_DATA_DIR="${DATA_DIR:-/home/jianz/workplace/diskann/anndisk/data/sift1m}"
-# shellcheck source=merit_ramfs_env.sh disable=SC1091
-source "${SCRIPT_DIR}/merit_ramfs_env.sh"
-if [[ "${MERIT_USE_RAMFS:-1}" == "0" ]]; then
+# shellcheck source=neighborcache_ramfs_env.sh disable=SC1091
+source "${SCRIPT_DIR}/neighborcache_ramfs_env.sh"
+if [[ "${NEIGHBORCACHE_USE_RAMFS:-1}" == "0" ]]; then
   DATA_DIR="${PERSIST_DATA_DIR}"
-  echo "MERIT_USE_RAMFS=0: using persistent DATA_DIR=${DATA_DIR}" >&2
+  echo "NEIGHBORCACHE_USE_RAMFS=0: using persistent DATA_DIR=${DATA_DIR}" >&2
 else
-  merit_ramfs_activate "${PERSIST_DATA_DIR}"
-  DATA_DIR="${MERIT_RAMFS_ACTIVE_DATA_DIR}"
+  neighborcache_ramfs_activate "${PERSIST_DATA_DIR}"
+  DATA_DIR="${NEIGHBORCACHE_RAMFS_ACTIVE_DATA_DIR}"
 fi
 
 STAMP="$(date +%Y%m%d_%H%M%S)"
@@ -138,10 +138,10 @@ run_case() {
     --recall_at 1 --search_list 50 --beamwidth 4 \
     --num_threads 8 --num_nodes_to_cache 0 \
     --enable_query_sector_cache \
-    --merit_profile_prefix "${DATA_DIR}/workloads/profiles/small_y_10k" \
-    --merit_disk_cache_ratio 0.1 \
-    --merit_disk_cache_layout "${layout}" \
-    --merit_disk_cache_k_hops "${KH}" \
+    --neighborcache_profile_prefix "${DATA_DIR}/workloads/profiles/small_y_10k" \
+    --neighborcache_disk_cache_ratio 0.1 \
+    --neighborcache_disk_cache_layout "${layout}" \
+    --neighborcache_disk_cache_k_hops "${KH}" \
     --result_path "${out}/run" \
     >"${out}.out" 2>&1
 

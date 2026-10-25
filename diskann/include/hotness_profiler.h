@@ -31,7 +31,7 @@ class HotnessProfiler
     DISKANN_DLLEXPORT void on_node_visit(uint32_t node_id);
     // Child expanded with known discoverer parent: credit parent out-heat (+ optional edge map).
     DISKANN_DLLEXPORT void on_directed_edge(uint32_t parent, uint32_t child);
-    DISKANN_DLLEXPORT void on_merit_hop_frontier(const std::vector<uint32_t> &merit_nodes);
+    DISKANN_DLLEXPORT void on_neighborcache_hop_frontier(const std::vector<uint32_t> &neighborcache_nodes);
 
     DISKANN_DLLEXPORT int save(const std::string &output_prefix) const;
     DISKANN_DLLEXPORT void print_cdf_summary() const;
@@ -43,7 +43,7 @@ class HotnessProfiler
     DISKANN_DLLEXPORT static int load_node_out_heat(const std::string &profile_prefix,
                                                     std::vector<uint64_t> &node_out_heat);
 
-    // Layout D: sorted merit frontier -> weight (hop co-occurrence from profiling).
+    // Layout D: sorted neighborcache frontier -> weight (hop co-occurrence from profiling).
     DISKANN_DLLEXPORT static int load_frontier_templates(
         const std::string &profile_prefix, std::vector<std::pair<uint64_t, std::vector<uint32_t>>> &templates);
 

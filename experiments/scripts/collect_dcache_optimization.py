@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Collect the focused MERIT D-cache optimization ablation."""
+"""Collect the focused NEIGHBORCACHE D-cache optimization ablation."""
 
 from __future__ import annotations
 
@@ -29,8 +29,8 @@ def mean_qstats(path: Path) -> dict[str, float]:
         "io_us",
         "cpu_us",
         "n_disk_reads",
-        "n_merit_dyn_disk_reads",
-        "n_merit_base_pages_avoided",
+        "n_neighborcache_dyn_disk_reads",
+        "n_neighborcache_base_pages_avoided",
     )
     return {
         field: sum(float(row[field]) for row in rows) / len(rows)
@@ -59,8 +59,8 @@ for tag in ORDER:
     qstats = point / f"{system}_L100/qstats.csv"
     text = run.read_text(errors="ignore")
     perf.update(tag=tag, **mean_qstats(qstats))
-    async_line = re.findall(r"MERIT async_commit:.*", text)
-    gate_lines = re.findall(r"MERIT dcache net gate:.*", text)
+    async_line = re.findall(r"NEIGHBORCACHE async_commit:.*", text)
+    gate_lines = re.findall(r"NEIGHBORCACHE dcache net gate:.*", text)
     perf["async_stats"] = async_line[-1] if async_line else ""
     perf["gate_transitions"] = gate_lines
     rows.append(perf)

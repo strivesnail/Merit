@@ -19,11 +19,11 @@ COMMON=(
   --recall_at 1 --search_list 50 --beamwidth 4
   --num_threads 8 --num_nodes_to_cache 0
   --enable_query_sector_cache
-  --merit_profile_prefix "${PROFILE}"
-  --merit_memory_gb 0.01
-  --merit_disk_cache_ratio 0.1
-  --merit_disk_cache_exclude_memory true
-  --merit_disk_cache_k_hops 1
+  --neighborcache_profile_prefix "${PROFILE}"
+  --neighborcache_memory_gb 0.01
+  --neighborcache_disk_cache_ratio 0.1
+  --neighborcache_disk_cache_exclude_memory true
+  --neighborcache_disk_cache_k_hops 1
 )
 
 run_one() {
@@ -31,7 +31,7 @@ run_one() {
   mkdir -p "${OUT}/${tag}/run"
   echo "== ${tag} =="
   "${SEARCH}" "${COMMON[@]}" \
-    --merit_disk_cache_layout "${layout}" \
+    --neighborcache_disk_cache_layout "${layout}" \
     --result_path "${OUT}/${tag}/run" >"${OUT}/${tag}.out" 2>&1
 }
 

@@ -36,14 +36,14 @@
 namespace po = boost::program_options;
 
 #ifndef _WINDOWS
-// MERIT_QUERY_CPUS="0-9" pins OpenMP thread i to the i-th listed core.
-static void merit_pin_this_query_thread()
+// NEIGHBORCACHE_QUERY_CPUS="0-9" pins OpenMP thread i to the i-th listed core.
+static void neighborcache_pin_this_query_thread()
 {
     thread_local bool pinned = false;
     if (pinned)
         return;
     pinned = true;
-    const char *spec = std::getenv("MERIT_QUERY_CPUS");
+    const char *spec = std::getenv("NEIGHBORCACHE_QUERY_CPUS");
     if (spec == nullptr || *spec == '\0')
         return;
     std::vector<int> cpus;
@@ -74,7 +74,7 @@ static void merit_pin_this_query_thread()
     CPU_ZERO(&set);
     CPU_SET(cpu, &set);
     if (pthread_setaffinity_np(pthread_self(), sizeof(set), &set) == 0)
-        diskann::cout << "MERIT pin query thread=" << tid << " cpu=" << cpu << std::endl;
+        diskann::cout << "NEIGHBORCACHE pin query thread=" << tid << " cpu=" << cpu << std::endl;
 }
 #endif
 
@@ -119,14 +119,14 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
                       const std::vector<std::string> &query_filters, const bool use_reorder_data = false,
                       const bool enable_access_profile = false, const std::string &access_profile_prefix = "",
                       const std::string &relayout_order_prefix = "", const bool enable_query_sector_cache = false,
-                      const double merit_memory_gb = 0.0, const std::string &merit_profile_prefix = "",
-                      const double merit_host_memory_gb = 0.0, const double merit_memory_reserve_gb = 8.0,
-                      const double merit_disk_cache_ratio = 0.0, const bool merit_disk_cache_exclude_memory = true,
-                      const bool merit_memory_runtime_admit = false,
-                      const double merit_evict_memory_gb = 0.0, const double merit_evict_disk_ratio = 0.0,
-                      const bool merit_unified_disk_cache = false, uint32_t merit_disk_cache_k_hops = 1,
-                      const std::string &merit_disk_cache_layout = "directed_beam",
-                      const std::string &merit_disk_cache_reuse_prefix = "",
+                      const double neighborcache_memory_gb = 0.0, const std::string &neighborcache_profile_prefix = "",
+                      const double neighborcache_host_memory_gb = 0.0, const double neighborcache_memory_reserve_gb = 8.0,
+                      const double neighborcache_disk_cache_ratio = 0.0, const bool neighborcache_disk_cache_exclude_memory = true,
+                      const bool neighborcache_memory_runtime_admit = false,
+                      const double neighborcache_evict_memory_gb = 0.0, const double neighborcache_evict_disk_ratio = 0.0,
+                      const bool neighborcache_unified_disk_cache = false, uint32_t neighborcache_disk_cache_k_hops = 1,
+                      const std::string &neighborcache_disk_cache_layout = "directed_beam",
+                      const std::string &neighborcache_disk_cache_reuse_prefix = "",
                       const std::string &dump_query_stats_path = "",
                       const std::string &dump_base_nodes_path = "",
                       const std::string &dump_hop_trace_path = "")
@@ -235,78 +235,78 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
     }
 
     std::vector<uint32_t> node_list;
-    const bool dyn3_cache = (std::getenv("MERIT_DYNAMIC_3CACHE") != nullptr &&
-                             std::strcmp(std::getenv("MERIT_DYNAMIC_3CACHE"), "0") != 0);
-    const bool ncache_only = (std::getenv("MERIT_NCACHE_ONLY") != nullptr &&
-                              std::strcmp(std::getenv("MERIT_NCACHE_ONLY"), "0") != 0);
-    if (merit_memory_gb > 0.0)
+    const bool dyn3_cache = (std::getenv("NEIGHBORCACHE_DYNAMIC_3CACHE") != nullptr &&
+                             std::strcmp(std::getenv("NEIGHBORCACHE_DYNAMIC_3CACHE"), "0") != 0);
+    const bool ncache_only = (std::getenv("NEIGHBORCACHE_NCACHE_ONLY") != nullptr &&
+                              std::strcmp(std::getenv("NEIGHBORCACHE_NCACHE_ONLY"), "0") != 0);
+    if (neighborcache_memory_gb > 0.0)
     {
         uint64_t max_nodes = 0;
         std::string budget_report;
-        if (_pFlashIndex->plan_merit_memory_cache(merit_memory_gb, merit_host_memory_gb, merit_memory_reserve_gb,
+        if (_pFlashIndex->plan_neighborcache_memory_cache(neighborcache_memory_gb, neighborcache_host_memory_gb, neighborcache_memory_reserve_gb,
                                                   num_threads, max_nodes, budget_report) != 0)
         {
             diskann::cerr << budget_report << std::endl;
             return -1;
         }
-        if (const char *cap_env = std::getenv("MERIT_NCACHE_CAP_NODES"))
+        if (const char *cap_env = std::getenv("NEIGHBORCACHE_NCACHE_CAP_NODES"))
         {
             const uint64_t requested_cap = std::strtoull(cap_env, nullptr, 10);
             if (requested_cap > 0 && max_nodes > requested_cap)
             {
                 max_nodes = requested_cap;
-                diskann::cout << "MERIT N-cache exact node cap: " << max_nodes << std::endl;
+                diskann::cout << "NEIGHBORCACHE N-cache exact node cap: " << max_nodes << std::endl;
             }
         }
         diskann::cout << budget_report << std::endl;
 
         if (dyn3_cache || ncache_only)
         {
-            diskann::cout << "MERIT Memory cache: BFS around medoid, " << max_nodes << " nodes"
+            diskann::cout << "NEIGHBORCACHE Memory cache: BFS around medoid, " << max_nodes << " nodes"
                           << (ncache_only && !dyn3_cache ? " (n-cache only)." : " (DiskANN-style).") << std::endl;
             _pFlashIndex->cache_bfs_levels(max_nodes, node_list);
-            if (_pFlashIndex->load_merit_memory_pool("", node_list) != 0)
+            if (_pFlashIndex->load_neighborcache_memory_pool("", node_list) != 0)
             {
-                diskann::cerr << "Failed to load MERIT memory pool from BFS list." << std::endl;
+                diskann::cerr << "Failed to load NEIGHBORCACHE memory pool from BFS list." << std::endl;
                 return -1;
             }
         }
         else
         {
-            if (merit_profile_prefix.empty())
+            if (neighborcache_profile_prefix.empty())
             {
-                diskann::cerr << "Error: --merit_memory_gb > 0 requires --merit_profile_prefix (Run2 node_expand)."
+                diskann::cerr << "Error: --neighborcache_memory_gb > 0 requires --neighborcache_profile_prefix (Run2 node_expand)."
                               << std::endl;
                 return -1;
             }
             if (num_nodes_to_cache > 0)
             {
-                diskann::cout << "Note: --merit_memory_gb set; ignoring --num_nodes_to_cache=" << num_nodes_to_cache
+                diskann::cout << "Note: --neighborcache_memory_gb set; ignoring --num_nodes_to_cache=" << num_nodes_to_cache
                               << " (BFS medoid cache)." << std::endl;
             }
-            if (_pFlashIndex->build_merit_memory_node_list(merit_profile_prefix, max_nodes, node_list) != 0)
+            if (_pFlashIndex->build_neighborcache_memory_node_list(neighborcache_profile_prefix, max_nodes, node_list) != 0)
             {
-                diskann::cerr << "Failed to build MERIT memory node list from profile " << merit_profile_prefix
+                diskann::cerr << "Failed to build NEIGHBORCACHE memory node list from profile " << neighborcache_profile_prefix
                               << std::endl;
                 return -1;
             }
-            diskann::cout << "MERIT Memory cache: loading Top-" << node_list.size()
-                          << " nodes into MERIT memory pool." << std::endl;
-            if (_pFlashIndex->load_merit_memory_pool(merit_profile_prefix, node_list) != 0)
+            diskann::cout << "NEIGHBORCACHE Memory cache: loading Top-" << node_list.size()
+                          << " nodes into NEIGHBORCACHE memory pool." << std::endl;
+            if (_pFlashIndex->load_neighborcache_memory_pool(neighborcache_profile_prefix, node_list) != 0)
             {
-                diskann::cerr << "Failed to load MERIT memory pool." << std::endl;
+                diskann::cerr << "Failed to load NEIGHBORCACHE memory pool." << std::endl;
                 return -1;
             }
         }
-        _pFlashIndex->enable_merit_memory_runtime_admit(merit_memory_runtime_admit);
-        if (merit_memory_runtime_admit)
+        _pFlashIndex->enable_neighborcache_memory_runtime_admit(neighborcache_memory_runtime_admit);
+        if (neighborcache_memory_runtime_admit)
         {
-            diskann::cout << "MERIT memory pool: runtime admit/evict enabled (prefer num_threads=1)." << std::endl;
+            diskann::cout << "NEIGHBORCACHE memory pool: runtime admit/evict enabled (prefer num_threads=1)." << std::endl;
         }
         if (num_nodes_to_cache > 0 && (dyn3_cache || ncache_only))
         {
             std::vector<uint32_t> static_list;
-            diskann::cout << "MERIT static BFS cache: " << num_nodes_to_cache << " nodes around medoid(s)"
+            diskann::cout << "NEIGHBORCACHE static BFS cache: " << num_nodes_to_cache << " nodes around medoid(s)"
                           << std::endl;
             _pFlashIndex->cache_bfs_levels(num_nodes_to_cache, static_list);
             _pFlashIndex->load_cache_list(static_list);
@@ -325,90 +325,90 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
     node_list.shrink_to_fit();
     log_rss("after_ncache");
 
-    if (merit_disk_cache_ratio > 0.0)
+    if (neighborcache_disk_cache_ratio > 0.0)
     {
         const std::string profile =
-            !merit_profile_prefix.empty()
-                ? merit_profile_prefix
+            !neighborcache_profile_prefix.empty()
+                ? neighborcache_profile_prefix
                 : (!access_profile_prefix.empty() ? access_profile_prefix : std::string(""));
-        if (profile.empty() && merit_disk_cache_layout != "bfs")
+        if (profile.empty() && neighborcache_disk_cache_layout != "bfs")
         {
-            diskann::cerr << "Error: --merit_disk_cache_ratio > 0 requires --merit_profile_prefix "
+            diskann::cerr << "Error: --neighborcache_disk_cache_ratio > 0 requires --neighborcache_profile_prefix "
                              "(or --access_profile_prefix)."
                           << std::endl;
             return -1;
         }
         uint64_t dc_nodes = 0;
         std::string dc_report;
-        if (_pFlashIndex->plan_merit_disk_cache(merit_disk_cache_ratio, dc_nodes, dc_report,
-                                                diskann::disk_cache_layout_allows_replicas(merit_disk_cache_layout)) !=
+        if (_pFlashIndex->plan_neighborcache_disk_cache(neighborcache_disk_cache_ratio, dc_nodes, dc_report,
+                                                diskann::disk_cache_layout_allows_replicas(neighborcache_disk_cache_layout)) !=
             0)
         {
             diskann::cerr << dc_report << std::endl;
             return -1;
         }
-        if (const char *cap_env = std::getenv("MERIT_DCACHE_NODE_CAP"))
+        if (const char *cap_env = std::getenv("NEIGHBORCACHE_DCACHE_NODE_CAP"))
         {
             const uint64_t requested_cap = std::strtoull(cap_env, nullptr, 10);
             if (requested_cap > 0)
             {
                 dc_nodes = requested_cap;
-                diskann::cout << "MERIT d-cache exact node cap: " << dc_nodes << std::endl;
+                diskann::cout << "NEIGHBORCACHE d-cache exact node cap: " << dc_nodes << std::endl;
             }
         }
         diskann::cout << dc_report << std::endl;
-        diskann::cout << "MERIT disk-cache layout=" << merit_disk_cache_layout << " k_hops=" << merit_disk_cache_k_hops
+        diskann::cout << "NEIGHBORCACHE disk-cache layout=" << neighborcache_disk_cache_layout << " k_hops=" << neighborcache_disk_cache_k_hops
                       << std::endl;
         const std::string dc_out = result_output_prefix;
         const uint64_t dc_rank_skip =
-            merit_disk_cache_exclude_memory ? _pFlashIndex->merit_memory_cached_count() : 0;
+            neighborcache_disk_cache_exclude_memory ? _pFlashIndex->neighborcache_memory_cached_count() : 0;
         if (dc_rank_skip > 0)
         {
-            diskann::cout << "MERIT disk-cache: rank_skip=" << dc_rank_skip
+            diskann::cout << "NEIGHBORCACHE disk-cache: rank_skip=" << dc_rank_skip
                           << " (exclude memory-tier nodes from disk cache)." << std::endl;
         }
-        if (!merit_disk_cache_reuse_prefix.empty())
+        if (!neighborcache_disk_cache_reuse_prefix.empty())
         {
-            diskann::cout << "MERIT disk-cache: reusing disk cache at prefix " << merit_disk_cache_reuse_prefix << std::endl;
-            if (_pFlashIndex->load_merit_disk_cache_from_prefix(merit_disk_cache_reuse_prefix) != 0)
+            diskann::cout << "NEIGHBORCACHE disk-cache: reusing disk cache at prefix " << neighborcache_disk_cache_reuse_prefix << std::endl;
+            if (_pFlashIndex->load_neighborcache_disk_cache_from_prefix(neighborcache_disk_cache_reuse_prefix) != 0)
             {
-                diskann::cerr << "Failed to load MERIT disk cache from " << merit_disk_cache_reuse_prefix << std::endl;
+                diskann::cerr << "Failed to load NEIGHBORCACHE disk cache from " << neighborcache_disk_cache_reuse_prefix << std::endl;
                 return -1;
             }
         }
-        else if (_pFlashIndex->build_and_load_merit_disk_cache(profile, dc_nodes, dc_out, dc_rank_skip,
-                                                               merit_unified_disk_cache, merit_disk_cache_k_hops,
-                                                               merit_disk_cache_layout) != 0)
+        else if (_pFlashIndex->build_and_load_neighborcache_disk_cache(profile, dc_nodes, dc_out, dc_rank_skip,
+                                                               neighborcache_unified_disk_cache, neighborcache_disk_cache_k_hops,
+                                                               neighborcache_disk_cache_layout) != 0)
         {
-            diskann::cerr << "Failed to build/load MERIT disk cache." << std::endl;
+            diskann::cerr << "Failed to build/load NEIGHBORCACHE disk cache." << std::endl;
             return -1;
         }
-        const char *disable_sc = std::getenv("MERIT_DISABLE_QUERY_SECTOR_CACHE");
+        const char *disable_sc = std::getenv("NEIGHBORCACHE_DISABLE_QUERY_SECTOR_CACHE");
         if (disable_sc != nullptr && std::strcmp(disable_sc, "0") != 0)
         {
-            diskann::cout << "MERIT disk-cache: query-local sector cache disabled (MERIT_DISABLE_QUERY_SECTOR_CACHE)."
+            diskann::cout << "NEIGHBORCACHE disk-cache: query-local sector cache disabled (NEIGHBORCACHE_DISABLE_QUERY_SECTOR_CACHE)."
                           << std::endl;
         }
         else
         {
             _pFlashIndex->enable_query_sector_cache(true);
-            diskann::cout << "MERIT disk-cache: query-local sector cache enabled (base + disk cache sectors)."
+            diskann::cout << "NEIGHBORCACHE disk-cache: query-local sector cache enabled (base + disk cache sectors)."
                           << std::endl;
         }
-        if (std::getenv("MERIT_VERIFY_DC") != nullptr)
+        if (std::getenv("NEIGHBORCACHE_VERIFY_DC") != nullptr)
         {
-            if (_pFlashIndex->verify_merit_disk_cache_against_base() != 0)
-                diskann::cerr << "MERIT verify: sidecar vs base mismatches detected." << std::endl;
+            if (_pFlashIndex->verify_neighborcache_disk_cache_against_base() != 0)
+                diskann::cerr << "NEIGHBORCACHE verify: sidecar vs base mismatches detected." << std::endl;
         }
     }
 
     log_rss("after_static_dcache");
     {
-        const char *dyn_env = std::getenv("MERIT_DYNAMIC_3CACHE");
+        const char *dyn_env = std::getenv("NEIGHBORCACHE_DYNAMIC_3CACHE");
         if (dyn_env != nullptr && std::strcmp(dyn_env, "0") != 0)
         {
-            _pFlashIndex->enable_merit_dynamic_3cache(true, result_output_prefix);
-            diskann::cout << "MERIT dynamic 3-cache enabled (n-cache LRU + m-cache + runtime d-cache flush)."
+            _pFlashIndex->enable_neighborcache_dynamic_3cache(true, result_output_prefix);
+            diskann::cout << "NEIGHBORCACHE dynamic 3-cache enabled (n-cache LRU + m-cache + runtime d-cache flush)."
                           << std::endl;
         }
     }
@@ -458,41 +458,41 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
         diskann::cout << "..done" << std::endl;
     }
 
-    const std::string merit_profile_for_reload =
-        !merit_profile_prefix.empty() ? merit_profile_prefix : access_profile_prefix;
-    if (merit_evict_memory_gb > 0.0)
+    const std::string neighborcache_profile_for_reload =
+        !neighborcache_profile_prefix.empty() ? neighborcache_profile_prefix : access_profile_prefix;
+    if (neighborcache_evict_memory_gb > 0.0)
     {
-        if (merit_profile_for_reload.empty())
+        if (neighborcache_profile_for_reload.empty())
         {
-            diskann::cerr << "Error: --merit_evict_memory_gb requires --merit_profile_prefix." << std::endl;
+            diskann::cerr << "Error: --neighborcache_evict_memory_gb requires --neighborcache_profile_prefix." << std::endl;
             return -1;
         }
         uint64_t mem_evicted = 0;
         std::string mem_report;
-        diskann::cout << "=== MERIT memory batch eviction (reload to " << merit_evict_memory_gb << " GB) ==="
+        diskann::cout << "=== NEIGHBORCACHE memory batch eviction (reload to " << neighborcache_evict_memory_gb << " GB) ==="
                       << std::endl;
-        if (_pFlashIndex->reload_merit_memory_cache(merit_profile_for_reload, merit_evict_memory_gb,
-                                                    merit_host_memory_gb, merit_memory_reserve_gb, num_threads,
+        if (_pFlashIndex->reload_neighborcache_memory_cache(neighborcache_profile_for_reload, neighborcache_evict_memory_gb,
+                                                    neighborcache_host_memory_gb, neighborcache_memory_reserve_gb, num_threads,
                                                     mem_evicted, mem_report) != 0)
             return -1;
     }
-    if (merit_evict_disk_ratio > 0.0)
+    if (neighborcache_evict_disk_ratio > 0.0)
     {
-        if (merit_profile_for_reload.empty())
+        if (neighborcache_profile_for_reload.empty())
         {
-            diskann::cerr << "Error: --merit_evict_disk_ratio requires --merit_profile_prefix." << std::endl;
+            diskann::cerr << "Error: --neighborcache_evict_disk_ratio requires --neighborcache_profile_prefix." << std::endl;
             return -1;
         }
         uint64_t dc_evicted = 0;
         std::string dc_reload_report;
-        diskann::cout << "=== MERIT disk-cache batch eviction (reload ratio " << merit_evict_disk_ratio << ") ==="
+        diskann::cout << "=== NEIGHBORCACHE disk-cache batch eviction (reload ratio " << neighborcache_evict_disk_ratio << ") ==="
                       << std::endl;
         const uint64_t dc_skip =
-            merit_disk_cache_exclude_memory ? _pFlashIndex->merit_memory_cached_count() : 0;
-        if (_pFlashIndex->reload_merit_disk_cache(merit_profile_for_reload, merit_evict_disk_ratio,
+            neighborcache_disk_cache_exclude_memory ? _pFlashIndex->neighborcache_memory_cached_count() : 0;
+        if (_pFlashIndex->reload_neighborcache_disk_cache(neighborcache_profile_for_reload, neighborcache_evict_disk_ratio,
                                                   result_output_prefix, dc_skip, dc_evicted, dc_reload_report,
-                                                  merit_unified_disk_cache, merit_disk_cache_k_hops,
-                                                  merit_disk_cache_layout) != 0)
+                                                  neighborcache_unified_disk_cache, neighborcache_disk_cache_k_hops,
+                                                  neighborcache_disk_cache_layout) != 0)
             return -1;
     }
 
@@ -503,7 +503,7 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
     diskann::cout << std::setw(6) << "L" << std::setw(12) << "Beamwidth" << std::setw(16) << "QPS" << std::setw(16)
                   << "Mean Latency" << std::setw(16) << "99 Latency" << std::setw(16) << "Mean IOs" << std::setw(16)
                   << "BasePages";
-    if (merit_disk_cache_ratio > 0.0)
+    if (neighborcache_disk_cache_ratio > 0.0)
         diskann::cout << std::setw(16) << "DiskCachePg";
     diskann::cout << std::setw(16) << "Dup IOs";
     if (enable_query_sector_cache)
@@ -511,9 +511,9 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
         diskann::cout << std::setw(16) << "Disk Reads" << std::setw(16) << "SectCacheHit" << std::setw(16)
                       << "IoUs/Read" << std::setw(16) << "|dSec|" << std::setw(16) << "Jump<=8s%";
     }
-    if (merit_disk_cache_ratio > 0.0)
+    if (neighborcache_disk_cache_ratio > 0.0)
     {
-        diskann::cout << std::setw(16) << "MeritDcHit";
+        diskann::cout << std::setw(16) << "NeighborCacheDcHit";
     }
     diskann::cout << std::setw(16) << "Mean Hops" << std::setw(16) << "Mean IO (us)" << std::setw(16) << "CPU (s)";
     if (calc_recall_flag)
@@ -553,29 +553,29 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
         else
             optimized_beamwidth = beamwidth;
 
-        const char *full_warmup_env = std::getenv("MERIT_REQUIRE_FULL_DCACHE_WARMUP");
-        if (!dynamic_full_warmup_done && _pFlashIndex->merit_dynamic_3cache_enabled() &&
+        const char *full_warmup_env = std::getenv("NEIGHBORCACHE_REQUIRE_FULL_DCACHE_WARMUP");
+        if (!dynamic_full_warmup_done && _pFlashIndex->neighborcache_dynamic_3cache_enabled() &&
             full_warmup_env != nullptr && std::strcmp(full_warmup_env, "0") != 0)
         {
-            const char *max_env = std::getenv("MERIT_FULL_WARMUP_MAX_QUERIES");
+            const char *max_env = std::getenv("NEIGHBORCACHE_FULL_WARMUP_MAX_QUERIES");
             const uint64_t max_warmup_queries =
                 max_env == nullptr ? 100000000ULL : std::strtoull(max_env, nullptr, 10);
-            const char *batch_env = std::getenv("MERIT_FULL_WARMUP_BATCH_QUERIES");
+            const char *batch_env = std::getenv("NEIGHBORCACHE_FULL_WARMUP_BATCH_QUERIES");
             const uint64_t requested_batch =
                 batch_env == nullptr ? 10000ULL : std::strtoull(batch_env, nullptr, 10);
             const uint64_t warmup_batch = std::max<uint64_t>(1, requested_batch);
-            // Fixed-length warmup: run exactly MERIT_FULL_WARMUP_MAX_QUERIES queries even if the D-cache
+            // Fixed-length warmup: run exactly NEIGHBORCACHE_FULL_WARMUP_MAX_QUERIES queries even if the D-cache
             // never fills (or is disabled, as in the N-cache-only configuration).
-            const char *fixed_env = std::getenv("MERIT_FULL_WARMUP_FIXED");
+            const char *fixed_env = std::getenv("NEIGHBORCACHE_FULL_WARMUP_FIXED");
             const bool fixed_warmup = fixed_env != nullptr && std::strcmp(fixed_env, "0") != 0;
             std::vector<uint64_t> warmup_ids(static_cast<size_t>(warmup_batch));
             std::vector<float> warmup_dists(static_cast<size_t>(warmup_batch));
             uint64_t completed = 0;
             uint64_t next_report = 1000000;
             const auto warmup_start = std::chrono::high_resolution_clock::now();
-            diskann::cout << "MERIT full D-cache warmup: target="
-                          << _pFlashIndex->merit_dynamic_page_capacity() << " pages" << std::endl;
-            while ((fixed_warmup || !_pFlashIndex->merit_dynamic_disk_full()) && completed < max_warmup_queries)
+            diskann::cout << "NEIGHBORCACHE full D-cache warmup: target="
+                          << _pFlashIndex->neighborcache_dynamic_page_capacity() << " pages" << std::endl;
+            while ((fixed_warmup || !_pFlashIndex->neighborcache_dynamic_disk_full()) && completed < max_warmup_queries)
             {
                 const uint64_t current_batch =
                     std::min<uint64_t>(warmup_batch, max_warmup_queries - completed);
@@ -590,27 +590,27 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
                         optimized_beamwidth, use_reorder_data, nullptr);
                 }
                 completed += current_batch;
-                if (completed >= next_report || (!fixed_warmup && _pFlashIndex->merit_dynamic_disk_full()))
+                if (completed >= next_report || (!fixed_warmup && _pFlashIndex->neighborcache_dynamic_disk_full()))
                 {
-                    diskann::cout << "MERIT full D-cache warmup progress: queries=" << completed
-                                  << " pages=" << _pFlashIndex->merit_dynamic_page_count() << "/"
-                                  << _pFlashIndex->merit_dynamic_page_capacity() << std::endl;
+                    diskann::cout << "NEIGHBORCACHE full D-cache warmup progress: queries=" << completed
+                                  << " pages=" << _pFlashIndex->neighborcache_dynamic_page_count() << "/"
+                                  << _pFlashIndex->neighborcache_dynamic_page_capacity() << std::endl;
                     next_report += 1000000;
                 }
             }
-            if (!fixed_warmup && !_pFlashIndex->merit_dynamic_disk_full())
+            if (!fixed_warmup && !_pFlashIndex->neighborcache_dynamic_disk_full())
             {
-                diskann::cerr << "MERIT full D-cache warmup failed after " << completed
-                              << " queries: pages=" << _pFlashIndex->merit_dynamic_page_count() << "/"
-                              << _pFlashIndex->merit_dynamic_page_capacity() << std::endl;
+                diskann::cerr << "NEIGHBORCACHE full D-cache warmup failed after " << completed
+                              << " queries: pages=" << _pFlashIndex->neighborcache_dynamic_page_count() << "/"
+                              << _pFlashIndex->neighborcache_dynamic_page_capacity() << std::endl;
                 return -1;
             }
             const auto warmup_end = std::chrono::high_resolution_clock::now();
             const std::chrono::duration<double> warmup_elapsed = warmup_end - warmup_start;
-            diskann::cout << "MERIT full D-cache warmup complete: queries=" << completed
+            diskann::cout << "NEIGHBORCACHE full D-cache warmup complete: queries=" << completed
                           << " seconds=" << warmup_elapsed.count()
                           << "; measured query phase starts now." << std::endl;
-            _pFlashIndex->merit_dynamic_begin_measurement();
+            _pFlashIndex->neighborcache_dynamic_begin_measurement();
             dynamic_full_warmup_done = true;
         }
 
@@ -626,7 +626,7 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
         for (int64_t i = 0; i < (int64_t)query_num; i++)
         {
 #ifndef _WINDOWS
-            merit_pin_this_query_thread();
+            neighborcache_pin_this_query_thread();
 #endif
             if (!filtered_search)
             {
@@ -672,10 +672,10 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
             stats, query_num, [](const diskann::QueryStats &stats) { return stats.n_unique_sectors; });
 
         auto mean_disk_cache_pages = diskann::get_mean_stats<uint32_t>(
-            stats, query_num, [](const diskann::QueryStats &stats) { return stats.n_unique_merit_sectors; });
+            stats, query_num, [](const diskann::QueryStats &stats) { return stats.n_unique_neighborcache_sectors; });
 
         auto mean_dup_ios = diskann::get_mean_stats<uint32_t>(stats, query_num, [](const diskann::QueryStats &stats) {
-            const unsigned unique_pages = stats.n_unique_sectors + stats.n_unique_merit_sectors;
+            const unsigned unique_pages = stats.n_unique_sectors + stats.n_unique_neighborcache_sectors;
             return stats.n_ios > unique_pages ? stats.n_ios - unique_pages : 0u;
         });
 
@@ -717,7 +717,7 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
         diskann::cout << std::setw(6) << L << std::setw(12) << optimized_beamwidth << std::setw(16) << qps
                       << std::setw(16) << mean_latency << std::setw(16) << latency_99 << std::setw(16) << mean_ios
                       << std::setw(16) << mean_pages;
-        if (merit_disk_cache_ratio > 0.0)
+        if (neighborcache_disk_cache_ratio > 0.0)
             diskann::cout << std::setw(16) << mean_disk_cache_pages;
         diskann::cout << std::setw(16) << mean_dup_ios;
         if (enable_query_sector_cache)
@@ -742,11 +742,11 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
                           << std::setw(16) << mean_io_us_per_disk_read << std::setw(16) << mean_abs_sector_jump
                           << std::setw(16) << mean_local_jump_pct;
         }
-        if (merit_disk_cache_ratio > 0.0)
+        if (neighborcache_disk_cache_ratio > 0.0)
         {
-            auto mean_merit_dc = diskann::get_mean_stats<uint32_t>(
-                stats, query_num, [](const diskann::QueryStats &stats) { return stats.n_merit_dc_hits; });
-            diskann::cout << std::setw(16) << mean_merit_dc;
+            auto mean_neighborcache_dc = diskann::get_mean_stats<uint32_t>(
+                stats, query_num, [](const diskann::QueryStats &stats) { return stats.n_neighborcache_dc_hits; });
+            diskann::cout << std::setw(16) << mean_neighborcache_dc;
         }
         diskann::cout << std::setw(16) << mean_hops << std::setw(16) << mean_io_us << std::setw(16) << mean_cpuus;
         if (calc_recall_flag)
@@ -757,19 +757,19 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
         {
             auto mean_of = [&](auto f) { return diskann::get_mean_stats<uint32_t>(stats, query_num, f); };
             const double reads = mean_of([](const diskann::QueryStats &s) { return s.n_disk_reads; });
-            const double dc_reads = mean_of([](const diskann::QueryStats &s) { return s.n_merit_disk_reads; });
+            const double dc_reads = mean_of([](const diskann::QueryStats &s) { return s.n_neighborcache_disk_reads; });
             const double scratch = mean_of([](const diskann::QueryStats &s) { return s.n_sector_cache_hits; });
             const double dc_scratch =
-                mean_of([](const diskann::QueryStats &s) { return s.n_merit_sector_cache_hits; });
+                mean_of([](const diskann::QueryStats &s) { return s.n_neighborcache_sector_cache_hits; });
             const double dc_cross =
-                mean_of([](const diskann::QueryStats &s) { return s.n_merit_shared_cross_hits; });
+                mean_of([](const diskann::QueryStats &s) { return s.n_neighborcache_shared_cross_hits; });
             diskann::cout << "      breakdown: base_reads=" << (reads - dc_reads) << " dcache_reads=" << dc_reads
                           << " base_scratch_hits=" << (scratch - dc_scratch)
                           << " dcache_scratch_hits=" << dc_scratch << " dcache_cross_query_hits=" << dc_cross
                           << " ncache_hits=" << mean_of([](const diskann::QueryStats &s) { return s.n_cache_hits; })
                           << " beam_lookups=" << mean_of([](const diskann::QueryStats &s) { return s.n_beam_lookups; })
                           << std::endl;
-            if (const char *halves = std::getenv("MERIT_STATS_HALVES");
+            if (const char *halves = std::getenv("NEIGHBORCACHE_STATS_HALVES");
                 halves != nullptr && std::strcmp(halves, "0") != 0 && query_num >= 2)
             {
                 const size_t mid = query_num / 2;
@@ -783,14 +783,14 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
                     const double half_reads =
                         mean_range(begin, end, [](const diskann::QueryStats &s) { return s.n_disk_reads; });
                     const double half_dc =
-                        mean_range(begin, end, [](const diskann::QueryStats &s) { return s.n_merit_disk_reads; });
+                        mean_range(begin, end, [](const diskann::QueryStats &s) { return s.n_neighborcache_disk_reads; });
                     const double half_us =
                         mean_range(begin, end, [](const diskann::QueryStats &s) { return s.total_us; });
                     diskann::cout << "      " << tag << ": queries=" << (end - begin) << " disk_reads=" << half_reads
                                   << " base_reads=" << (half_reads - half_dc) << " dcache_reads=" << half_dc
                                   << " dyn_hits="
                                   << mean_range(begin, end,
-                                                [](const diskann::QueryStats &s) { return s.n_merit_dyn_hits; })
+                                                [](const diskann::QueryStats &s) { return s.n_neighborcache_dyn_hits; })
                                   << " ncache_hits="
                                   << mean_range(begin, end, [](const diskann::QueryStats &s) { return s.n_cache_hits; })
                                   << " mean_us=" << half_us
@@ -799,27 +799,27 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
                 report_half("pass1", 0, mid);
                 report_half("pass2", mid, query_num);
             }
-            _pFlashIndex->print_merit_shared_cache_stats();
+            _pFlashIndex->print_neighborcache_shared_cache_stats();
         }
         {
             auto mean_disk_reads_all = diskann::get_mean_stats<uint32_t>(
                 stats, query_num, [](const diskann::QueryStats &s) { return s.n_disk_reads; });
             auto mean_dyn_hits = diskann::get_mean_stats<uint32_t>(
-                stats, query_num, [](const diskann::QueryStats &s) { return s.n_merit_dyn_hits; });
+                stats, query_num, [](const diskann::QueryStats &s) { return s.n_neighborcache_dyn_hits; });
             auto mean_dyn_flushes = diskann::get_mean_stats<uint32_t>(
-                stats, query_num, [](const diskann::QueryStats &s) { return s.n_merit_dyn_flushes; });
+                stats, query_num, [](const diskann::QueryStats &s) { return s.n_neighborcache_dyn_flushes; });
             auto mean_dyn_reads = diskann::get_mean_stats<uint32_t>(
-                stats, query_num, [](const diskann::QueryStats &s) { return s.n_merit_dyn_disk_reads; });
+                stats, query_num, [](const diskann::QueryStats &s) { return s.n_neighborcache_dyn_disk_reads; });
             auto mean_base_avoided = diskann::get_mean_stats<uint32_t>(
-                stats, query_num, [](const diskann::QueryStats &s) { return s.n_merit_base_pages_avoided; });
+                stats, query_num, [](const diskann::QueryStats &s) { return s.n_neighborcache_base_pages_avoided; });
             uint64_t mcache_hits = 0;
             uint64_t mcache_misses = 0;
             for (size_t qi = 0; qi < query_num; qi++)
             {
-                mcache_hits += stats[qi].n_merit_mcache_hits;
-                mcache_misses += stats[qi].n_merit_mcache_misses;
+                mcache_hits += stats[qi].n_neighborcache_mcache_hits;
+                mcache_misses += stats[qi].n_neighborcache_mcache_misses;
             }
-            if (_pFlashIndex->merit_dynamic_3cache_enabled())
+            if (_pFlashIndex->neighborcache_dynamic_3cache_enabled())
             {
                 diskann::cout << "      dynamic3: mean_disk_reads=" << mean_disk_reads_all
                               << " mean_dyn_hits=" << mean_dyn_hits
@@ -836,21 +836,21 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
                 if (calc_recall_flag)
                     diskann::cout << " recall@" << recall_at << "=" << recall;
                 diskann::cout << std::endl;
-                _pFlashIndex->flush_merit_coread_writes();
-                _pFlashIndex->print_merit_dynamic_3cache_stats();
+                _pFlashIndex->flush_neighborcache_coread_writes();
+                _pFlashIndex->print_neighborcache_dynamic_3cache_stats();
             }
-            _pFlashIndex->print_merit_memory_cache_stats();
+            _pFlashIndex->print_neighborcache_memory_cache_stats();
         }
-        if (merit_disk_cache_ratio > 0.0)
+        if (neighborcache_disk_cache_ratio > 0.0)
         {
             auto mean_multiread = diskann::get_mean_stats<uint32_t>(
-                stats, query_num, [](const diskann::QueryStats &s) { return s.n_merit_multiread_ios; });
+                stats, query_num, [](const diskann::QueryStats &s) { return s.n_neighborcache_multiread_ios; });
             auto mean_io_avoided = diskann::get_mean_stats<uint32_t>(
-                stats, query_num, [](const diskann::QueryStats &s) { return s.n_merit_io_avoided; });
+                stats, query_num, [](const diskann::QueryStats &s) { return s.n_neighborcache_io_avoided; });
             auto mean_scover_grp = diskann::get_mean_stats<uint32_t>(
-                stats, query_num, [](const diskann::QueryStats &s) { return s.n_merit_setcover_grouped; });
+                stats, query_num, [](const diskann::QueryStats &s) { return s.n_neighborcache_setcover_grouped; });
             auto mean_finalize_skipped = diskann::get_mean_stats<uint32_t>(
-                stats, query_num, [](const diskann::QueryStats &s) { return s.n_merit_finalize_skipped; });
+                stats, query_num, [](const diskann::QueryStats &s) { return s.n_neighborcache_finalize_skipped; });
             diskann::cout << "      pct80 IO: multiread_ios=" << mean_multiread << " io_avoided=" << mean_io_avoided
                           << " setcover_grouped=" << mean_scover_grp
                           << " finalize_skipped=" << mean_finalize_skipped << std::endl;
@@ -932,25 +932,25 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
             std::ofstream qout(dump_query_stats_path);
             if (qout.is_open())
             {
-                qout << "query_id,total_us,io_us,cpu_us,n_ios,n_base_pages,n_disk_cache_pages,n_merit_hits,"
+                qout << "query_id,total_us,io_us,cpu_us,n_ios,n_base_pages,n_disk_cache_pages,n_neighborcache_hits,"
                         "n_mem_hits,n_disk_reads,n_sector_cache_hits,n_hops,max_sector_jump,"
-                        "n_merit_dyn_hits,n_merit_prefetch_hits,n_merit_dcache_seed_hits,n_beam_lookups,"
-                        "n_merit_dyn_flushes,n_merit_dyn_pages,n_merit_dyn_disk_reads,"
-                        "n_merit_base_pages_avoided,n_merit_dcache_probe,"
-                        "n_merit_mcache_hits,n_merit_mcache_misses,n_cmps\n";
+                        "n_neighborcache_dyn_hits,n_neighborcache_prefetch_hits,n_neighborcache_dcache_seed_hits,n_beam_lookups,"
+                        "n_neighborcache_dyn_flushes,n_neighborcache_dyn_pages,n_neighborcache_dyn_disk_reads,"
+                        "n_neighborcache_base_pages_avoided,n_neighborcache_dcache_probe,"
+                        "n_neighborcache_mcache_hits,n_neighborcache_mcache_misses,n_cmps\n";
                 for (size_t qi = 0; qi < query_num; qi++)
                 {
                     const auto &s = stats[qi];
                     qout << qi << ',' << s.total_us << ',' << s.io_us << ',' << s.cpu_us << ',' << s.n_ios << ','
-                         << s.n_unique_sectors << ',' << s.n_unique_merit_sectors << ',' << s.n_merit_dc_hits << ','
+                         << s.n_unique_sectors << ',' << s.n_unique_neighborcache_sectors << ',' << s.n_neighborcache_dc_hits << ','
                          << s.n_cache_hits << ',' << s.n_disk_reads << ',' << s.n_sector_cache_hits << ','
-                         << s.n_hops << ',' << s.max_sector_jump << ',' << s.n_merit_dyn_hits << ','
-                         << s.n_merit_prefetch_hits << ',' << s.n_merit_dcache_seed_hits << ','
+                         << s.n_hops << ',' << s.max_sector_jump << ',' << s.n_neighborcache_dyn_hits << ','
+                         << s.n_neighborcache_prefetch_hits << ',' << s.n_neighborcache_dcache_seed_hits << ','
                          << s.n_beam_lookups << ','
-                         << s.n_merit_dyn_flushes << ',' << s.n_merit_dyn_pages << ','
-                         << s.n_merit_dyn_disk_reads << ',' << s.n_merit_base_pages_avoided << ','
-                         << s.n_merit_dcache_probe << ',' << s.n_merit_mcache_hits << ','
-                         << s.n_merit_mcache_misses << ',' << s.n_cmps << '\n';
+                         << s.n_neighborcache_dyn_flushes << ',' << s.n_neighborcache_dyn_pages << ','
+                         << s.n_neighborcache_dyn_disk_reads << ',' << s.n_neighborcache_base_pages_avoided << ','
+                         << s.n_neighborcache_dcache_probe << ',' << s.n_neighborcache_mcache_hits << ','
+                         << s.n_neighborcache_mcache_misses << ',' << s.n_cmps << '\n';
                 }
                 qout.close();
                 diskann::cout << "      per-query stats written to " << dump_query_stats_path << std::endl;
@@ -961,7 +961,7 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
             std::vector<uint64_t> node_expand;
             std::vector<std::tuple<uint32_t, uint32_t, uint64_t>> unused_edges;
             const std::string profile_for_dump =
-                merit_profile_prefix.empty() ? access_profile_prefix : merit_profile_prefix;
+                neighborcache_profile_prefix.empty() ? access_profile_prefix : neighborcache_profile_prefix;
             if (!profile_for_dump.empty() &&
                 diskann::HotnessProfiler::load(profile_for_dump, node_expand, unused_edges) != 0)
             {
@@ -981,8 +981,8 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
                         const uint64_t expand =
                             (nid < node_expand.size()) ? node_expand[nid] : static_cast<uint64_t>(0);
                         bout << qi << ',' << nid << ',' << expand << ','
-                             << (_pFlashIndex->merit_mem_pool_contains(nid) ? 1 : 0) << ','
-                             << (_pFlashIndex->merit_dc_map_contains(nid) ? 1 : 0) << '\n';
+                             << (_pFlashIndex->neighborcache_mem_pool_contains(nid) ? 1 : 0) << ','
+                             << (_pFlashIndex->neighborcache_dc_map_contains(nid) ? 1 : 0) << '\n';
                     }
                 }
                 bout.close();
@@ -999,13 +999,13 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
                 {
                     for (const auto &rec : stats[qi].hop_frontier_trace)
                     {
-                        for (uint32_t nid : rec.merit_nodes)
-                            hout << qi << ',' << rec.hop << ",frontier,merit," << nid << ",,\n";
+                        for (uint32_t nid : rec.neighborcache_nodes)
+                            hout << qi << ',' << rec.hop << ",frontier,neighborcache," << nid << ",,\n";
                         for (uint32_t nid : rec.base_nodes)
                             hout << qi << ',' << rec.hop << ",frontier,base," << nid << ",,\n";
                         for (const auto &read : rec.physical_reads)
                             hout << qi << ',' << rec.hop << ",physical_read,"
-                                 << (read.merit ? "merit" : "base") << ",," << read.sector << ','
+                                 << (read.neighborcache ? "neighborcache" : "base") << ",," << read.sector << ','
                                  << read.nsectors << '\n';
                     }
                 }
@@ -1070,19 +1070,19 @@ int main(int argc, char **argv)
     std::string access_profile_prefix;
     std::string relayout_order_prefix;
     bool enable_query_sector_cache = false;
-    double merit_memory_gb = 0.0;
-    std::string merit_profile_prefix;
-    double merit_host_memory_gb = 0.0;
-    double merit_memory_reserve_gb = 8.0;
-    double merit_disk_cache_ratio = 0.0;
-    bool merit_disk_cache_exclude_memory = true;
-    bool merit_memory_runtime_admit = false;
-    double merit_evict_memory_gb = 0.0;
-    double merit_evict_disk_ratio = 0.0;
-    bool merit_unified_disk_cache = false;
-    uint32_t merit_disk_cache_k_hops = 1;
-    std::string merit_disk_cache_layout = "directed_beam";
-    std::string merit_disk_cache_reuse_prefix;
+    double neighborcache_memory_gb = 0.0;
+    std::string neighborcache_profile_prefix;
+    double neighborcache_host_memory_gb = 0.0;
+    double neighborcache_memory_reserve_gb = 8.0;
+    double neighborcache_disk_cache_ratio = 0.0;
+    bool neighborcache_disk_cache_exclude_memory = true;
+    bool neighborcache_memory_runtime_admit = false;
+    double neighborcache_evict_memory_gb = 0.0;
+    double neighborcache_evict_disk_ratio = 0.0;
+    bool neighborcache_unified_disk_cache = false;
+    uint32_t neighborcache_disk_cache_k_hops = 1;
+    std::string neighborcache_disk_cache_layout = "directed_beam";
+    std::string neighborcache_disk_cache_reuse_prefix;
     std::string dump_query_stats_path;
     std::string dump_base_nodes_path;
     std::string dump_hop_trace_path;
@@ -1153,45 +1153,45 @@ int main(int argc, char **argv)
         optional_configs.add_options()("enable_query_sector_cache", po::bool_switch()->default_value(false),
                                        "Cache disk sectors within each query; repeat reads use memory not O_DIRECT.");
         optional_configs.add_options()(
-            "merit_memory_gb", po::value<double>(&merit_memory_gb)->default_value(0.0),
-            "MERIT Memory cache budget in GB (0=disabled). Selects Top-N nodes by Run2 expand counts.");
+            "neighborcache_memory_gb", po::value<double>(&neighborcache_memory_gb)->default_value(0.0),
+            "NEIGHBORCACHE Memory cache budget in GB (0=disabled). Selects Top-N nodes by Run2 expand counts.");
         optional_configs.add_options()(
-            "merit_profile_prefix", po::value<std::string>(&merit_profile_prefix)->default_value(std::string("")),
-            "Run2 access profile prefix (required when merit_memory_gb > 0).");
+            "neighborcache_profile_prefix", po::value<std::string>(&neighborcache_profile_prefix)->default_value(std::string("")),
+            "Run2 access profile prefix (required when neighborcache_memory_gb > 0).");
         optional_configs.add_options()(
-            "merit_host_memory_gb", po::value<double>(&merit_host_memory_gb)->default_value(0.0),
+            "neighborcache_host_memory_gb", po::value<double>(&neighborcache_host_memory_gb)->default_value(0.0),
             "Host DRAM size in GB for budget check (0=auto-detect from /proc/meminfo).");
         optional_configs.add_options()(
-            "merit_memory_reserve_gb", po::value<double>(&merit_memory_reserve_gb)->default_value(8.0),
-            "GB reserved for OS/other (not available to MERIT cache). Default: 8.");
+            "neighborcache_memory_reserve_gb", po::value<double>(&neighborcache_memory_reserve_gb)->default_value(8.0),
+            "GB reserved for OS/other (not available to NEIGHBORCACHE cache). Default: 8.");
         optional_configs.add_options()(
-            "merit_disk_cache_ratio", po::value<double>(&merit_disk_cache_ratio)->default_value(0.0),
-            "MERIT Disk Cache size as a fraction of base _disk.index bytes (e.g. 0.1 => 10%). "
+            "neighborcache_disk_cache_ratio", po::value<double>(&neighborcache_disk_cache_ratio)->default_value(0.0),
+            "NEIGHBORCACHE Disk Cache size as a fraction of base _disk.index bytes (e.g. 0.1 => 10%). "
             "0=disabled. For edge_replica, values >1.0 are allowed (space-for-time replicas).");
         optional_configs.add_options()(
-            "merit_disk_cache_exclude_memory", po::value<bool>(&merit_disk_cache_exclude_memory)->default_value(true),
+            "neighborcache_disk_cache_exclude_memory", po::value<bool>(&neighborcache_disk_cache_exclude_memory)->default_value(true),
             "If true, disk-cache uses expand ranks after memory tier (no duplicate nodes).");
         optional_configs.add_options()(
-            "merit_memory_runtime_admit", po::value<bool>(&merit_memory_runtime_admit)->default_value(false),
-            "During search, promote base/disk nodes into MERIT pool (evict coldest). Risky with num_threads>1.");
+            "neighborcache_memory_runtime_admit", po::value<bool>(&neighborcache_memory_runtime_admit)->default_value(false),
+            "During search, promote base/disk nodes into NEIGHBORCACHE pool (evict coldest). Risky with num_threads>1.");
         optional_configs.add_options()(
-            "merit_evict_memory_gb", po::value<double>(&merit_evict_memory_gb)->default_value(0.0),
-            "After warmup, batch-reload MERIT memory to this GB (evicts colder nodes). 0=skip.");
+            "neighborcache_evict_memory_gb", po::value<double>(&neighborcache_evict_memory_gb)->default_value(0.0),
+            "After warmup, batch-reload NEIGHBORCACHE memory to this GB (evicts colder nodes). 0=skip.");
         optional_configs.add_options()(
-            "merit_evict_disk_ratio", po::value<double>(&merit_evict_disk_ratio)->default_value(0.0),
+            "neighborcache_evict_disk_ratio", po::value<double>(&neighborcache_evict_disk_ratio)->default_value(0.0),
             "After warmup, batch-rebuild disk-cache at this base ratio (evicts from map). 0=skip.");
         optional_configs.add_options()(
-            "merit_unified_disk_cache", po::value<bool>(&merit_unified_disk_cache)->default_value(false),
-            "Append MERIT disk tier to a copy of _disk.index; one fd + merged io_uring batch per hop.");
+            "neighborcache_unified_disk_cache", po::value<bool>(&neighborcache_unified_disk_cache)->default_value(false),
+            "Append NEIGHBORCACHE disk tier to a copy of _disk.index; one fd + merged io_uring batch per hop.");
         optional_configs.add_options()(
-            "merit_disk_cache_k_hops", po::value<uint32_t>(&merit_disk_cache_k_hops)->default_value(1),
-            "MERIT disk cache node order: 0 = flat Top-N by node_expand; >0 = k-hop page packing (node/edge) or beam width (frontier/directed_beam).");
+            "neighborcache_disk_cache_k_hops", po::value<uint32_t>(&neighborcache_disk_cache_k_hops)->default_value(1),
+            "NEIGHBORCACHE disk cache node order: 0 = flat Top-N by node_expand; >0 = k-hop page packing (node/edge) or beam width (frontier/directed_beam).");
         optional_configs.add_options()(
-            "merit_disk_cache_layout", po::value<std::string>(&merit_disk_cache_layout)->default_value("directed_beam"),
-            "MERIT disk cache packing: flat(A) | node(B) | edge(C) | frontier(D) | directed_beam(E) | directed_beam_pct80(E_pct80) | directed_child_only_pct100(scheme_i) | directed_child_replica_pct100(scheme_i_unlimited) | directed_seed_replica_pct100(seed_replica) | parent(P) | edge_dir | edge_star | dir_edge_star | directed_beam_hybrid | directed_star | d | e | e_pct80.");
+            "neighborcache_disk_cache_layout", po::value<std::string>(&neighborcache_disk_cache_layout)->default_value("directed_beam"),
+            "NEIGHBORCACHE disk cache packing: flat(A) | node(B) | edge(C) | frontier(D) | directed_beam(E) | directed_beam_pct80(E_pct80) | directed_child_only_pct100(scheme_i) | directed_child_replica_pct100(scheme_i_unlimited) | directed_seed_replica_pct100(seed_replica) | parent(P) | edge_dir | edge_star | dir_edge_star | directed_beam_hybrid | directed_star | d | e | e_pct80.");
         optional_configs.add_options()(
-            "merit_disk_cache_reuse_prefix", po::value<std::string>(&merit_disk_cache_reuse_prefix)->default_value(""),
-            "Load existing disk cache from prefix_merit_dc.{data,nodes} instead of repacking.");
+            "neighborcache_disk_cache_reuse_prefix", po::value<std::string>(&neighborcache_disk_cache_reuse_prefix)->default_value(""),
+            "Load existing disk cache from prefix_neighborcache_dc.{data,nodes} instead of repacking.");
         optional_configs.add_options()(
             "dump_query_stats", po::value<std::string>(&dump_query_stats_path)->default_value(""),
             "Write per-query QueryStats CSV after search (for tail-latency analysis).");
@@ -1200,7 +1200,7 @@ int main(int argc, char **argv)
             "Write base-frontier node ids per query (query_id,node_id,node_expand,in_mem_pool,in_disk_cache_map).");
         optional_configs.add_options()(
             "dump_hop_trace_path", po::value<std::string>(&dump_hop_trace_path)->default_value(""),
-            "Write per-hop merit/base frontier nodes (query_id,hop,source,node_id).");
+            "Write per-hop neighborcache/base frontier nodes (query_id,hop,source,node_id).");
 
         // Merge required and optional parameters
         desc.add(required_configs).add(optional_configs);
@@ -1286,30 +1286,30 @@ int main(int argc, char **argv)
                     metric, index_path_prefix, result_path_prefix, query_file, gt_file, num_threads, K, W,
                     num_nodes_to_cache, search_io_limit, Lvec, fail_if_recall_below, query_filters, use_reorder_data,
                     enable_access_profile, access_profile_prefix, relayout_order_prefix, enable_query_sector_cache,
-                    merit_memory_gb, merit_profile_prefix, merit_host_memory_gb, merit_memory_reserve_gb,
-                    merit_disk_cache_ratio, merit_disk_cache_exclude_memory, merit_memory_runtime_admit,
-                    merit_evict_memory_gb, merit_evict_disk_ratio, merit_unified_disk_cache, merit_disk_cache_k_hops,
-                    merit_disk_cache_layout, merit_disk_cache_reuse_prefix, dump_query_stats_path, dump_base_nodes_path,
+                    neighborcache_memory_gb, neighborcache_profile_prefix, neighborcache_host_memory_gb, neighborcache_memory_reserve_gb,
+                    neighborcache_disk_cache_ratio, neighborcache_disk_cache_exclude_memory, neighborcache_memory_runtime_admit,
+                    neighborcache_evict_memory_gb, neighborcache_evict_disk_ratio, neighborcache_unified_disk_cache, neighborcache_disk_cache_k_hops,
+                    neighborcache_disk_cache_layout, neighborcache_disk_cache_reuse_prefix, dump_query_stats_path, dump_base_nodes_path,
                     dump_hop_trace_path);
             else if (data_type == std::string("int8"))
                 return search_disk_index<int8_t, uint16_t>(
                     metric, index_path_prefix, result_path_prefix, query_file, gt_file, num_threads, K, W,
                     num_nodes_to_cache, search_io_limit, Lvec, fail_if_recall_below, query_filters, use_reorder_data,
                     enable_access_profile, access_profile_prefix, relayout_order_prefix, enable_query_sector_cache,
-                    merit_memory_gb, merit_profile_prefix, merit_host_memory_gb, merit_memory_reserve_gb,
-                    merit_disk_cache_ratio, merit_disk_cache_exclude_memory, merit_memory_runtime_admit,
-                    merit_evict_memory_gb, merit_evict_disk_ratio, merit_unified_disk_cache, merit_disk_cache_k_hops,
-                    merit_disk_cache_layout, merit_disk_cache_reuse_prefix, dump_query_stats_path, dump_base_nodes_path,
+                    neighborcache_memory_gb, neighborcache_profile_prefix, neighborcache_host_memory_gb, neighborcache_memory_reserve_gb,
+                    neighborcache_disk_cache_ratio, neighborcache_disk_cache_exclude_memory, neighborcache_memory_runtime_admit,
+                    neighborcache_evict_memory_gb, neighborcache_evict_disk_ratio, neighborcache_unified_disk_cache, neighborcache_disk_cache_k_hops,
+                    neighborcache_disk_cache_layout, neighborcache_disk_cache_reuse_prefix, dump_query_stats_path, dump_base_nodes_path,
                     dump_hop_trace_path);
             else if (data_type == std::string("uint8"))
                 return search_disk_index<uint8_t, uint16_t>(
                     metric, index_path_prefix, result_path_prefix, query_file, gt_file, num_threads, K, W,
                     num_nodes_to_cache, search_io_limit, Lvec, fail_if_recall_below, query_filters, use_reorder_data,
                     enable_access_profile, access_profile_prefix, relayout_order_prefix, enable_query_sector_cache,
-                    merit_memory_gb, merit_profile_prefix, merit_host_memory_gb, merit_memory_reserve_gb,
-                    merit_disk_cache_ratio, merit_disk_cache_exclude_memory, merit_memory_runtime_admit,
-                    merit_evict_memory_gb, merit_evict_disk_ratio, merit_unified_disk_cache, merit_disk_cache_k_hops,
-                    merit_disk_cache_layout, merit_disk_cache_reuse_prefix, dump_query_stats_path, dump_base_nodes_path,
+                    neighborcache_memory_gb, neighborcache_profile_prefix, neighborcache_host_memory_gb, neighborcache_memory_reserve_gb,
+                    neighborcache_disk_cache_ratio, neighborcache_disk_cache_exclude_memory, neighborcache_memory_runtime_admit,
+                    neighborcache_evict_memory_gb, neighborcache_evict_disk_ratio, neighborcache_unified_disk_cache, neighborcache_disk_cache_k_hops,
+                    neighborcache_disk_cache_layout, neighborcache_disk_cache_reuse_prefix, dump_query_stats_path, dump_base_nodes_path,
                     dump_hop_trace_path);
             else
             {
@@ -1324,35 +1324,35 @@ int main(int argc, char **argv)
                                                 num_threads, K, W, num_nodes_to_cache, search_io_limit, Lvec,
                                                 fail_if_recall_below, query_filters, use_reorder_data,
                                                 enable_access_profile, access_profile_prefix, relayout_order_prefix,
-                                                enable_query_sector_cache, merit_memory_gb, merit_profile_prefix,
-                                                merit_host_memory_gb, merit_memory_reserve_gb, merit_disk_cache_ratio,
-                                                merit_disk_cache_exclude_memory, merit_memory_runtime_admit,
-                                                merit_evict_memory_gb, merit_evict_disk_ratio, merit_unified_disk_cache, merit_disk_cache_k_hops,
-                    merit_disk_cache_layout, merit_disk_cache_reuse_prefix, dump_query_stats_path, dump_base_nodes_path,
+                                                enable_query_sector_cache, neighborcache_memory_gb, neighborcache_profile_prefix,
+                                                neighborcache_host_memory_gb, neighborcache_memory_reserve_gb, neighborcache_disk_cache_ratio,
+                                                neighborcache_disk_cache_exclude_memory, neighborcache_memory_runtime_admit,
+                                                neighborcache_evict_memory_gb, neighborcache_evict_disk_ratio, neighborcache_unified_disk_cache, neighborcache_disk_cache_k_hops,
+                    neighborcache_disk_cache_layout, neighborcache_disk_cache_reuse_prefix, dump_query_stats_path, dump_base_nodes_path,
                     dump_hop_trace_path);
             else if (data_type == std::string("int8"))
                 return search_disk_index<int8_t>(metric, index_path_prefix, result_path_prefix, query_file, gt_file,
                                                  num_threads, K, W, num_nodes_to_cache, search_io_limit, Lvec,
                                                  fail_if_recall_below, query_filters, use_reorder_data,
                                                  enable_access_profile, access_profile_prefix, relayout_order_prefix,
-                                                 enable_query_sector_cache, merit_memory_gb, merit_profile_prefix,
-                                                 merit_host_memory_gb, merit_memory_reserve_gb, merit_disk_cache_ratio,
-                                                 merit_disk_cache_exclude_memory, merit_memory_runtime_admit,
-                                                 merit_evict_memory_gb, merit_evict_disk_ratio, merit_unified_disk_cache,
-                                                 merit_disk_cache_k_hops, merit_disk_cache_layout,
-                                                 merit_disk_cache_reuse_prefix, dump_query_stats_path, dump_base_nodes_path,
+                                                 enable_query_sector_cache, neighborcache_memory_gb, neighborcache_profile_prefix,
+                                                 neighborcache_host_memory_gb, neighborcache_memory_reserve_gb, neighborcache_disk_cache_ratio,
+                                                 neighborcache_disk_cache_exclude_memory, neighborcache_memory_runtime_admit,
+                                                 neighborcache_evict_memory_gb, neighborcache_evict_disk_ratio, neighborcache_unified_disk_cache,
+                                                 neighborcache_disk_cache_k_hops, neighborcache_disk_cache_layout,
+                                                 neighborcache_disk_cache_reuse_prefix, dump_query_stats_path, dump_base_nodes_path,
                                                  dump_hop_trace_path);
             else if (data_type == std::string("uint8"))
                 return search_disk_index<uint8_t>(metric, index_path_prefix, result_path_prefix, query_file, gt_file,
                                                   num_threads, K, W, num_nodes_to_cache, search_io_limit, Lvec,
                                                   fail_if_recall_below, query_filters, use_reorder_data,
                                                   enable_access_profile, access_profile_prefix, relayout_order_prefix,
-                                                  enable_query_sector_cache, merit_memory_gb, merit_profile_prefix,
-                                                  merit_host_memory_gb, merit_memory_reserve_gb, merit_disk_cache_ratio,
-                                                  merit_disk_cache_exclude_memory, merit_memory_runtime_admit,
-                                                  merit_evict_memory_gb, merit_evict_disk_ratio, merit_unified_disk_cache,
-                                                  merit_disk_cache_k_hops, merit_disk_cache_layout,
-                                                 merit_disk_cache_reuse_prefix, dump_query_stats_path, dump_base_nodes_path,
+                                                  enable_query_sector_cache, neighborcache_memory_gb, neighborcache_profile_prefix,
+                                                  neighborcache_host_memory_gb, neighborcache_memory_reserve_gb, neighborcache_disk_cache_ratio,
+                                                  neighborcache_disk_cache_exclude_memory, neighborcache_memory_runtime_admit,
+                                                  neighborcache_evict_memory_gb, neighborcache_evict_disk_ratio, neighborcache_unified_disk_cache,
+                                                  neighborcache_disk_cache_k_hops, neighborcache_disk_cache_layout,
+                                                 neighborcache_disk_cache_reuse_prefix, dump_query_stats_path, dump_base_nodes_path,
                                                  dump_hop_trace_path);
             else
             {

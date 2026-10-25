@@ -92,11 +92,11 @@ void HotnessProfiler::on_directed_edge(uint32_t parent, uint32_t child)
     _directed_edges[key]++;
 }
 
-void HotnessProfiler::on_merit_hop_frontier(const std::vector<uint32_t> &merit_nodes)
+void HotnessProfiler::on_neighborcache_hop_frontier(const std::vector<uint32_t> &neighborcache_nodes)
 {
-    if (!_enabled || merit_nodes.empty())
+    if (!_enabled || neighborcache_nodes.empty())
         return;
-    std::vector<uint32_t> key = merit_nodes;
+    std::vector<uint32_t> key = neighborcache_nodes;
     std::sort(key.begin(), key.end());
     key.erase(std::unique(key.begin(), key.end()), key.end());
     if (key.empty())

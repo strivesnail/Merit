@@ -1158,7 +1158,7 @@ static void append_page_nodes_to_disk_cache_list(const std::vector<uint32_t> &pa
 static void log_disk_cache_node_list_stats(const std::vector<uint32_t> &node_list, const char *layout_name)
 {
     const std::unordered_set<uint32_t> uniq(node_list.begin(), node_list.end());
-    diskann::cout << "MERIT disk-cache node list stats (" << layout_name << "): entries=" << node_list.size()
+    diskann::cout << "NEIGHBORCACHE disk-cache node list stats (" << layout_name << "): entries=" << node_list.size()
                   << " unique=" << uniq.size();
     if (uniq.size() != node_list.size())
         diskann::cout << " duplicates=" << (node_list.size() - uniq.size());
@@ -2154,7 +2154,7 @@ int compute_profile_parent_disk_cache_list(
 
     if (node_list.empty())
     {
-        diskann::cerr << "MERIT disk-cache: profile-parent list empty (max_nodes=" << max_nodes << ")." << std::endl;
+        diskann::cerr << "NEIGHBORCACHE disk-cache: profile-parent list empty (max_nodes=" << max_nodes << ")." << std::endl;
         return -1;
     }
     log_disk_cache_node_list_stats(node_list, "parent");
@@ -2186,7 +2186,7 @@ int compute_parent_star_disk_cache_list(
 
     if (node_list.empty())
     {
-        diskann::cerr << "MERIT disk-cache: parent_star list empty (max_nodes=" << max_nodes << ")." << std::endl;
+        diskann::cerr << "NEIGHBORCACHE disk-cache: parent_star list empty (max_nodes=" << max_nodes << ")." << std::endl;
         return -1;
     }
     log_disk_cache_node_list_stats(node_list, "parent_star");
@@ -2233,10 +2233,10 @@ int compute_dbeam_estar_split_disk_cache_list(
 
     if (node_list.empty())
     {
-        diskann::cerr << "MERIT disk-cache: dbeam_estar_split list empty (max_nodes=" << max_nodes << ")." << std::endl;
+        diskann::cerr << "NEIGHBORCACHE disk-cache: dbeam_estar_split list empty (max_nodes=" << max_nodes << ")." << std::endl;
         return -1;
     }
-    diskann::cout << "MERIT disk-cache dbeam_estar_split: phase1=" << phase1_count << " phase2=" << phase2.size()
+    diskann::cout << "NEIGHBORCACHE disk-cache dbeam_estar_split: phase1=" << phase1_count << " phase2=" << phase2.size()
                   << " total=" << node_list.size() << std::endl;
     log_disk_cache_node_list_stats(node_list, "dbeam_estar_split");
     return 0;
@@ -2809,7 +2809,7 @@ int compute_directed_seed_replica_beam_disk_cache_list(
 }
 
 // max_pages=0 in split_directed_neighbors_into_pages => no page-count cap.
-static constexpr uint8_t MERIT_DC_PCT_UNLIMITED_PAGES = 0;
+static constexpr uint8_t NEIGHBORCACHE_DC_PCT_UNLIMITED_PAGES = 0;
 
 static size_t directed_out_edges_for_pct_threshold(
     const std::vector<std::pair<uint32_t, uint64_t>> &sorted_out, double pct_threshold, uint64_t page_cap)
@@ -2989,7 +2989,7 @@ static int directed_beam_pct_pack_pages(const VamanaGraph &graph, const std::vec
             directed_nbrs.push_back(child);
         }
         std::vector<std::vector<uint32_t>> template_pages;
-        split_directed_neighbors_into_pages(parent, directed_nbrs, cfg.page_cap, MERIT_DC_PCT_UNLIMITED_PAGES,
+        split_directed_neighbors_into_pages(parent, directed_nbrs, cfg.page_cap, NEIGHBORCACHE_DC_PCT_UNLIMITED_PAGES,
                                             template_pages);
 
         std::vector<std::vector<uint32_t>> built_pages;
@@ -3122,7 +3122,7 @@ static int directed_beam_pct_pack_pages(const VamanaGraph &graph, const std::vec
 
     if (!seed_groups.empty())
     {
-        diskann::cout << "MERIT disk-cache " << layout_name << ": seed_groups=" << seed_groups.size()
+        diskann::cout << "NEIGHBORCACHE disk-cache " << layout_name << ": seed_groups=" << seed_groups.size()
                       << " multi_page_seeds=" << multi_page_seeds;
         if (cold_tail_pages > 0)
             diskann::cout << " cold_tail_pages=" << cold_tail_pages << " cold_tail_nodes=" << cold_tail_nodes;
@@ -3158,13 +3158,13 @@ static uint64_t parent_outgoing_heat(const std::vector<std::pair<uint32_t, uint6
     return total;
 }
 
-// MERIT_SEED_REPLICA_GRANDCHILD=1: a seed group holds the seed, its profile children and then their
-// profile children, capped at MERIT_SEED_REPLICA_MAX_PAGES pages (default 2). Grandchildren are not
+// NEIGHBORCACHE_SEED_REPLICA_GRANDCHILD=1: a seed group holds the seed, its profile children and then their
+// profile children, capped at NEIGHBORCACHE_SEED_REPLICA_MAX_PAGES pages (default 2). Grandchildren are not
 // graph neighbors of the seed, so the neighbor check is skipped in this mode.
 static bool seed_replica_grandchild_mode()
 {
     static const bool on = [] {
-        const char *e = std::getenv("MERIT_SEED_REPLICA_GRANDCHILD");
+        const char *e = std::getenv("NEIGHBORCACHE_SEED_REPLICA_GRANDCHILD");
         return e != nullptr && std::strcmp(e, "0") != 0;
     }();
     return on;
@@ -3173,7 +3173,7 @@ static bool seed_replica_grandchild_mode()
 static uint8_t seed_replica_max_pages()
 {
     static const uint8_t n = [] {
-        const char *e = std::getenv("MERIT_SEED_REPLICA_MAX_PAGES");
+        const char *e = std::getenv("NEIGHBORCACHE_SEED_REPLICA_MAX_PAGES");
         return static_cast<uint8_t>(e != nullptr ? std::atoi(e) : 2);
     }();
     return n;
@@ -3184,7 +3184,7 @@ static uint8_t seed_replica_max_pages()
 static bool seed_replica_all_children()
 {
     static const bool on = [] {
-        const char *e = std::getenv("MERIT_SEED_REPLICA_ALL_CHILDREN");
+        const char *e = std::getenv("NEIGHBORCACHE_SEED_REPLICA_ALL_CHILDREN");
         return e != nullptr && std::strcmp(e, "0") != 0;
     }();
     return on;
@@ -3195,7 +3195,7 @@ static bool seed_replica_all_children()
 static double seed_replica_child_frac()
 {
     static const double frac = [] {
-        const char *e = std::getenv("MERIT_SEED_REPLICA_CHILD_FRAC");
+        const char *e = std::getenv("NEIGHBORCACHE_SEED_REPLICA_CHILD_FRAC");
         const double v = e != nullptr ? std::strtod(e, nullptr) : 0.0;
         return (v > 0.0 && v < 1.0) ? v : 0.0;
     }();
@@ -3255,7 +3255,7 @@ static void log_seed_replica_uncovered_expand_nodes(const std::vector<uint64_t> 
 
     if (expand_missing > 0)
     {
-        diskann::cout << "MERIT disk-cache seed_replica: " << expand_missing << " / " << expand_total
+        diskann::cout << "NEIGHBORCACHE disk-cache seed_replica: " << expand_missing << " / " << expand_total
                       << " expand nodes are not on any seed page (no flat append). Increase ratio or lower pct."
                       << std::endl;
     }
@@ -3349,7 +3349,7 @@ static int directed_beam_pct_seed_replica_pack_pages(
             directed_nbrs.push_back(child);
         }
 
-        uint8_t max_pages = MERIT_DC_PCT_UNLIMITED_PAGES;
+        uint8_t max_pages = NEIGHBORCACHE_DC_PCT_UNLIMITED_PAGES;
         if (seed_replica_child_frac() > 0.0)
         {
             const size_t keep = static_cast<size_t>(
@@ -3363,7 +3363,7 @@ static int directed_beam_pct_seed_replica_pack_pages(
             if (seed_replica_all_children() && directed_nbrs.size() > cap)
             {
                 cap = directed_nbrs.size();
-                max_pages = MERIT_DC_PCT_UNLIMITED_PAGES;
+                max_pages = NEIGHBORCACHE_DC_PCT_UNLIMITED_PAGES;
             }
             std::unordered_set<uint32_t> seen(directed_nbrs.begin(), directed_nbrs.end());
             seen.insert(parent);
@@ -3424,7 +3424,7 @@ static int directed_beam_pct_seed_replica_pack_pages(
     // Seeds are the hottest fraction of visited nodes (by expand count), not the
     // hottest fraction of profile parents by outgoing edge heat.
     bool visit_top_applied = false;
-    if (const char *visit_env = std::getenv("MERIT_SEED_REPLICA_VISIT_FRAC"))
+    if (const char *visit_env = std::getenv("NEIGHBORCACHE_SEED_REPLICA_VISIT_FRAC"))
     {
         const double vfrac = std::atof(visit_env);
         if (vfrac > 0.0 && vfrac <= 1.0 && !node_expand.empty())
@@ -3457,22 +3457,22 @@ static int directed_beam_pct_seed_replica_pack_pages(
                                        [&](const SeedReplicaPackPlan &plan) { return keep.count(plan.parent) == 0; }),
                         plans.end());
             visit_top_applied = true;
-            diskann::cout << "MERIT disk-cache seed_replica: visit-top keeping " << plans.size() << " / " << before
+            diskann::cout << "NEIGHBORCACHE disk-cache seed_replica: visit-top keeping " << plans.size() << " / " << before
                           << " seeds from the hottest " << keep_n << " / " << visited
-                          << " visited nodes (MERIT_SEED_REPLICA_VISIT_FRAC=" << vfrac << ")" << std::endl;
+                          << " visited nodes (NEIGHBORCACHE_SEED_REPLICA_VISIT_FRAC=" << vfrac << ")" << std::endl;
         }
     }
 
     // Keep only the top fraction of ranked seeds; the space budget no longer decides which seeds exist.
     if (!visit_top_applied)
-    if (const char *frac_env = std::getenv("MERIT_SEED_REPLICA_SEED_FRAC"))
+    if (const char *frac_env = std::getenv("NEIGHBORCACHE_SEED_REPLICA_SEED_FRAC"))
     {
         const double frac = std::atof(frac_env);
         if (frac > 0.0 && frac < 1.0)
         {
             const size_t keep = static_cast<size_t>(std::ceil(frac * static_cast<double>(plans.size())));
-            diskann::cout << "MERIT disk-cache seed_replica: keeping top " << keep << " / " << plans.size()
-                          << " seeds (MERIT_SEED_REPLICA_SEED_FRAC=" << frac << ")" << std::endl;
+            diskann::cout << "NEIGHBORCACHE disk-cache seed_replica: keeping top " << keep << " / " << plans.size()
+                          << " seeds (NEIGHBORCACHE_SEED_REPLICA_SEED_FRAC=" << frac << ")" << std::endl;
             plans.resize(keep);
         }
     }
@@ -3600,7 +3600,7 @@ static int directed_beam_pct_seed_replica_pack_pages(
 
     if (!seed_groups.empty() || !plans.empty())
     {
-        diskann::cout << "MERIT disk-cache " << layout_name << ": seed_groups=" << seed_groups.size()
+        diskann::cout << "NEIGHBORCACHE disk-cache " << layout_name << ": seed_groups=" << seed_groups.size()
                       << " profile_parents=" << parents.size() << " pack_plans=" << plans.size()
                       << " multi_page_seeds=" << multi_page_seeds << " skipped_parents=" << skipped_parents
                       << " seeds_blocked_by_budget=" << seeds_blocked_by_budget;
@@ -3795,7 +3795,7 @@ static int directed_child_only_pack_pages(
         parent_groups++;
     }
 
-    diskann::cout << "MERIT disk-cache " << layout_name << ": child_only_groups=" << parent_groups
+    diskann::cout << "NEIGHBORCACHE disk-cache " << layout_name << ": child_only_groups=" << parent_groups
                   << " multi_page_seeds=" << multi_page_seeds << std::endl;
     return 0;
 }
@@ -3920,7 +3920,7 @@ bool is_directed_seed_replica_pct_layout(const std::string &layout_norm)
 bool is_seed_only_disk_cache_layout(const std::string &layout_norm)
 {
     (void)layout_norm;
-    // Seed-replica changes packing only; lookup/expand stay Layout-E unless MERIT_SEED_ONLY_* env opts in.
+    // Seed-replica changes packing only; lookup/expand stay Layout-E unless NEIGHBORCACHE_SEED_ONLY_* env opts in.
     return false;
 }
 
@@ -3988,7 +3988,7 @@ int compute_directed_seed_core_unique_fill_disk_cache_list(
     const uint64_t seed_slots =
         std::max<uint64_t>(nnodes_per_sector, static_cast<uint64_t>(static_cast<double>(max_nodes) * core_frac));
 
-    diskann::cout << "MERIT disk-cache " << layout_label << ": seed_core_slots=" << seed_slots
+    diskann::cout << "NEIGHBORCACHE disk-cache " << layout_label << ": seed_core_slots=" << seed_slots
                   << " / max_nodes=" << max_nodes << " (core_frac=" << core_frac << ")" << std::endl;
 
     if (compute_directed_seed_replica_disk_cache_list(graph, node_expand, directed_edges, nnodes_per_sector, seed_slots,
@@ -4001,7 +4001,7 @@ int compute_directed_seed_core_unique_fill_disk_cache_list(
     const size_t unique_fill = node_list.size() - after_seed;
 
     const std::unordered_set<uint32_t> uniq(node_list.begin(), node_list.end());
-    diskann::cout << "MERIT disk-cache " << layout_label << ": after_seed_slots=" << after_seed
+    diskann::cout << "NEIGHBORCACHE disk-cache " << layout_label << ": after_seed_slots=" << after_seed
                   << " unique_fill=" << unique_fill << " total_slots=" << node_list.size()
                   << " unique_nodes=" << uniq.size() << " seed_groups="
                   << (seed_page_groups != nullptr ? seed_page_groups->size() : 0) << std::endl;
@@ -4106,7 +4106,7 @@ int compute_directed_beam_disk_cache_list(
                                                         DirectedBeamSeedMode::ParentOut, max_nodes, exclude_ids,
                                                         node_list, "Layout E (directed_beam)") != 0)
     {
-        diskann::cerr << "MERIT disk-cache: directed_beam list empty (max_nodes=" << max_nodes
+        diskann::cerr << "NEIGHBORCACHE disk-cache: directed_beam list empty (max_nodes=" << max_nodes
                       << ", beam_width=" << beam_width << ")." << std::endl;
         return -1;
     }
@@ -4124,7 +4124,7 @@ int compute_directed_beam_top4first_disk_cache_list(
                                                         DirectedBeamSeedMode::ParentOutTop4First, max_nodes,
                                                         exclude_ids, node_list, "directed_beam_top4first") != 0)
     {
-        diskann::cerr << "MERIT disk-cache: directed_beam_top4first list empty (max_nodes=" << max_nodes
+        diskann::cerr << "NEIGHBORCACHE disk-cache: directed_beam_top4first list empty (max_nodes=" << max_nodes
                       << ", beam_width=" << beam_width << ")." << std::endl;
         return -1;
     }
@@ -4142,7 +4142,7 @@ int compute_directed_beam_starfill_disk_cache_list(
                                                         DirectedBeamSeedMode::ParentOut, max_nodes, exclude_ids,
                                                         node_list, "directed_beam_starfill (legacy E)") != 0)
     {
-        diskann::cerr << "MERIT disk-cache: directed_beam_starfill list empty (max_nodes=" << max_nodes
+        diskann::cerr << "NEIGHBORCACHE disk-cache: directed_beam_starfill list empty (max_nodes=" << max_nodes
                       << ", beam_width=" << beam_width << ")." << std::endl;
         return -1;
     }
@@ -4160,7 +4160,7 @@ int compute_directed_beam_inseed_disk_cache_list(
                                                         DirectedBeamSeedMode::ChildIn, max_nodes, exclude_ids,
                                                         node_list, "directed_beam_inseed") != 0)
     {
-        diskann::cerr << "MERIT disk-cache: directed_beam_inseed list empty (max_nodes=" << max_nodes
+        diskann::cerr << "NEIGHBORCACHE disk-cache: directed_beam_inseed list empty (max_nodes=" << max_nodes
                       << ", beam_width=" << beam_width << ")." << std::endl;
         return -1;
     }
@@ -4204,11 +4204,11 @@ int compute_directed_beam_dual_disk_cache_list(
     node_list.insert(node_list.end(), phase2.begin(), phase2.end());
     if (node_list.empty())
     {
-        diskann::cerr << "MERIT disk-cache: directed_beam_dual list empty (max_nodes=" << max_nodes << ")."
+        diskann::cerr << "NEIGHBORCACHE disk-cache: directed_beam_dual list empty (max_nodes=" << max_nodes << ")."
                       << std::endl;
         return -1;
     }
-    diskann::cout << "MERIT disk-cache directed_beam_dual: parent_phase=" << (node_list.size() - phase2.size())
+    diskann::cout << "NEIGHBORCACHE disk-cache directed_beam_dual: parent_phase=" << (node_list.size() - phase2.size())
                   << " child_phase=" << phase2.size() << std::endl;
     log_disk_cache_node_list_stats(node_list, "directed_beam_dual");
     return 0;
@@ -4241,7 +4241,7 @@ int compute_directed_star_disk_cache_list(
 
     if (node_list.empty())
     {
-        diskann::cerr << "MERIT disk-cache: directed_star list empty (max_nodes=" << max_nodes
+        diskann::cerr << "NEIGHBORCACHE disk-cache: directed_star list empty (max_nodes=" << max_nodes
                       << ", beam_width=" << beam_width << ")." << std::endl;
         return -1;
     }
@@ -4276,7 +4276,7 @@ int compute_directed_beam_hybrid_disk_cache_list(
 
     if (node_list.empty())
     {
-        diskann::cerr << "MERIT disk-cache: directed_beam_hybrid list empty (max_nodes=" << max_nodes
+        diskann::cerr << "NEIGHBORCACHE disk-cache: directed_beam_hybrid list empty (max_nodes=" << max_nodes
                       << ", beam_width=" << beam_width << ")." << std::endl;
         return -1;
     }
@@ -4310,7 +4310,7 @@ int compute_directed_beam_tight_disk_cache_list(
 
     if (node_list.empty())
     {
-        diskann::cerr << "MERIT disk-cache: directed_beam_tight list empty (max_nodes=" << max_nodes
+        diskann::cerr << "NEIGHBORCACHE disk-cache: directed_beam_tight list empty (max_nodes=" << max_nodes
                       << ", beam_width=" << beam_width << ")." << std::endl;
         return -1;
     }
@@ -4463,7 +4463,7 @@ int compute_edge_variant_disk_cache_list(const VamanaGraph &graph, const std::ve
 
     if (node_list.empty())
     {
-        diskann::cerr << "MERIT disk-cache: edge-variant list empty (layout=" << variant_layout
+        diskann::cerr << "NEIGHBORCACHE disk-cache: edge-variant list empty (layout=" << variant_layout
                       << ", max_nodes=" << max_nodes << ", k_hops=" << k_hops << ")." << std::endl;
         return -1;
     }
@@ -4507,7 +4507,7 @@ int compute_edge_replica_disk_cache_list(const VamanaGraph &graph, const std::ve
 
     if (node_list.empty())
     {
-        diskann::cerr << "MERIT disk-cache: edge-replica list empty (max_slots=" << max_slots << ")." << std::endl;
+        diskann::cerr << "NEIGHBORCACHE disk-cache: edge-replica list empty (max_slots=" << max_slots << ")." << std::endl;
         return -1;
     }
     log_disk_cache_node_list_stats(node_list, "edge_replica");
@@ -4545,7 +4545,7 @@ int compute_edge_star_dup_disk_cache_list(const VamanaGraph &graph, const std::v
 
     if (unique_list.empty())
     {
-        diskann::cerr << "MERIT disk-cache: edge_star_dup unique phase empty (max_slots=" << max_slots << ")."
+        diskann::cerr << "NEIGHBORCACHE disk-cache: edge_star_dup unique phase empty (max_slots=" << max_slots << ")."
                       << std::endl;
         return -1;
     }
@@ -4572,7 +4572,7 @@ int compute_edge_star_dup_disk_cache_list(const VamanaGraph &graph, const std::v
             break;
     }
 
-    diskann::cout << "MERIT disk-cache edge_star_dup: unique_pages=" << pages.size()
+    diskann::cout << "NEIGHBORCACHE disk-cache edge_star_dup: unique_pages=" << pages.size()
                   << " unique_slots=" << unique_slots << " dup_slots=" << dup_slots
                   << " total_slots=" << node_list.size() << std::endl;
     log_disk_cache_node_list_stats(node_list, "edge_star_dup");
@@ -4702,7 +4702,7 @@ int compute_hot_node_disk_cache_list(const VamanaGraph &graph, const std::vector
 
     if (node_list.empty())
     {
-        diskann::cerr << "MERIT disk-cache: hot-node path list empty (max_nodes=" << max_nodes << ", k_hops=" << k_hops
+        diskann::cerr << "NEIGHBORCACHE disk-cache: hot-node path list empty (max_nodes=" << max_nodes << ", k_hops=" << k_hops
                       << ")." << std::endl;
         return -1;
     }
@@ -4736,7 +4736,7 @@ int compute_hot_node_top4first_disk_cache_list(
 
     if (node_list.empty())
     {
-        diskann::cerr << "MERIT disk-cache: hot-node top4first list empty (max_nodes=" << max_nodes
+        diskann::cerr << "NEIGHBORCACHE disk-cache: hot-node top4first list empty (max_nodes=" << max_nodes
                       << ", k_hops=" << k_hops << ")." << std::endl;
         return -1;
     }
@@ -4995,12 +4995,12 @@ static int load_or_build_frontier_templates(const VamanaGraph &graph,
     if (HotnessProfiler::load_frontier_templates(profile_prefix, templates) != 0)
     {
         templates = build_frontier_templates_from_profile_edges(graph, directed_edges, beam_width);
-        diskann::cout << "MERIT disk-cache: no hop-frontier profile; synthesized " << templates.size()
+        diskann::cout << "NEIGHBORCACHE disk-cache: no hop-frontier profile; synthesized " << templates.size()
                       << " frontier templates from directed edges (beam_width=" << beam_width << ")." << std::endl;
     }
     else
     {
-        diskann::cout << "MERIT disk-cache: loaded " << templates.size() << " hop-frontier templates from profile."
+        diskann::cout << "NEIGHBORCACHE disk-cache: loaded " << templates.size() << " hop-frontier templates from profile."
                       << std::endl;
     }
     return templates.empty() ? -1 : 0;
@@ -5254,7 +5254,7 @@ int compute_frontier_disk_cache_list(const VamanaGraph &graph, const std::vector
     std::vector<std::pair<uint64_t, std::vector<uint32_t>>> templates;
     if (load_or_build_frontier_templates(graph, directed_edges, profile_prefix, beam_width, templates) != 0)
     {
-        diskann::cerr << "MERIT disk-cache: frontier template list empty." << std::endl;
+        diskann::cerr << "NEIGHBORCACHE disk-cache: frontier template list empty." << std::endl;
         return -1;
     }
 
@@ -5268,10 +5268,10 @@ int compute_frontier_disk_cache_list(const VamanaGraph &graph, const std::vector
     filter_frontier_templates_for_disk_cache(cfg, templates);
     if (templates.empty())
     {
-        diskann::cerr << "MERIT disk-cache: no multi-node frontier templates after eligibility filter." << std::endl;
+        diskann::cerr << "NEIGHBORCACHE disk-cache: no multi-node frontier templates after eligibility filter." << std::endl;
         return -1;
     }
-    diskann::cout << "MERIT disk-cache: " << templates.size() << " eligible frontier templates (size>=2)."
+    diskann::cout << "NEIGHBORCACHE disk-cache: " << templates.size() << " eligible frontier templates (size>=2)."
                   << std::endl;
 
     std::vector<std::vector<uint32_t>> pages;
@@ -5281,7 +5281,7 @@ int compute_frontier_disk_cache_list(const VamanaGraph &graph, const std::vector
 
     if (node_list.empty())
     {
-        diskann::cerr << "MERIT disk-cache: frontier packing list empty (max_nodes=" << max_nodes
+        diskann::cerr << "NEIGHBORCACHE disk-cache: frontier packing list empty (max_nodes=" << max_nodes
                       << ", beam_width=" << beam_width << ")." << std::endl;
         return -1;
     }
@@ -5303,7 +5303,7 @@ int compute_frontier_page_disk_cache_list(const VamanaGraph &graph, const std::v
     std::vector<std::pair<uint64_t, std::vector<uint32_t>>> templates;
     if (load_or_build_frontier_templates(graph, directed_edges, profile_prefix, beam_width, templates) != 0)
     {
-        diskann::cerr << "MERIT disk-cache: frontier_page template list empty." << std::endl;
+        diskann::cerr << "NEIGHBORCACHE disk-cache: frontier_page template list empty." << std::endl;
         return -1;
     }
 
@@ -5317,7 +5317,7 @@ int compute_frontier_page_disk_cache_list(const VamanaGraph &graph, const std::v
     filter_frontier_templates_for_disk_cache(cfg, templates);
     if (templates.empty())
     {
-        diskann::cerr << "MERIT disk-cache: frontier_page no eligible templates." << std::endl;
+        diskann::cerr << "NEIGHBORCACHE disk-cache: frontier_page no eligible templates." << std::endl;
         return -1;
     }
 
@@ -5329,7 +5329,7 @@ int compute_frontier_page_disk_cache_list(const VamanaGraph &graph, const std::v
 
     if (node_list.empty())
     {
-        diskann::cerr << "MERIT disk-cache: frontier_page list empty." << std::endl;
+        diskann::cerr << "NEIGHBORCACHE disk-cache: frontier_page list empty." << std::endl;
         return -1;
     }
     log_disk_cache_node_list_stats(node_list, "frontier_page");
@@ -5390,7 +5390,7 @@ int compute_frontier_dup_disk_cache_list(const VamanaGraph &graph, const std::ve
             break;
     }
 
-    diskann::cout << "MERIT disk-cache frontier_dup: unique_pages=" << pages.size()
+    diskann::cout << "NEIGHBORCACHE disk-cache frontier_dup: unique_pages=" << pages.size()
                   << " unique_slots=" << unique_slots << " dup_slots=" << dup_slots
                   << " total_slots=" << node_list.size() << std::endl;
     log_disk_cache_node_list_stats(node_list, "frontier_dup");
@@ -5414,7 +5414,7 @@ int compute_cooccur_star_disk_cache_list(
     const auto co_weights = build_cooccur_weights_from_frontier_templates(templates);
     if (co_weights.empty())
     {
-        diskann::cerr << "MERIT disk-cache: co-occur weight map empty." << std::endl;
+        diskann::cerr << "NEIGHBORCACHE disk-cache: co-occur weight map empty." << std::endl;
         return -1;
     }
 
@@ -5436,10 +5436,10 @@ int compute_cooccur_star_disk_cache_list(
 
     if (node_list.empty())
     {
-        diskann::cerr << "MERIT disk-cache: cooccur_star list empty (max_nodes=" << max_nodes << ")." << std::endl;
+        diskann::cerr << "NEIGHBORCACHE disk-cache: cooccur_star list empty (max_nodes=" << max_nodes << ")." << std::endl;
         return -1;
     }
-    diskann::cout << "MERIT disk-cache cooccur_star: co_pairs=" << co_weights.size()
+    diskann::cout << "NEIGHBORCACHE disk-cache cooccur_star: co_pairs=" << co_weights.size()
                   << " templates=" << templates.size() << std::endl;
     log_disk_cache_node_list_stats(node_list, "cooccur_star");
     return 0;
@@ -5477,10 +5477,10 @@ int compute_dbeam_cooccur_disk_cache_list(
     node_list.insert(node_list.end(), phase2.begin(), phase2.end());
     if (node_list.empty())
     {
-        diskann::cerr << "MERIT disk-cache: dbeam_cooccur list empty (max_nodes=" << max_nodes << ")." << std::endl;
+        diskann::cerr << "NEIGHBORCACHE disk-cache: dbeam_cooccur list empty (max_nodes=" << max_nodes << ")." << std::endl;
         return -1;
     }
-    diskann::cout << "MERIT disk-cache dbeam_cooccur: phase1=" << (node_list.size() - phase2.size())
+    diskann::cout << "NEIGHBORCACHE disk-cache dbeam_cooccur: phase1=" << (node_list.size() - phase2.size())
                   << " phase2=" << phase2.size() << " total=" << node_list.size() << std::endl;
     log_disk_cache_node_list_stats(node_list, "dbeam_cooccur");
     return 0;
@@ -5513,7 +5513,7 @@ int compute_frontier_topk_disk_cache_list(
     filter_frontier_templates_for_disk_cache(cfg, templates);
     if (templates.empty())
     {
-        diskann::cerr << "MERIT disk-cache: frontier_topk template list empty after filter." << std::endl;
+        diskann::cerr << "NEIGHBORCACHE disk-cache: frontier_topk template list empty after filter." << std::endl;
         return -1;
     }
 
@@ -5525,10 +5525,10 @@ int compute_frontier_topk_disk_cache_list(
 
     if (node_list.empty())
     {
-        diskann::cerr << "MERIT disk-cache: frontier_topk list empty (max_nodes=" << max_nodes << ")." << std::endl;
+        diskann::cerr << "NEIGHBORCACHE disk-cache: frontier_topk list empty (max_nodes=" << max_nodes << ")." << std::endl;
         return -1;
     }
-    diskann::cout << "MERIT disk-cache frontier_topk: top_k=" << top_k << " templates_used=" << templates.size()
+    diskann::cout << "NEIGHBORCACHE disk-cache frontier_topk: top_k=" << top_k << " templates_used=" << templates.size()
                   << std::endl;
     log_disk_cache_node_list_stats(node_list, "frontier_topk");
     return 0;
@@ -5574,7 +5574,7 @@ void append_uncounted_nodes_to_disk_list(const std::vector<uint64_t> &node_expan
 
     if (node_list.size() > before)
     {
-        diskann::cout << "MERIT disk-cache: appended " << (node_list.size() - before)
+        diskann::cout << "NEIGHBORCACHE disk-cache: appended " << (node_list.size() - before)
                       << " remaining hot nodes (by node_expand desc; total=" << node_list.size() << ")."
                       << std::endl;
     }
@@ -5634,7 +5634,7 @@ int read_disk_index_nnodes_per_sector(const std::string &disk_index_file, uint64
     return 0;
 }
 
-int merit_dump_disk_cache_pages(const VamanaGraph &graph, const std::vector<uint64_t> &node_expand,
+int neighborcache_dump_disk_cache_pages(const VamanaGraph &graph, const std::vector<uint64_t> &node_expand,
                                 const std::vector<std::tuple<uint32_t, uint32_t, uint64_t>> &directed_edges,
                                 const std::string &layout_in, uint64_t nnodes_per_sector, uint32_t k_hops,
                                 uint64_t max_nodes, const std::unordered_set<uint32_t> &exclude_ids,
@@ -5743,7 +5743,7 @@ int merit_dump_disk_cache_pages(const VamanaGraph &graph, const std::vector<uint
         return 0;
     }
 
-    diskann::cerr << "merit_dump_disk_cache_pages: unsupported layout " << layout_in << std::endl;
+    diskann::cerr << "neighborcache_dump_disk_cache_pages: unsupported layout " << layout_in << std::endl;
     return -1;
 }
 

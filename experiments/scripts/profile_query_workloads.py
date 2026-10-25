@@ -8,7 +8,7 @@ import os
 import subprocess
 from pathlib import Path
 
-SEARCH = Path("/home/jianz/Merit/diskann/build/apps/search_disk_index")
+SEARCH = Path("/home/jianz/NeighborCache/diskann/build/apps/search_disk_index")
 
 
 def main() -> None:

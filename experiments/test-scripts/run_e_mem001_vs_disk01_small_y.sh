@@ -19,10 +19,10 @@ COMMON=(
   --recall_at 1 --search_list 50 --beamwidth 4
   --num_threads 8 --num_nodes_to_cache 0
   --enable_query_sector_cache
-  --merit_profile_prefix "${PROFILE}"
-  --merit_disk_cache_ratio 0.1
-  --merit_disk_cache_layout directed_beam
-  --merit_disk_cache_k_hops 1
+  --neighborcache_profile_prefix "${PROFILE}"
+  --neighborcache_disk_cache_ratio 0.1
+  --neighborcache_disk_cache_layout directed_beam
+  --neighborcache_disk_cache_k_hops 1
 )
 
 run_one() {
@@ -31,7 +31,7 @@ run_one() {
   mkdir -p "${OUT}/${tag}"
   echo "== ${tag} =="
   "${SEARCH}" "$@" --result_path "${OUT}/${tag}/run" >"${OUT}/${tag}.out" 2>&1
-  grep -E 'MERIT memory|selected_nodes|entries=|^\s+50\s+4\s+' "${OUT}/${tag}.out" | tail -5
+  grep -E 'NEIGHBORCACHE memory|selected_nodes|entries=|^\s+50\s+4\s+' "${OUT}/${tag}.out" | tail -5
 }
 
 {
@@ -39,9 +39,9 @@ run_one() {
   echo "OUT=${OUT}"
   run_one disk_only "${COMMON[@]}"
   run_one mem001_disk01 "${COMMON[@]}" \
-    --merit_memory_gb 0.01 --merit_disk_cache_exclude_memory true
+    --neighborcache_memory_gb 0.01 --neighborcache_disk_cache_exclude_memory true
   echo ""
-  echo "Config             Disk Reads  DiskCachePg   MeritDcHit   Recall@1"
+  echo "Config             Disk Reads  DiskCachePg   NeighborCacheDcHit   Recall@1"
   for tag in disk_only mem001_disk01; do
     row=$(grep -E '^\s+50\s+4\s+' "${OUT}/${tag}.out" | tail -1)
     printf "%-16s %12s %12s %12s %10s\n" "$tag" \

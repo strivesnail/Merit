@@ -23,7 +23,7 @@ run_point() { # output directory, N, D, system
   fi
   env INDEX=/mnt/graid_single/sift10m/sift10m_index \
       SEARCH="$SEARCH_BIN" \
-      NET_GATE=1 NET_WRITE_WEIGHT=1 MERIT_BFS=1000 \
+      NET_GATE=1 NET_WRITE_WEIGHT=1 NEIGHBORCACHE_BFS=1000 \
       NCAP="$n" DPAGES="$d" UNIQUE=46929 \
       QUERY="$WL.u8bin" OUTROOT="$out" LS=100 SYSTEMS="$system" \
       ./run_1b_perturbed.sh
@@ -44,7 +44,7 @@ for pct in $POINTS; do
   fi
   if [ "$RUN_D" != 0 ]; then
     echo "$tag D-only D=$d $(date -Is)"
-    run_point "$ROOT/$tag/d_only" 1 "$d" merit
+    run_point "$ROOT/$tag/d_only" 1 "$d" neighborcache
   fi
 done
 echo ALLDONE

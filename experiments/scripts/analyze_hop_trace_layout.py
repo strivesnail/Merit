@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Analyze hop trace vs MERIT disk cache page layout for one query."""
+"""Analyze hop trace vs NEIGHBORCACHE disk cache page layout for one query."""
 
 from __future__ import annotations
 
@@ -74,18 +74,18 @@ def main() -> None:
     shown_pages: set[int] = set()
     for hop in sorted(by_hop.keys())[: args.max_hops]:
         items = by_hop[hop]
-        merit = [nid for src, nid in items if src == "merit"]
+        neighborcache = [nid for src, nid in items if src == "neighborcache"]
         base = [nid for src, nid in items if src == "base"]
-        print(f"## Hop {hop}  (beam frontier: merit={merit}, base={base})")
+        print(f"## Hop {hop}  (beam frontier: neighborcache={neighborcache}, base={base})")
 
         hop_secs = set()
         for src, nid in items:
-            if src != "merit" or nid not in loc:
+            if src != "neighborcache" or nid not in loc:
                 continue
             sec, slot = loc[nid]
             hop_secs.add(sec)
             mates = page_nodes[sec]
-            same_hop_mates = [m for m in mates if m in merit]
+            same_hop_mates = [m for m in mates if m in neighborcache]
             print(
                 f"  - node {nid}: disk cache sector {sec} slot {slot}; "
                 f"page mates {mates}; co-accessed this hop {same_hop_mates}"
@@ -99,9 +99,9 @@ def main() -> None:
         if len(hop_secs) > 1:
             print(f"  => this hop touches {len(hop_secs)} distinct disk cache sectors (ideally 1 if layout matched beam)")
 
-        # Compare with profile parent expansion for first merit node
-        if merit:
-            p = merit[0]
+        # Compare with profile parent expansion for first neighborcache node
+        if neighborcache:
+            p = neighborcache[0]
             prof_nbrs = edges.get(p, [])[:8]
             prof_on_page = [n for n in prof_nbrs if n in loc and loc[n][0] == loc[p][0]]
             print(

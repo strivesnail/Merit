@@ -1,0 +1,39 @@
+\section{Related Work}
+\label{sec:related}
+
+\textsc{NeighborCache} reduces the disk reads of disk-based graph indexes by tracking which nodes and edges searches actually use, and by caching that locality on SSD as well as in DRAM.
+We discuss related work in four areas: disk-based vector search, on-disk layouts of graph indexes, caching, and adaptation to workload changes.
+
+\paragraph{Disk-based vector search.}
+To serve billion-scale datasets with limited memory, DiskANN~\cite{diskann} stores a proximity graph on SSD and keeps only compressed vectors in memory.
+Subsequent systems reduce other costs of the search.
+Starling~\cite{starling} and PipeANN~\cite{pipeann} keep a small in-memory graph to select entry points close to the query, shortening the beginning of the search path; PipeANN further overlaps disk reads with computation to reduce latency, and Laser~\cite{laser} reduces the computation per visited node with a SIMD-friendly layout of compressed neighbor vectors.
+These techniques reduce the number of hops, the latency of each read, or the computation around it, whereas \textsc{NeighborCache} reduces the number of SSD reads along the remaining path by returning a seed together with neighbors that searches are likely to expand next.
+Because it only changes which on-SSD pages a miss fetches, and leaves graph construction and the search algorithm unchanged, it can in principle be combined with each of these techniques and applied to other graph indexes that share the same traversal.
+
+\paragraph{On-disk layout and replication for graph indexes.}
+DiskANN stores nodes in ID order, so a page rarely holds the nodes a query visits next.
+Starling~\cite{starling} reorders nodes so that each page holds as many graph neighbors of its nodes as possible.
+MARGO~\cite{margo} refines the objective by weighting edges according to how likely they are to lie on a monotonic search path and co-locating the heavily weighted ones.
+In both cases, which nodes share a page is decided at build time from the graph (or from construction-time path statistics), applied uniformly across vertices, and fixed while serving; the layout does not observe which edges live queries actually follow.
+\textsc{NeighborCache} instead materializes, at run time, only hot seeds together with neighbors reached through their hot edges, using as many 4\,KB pages per entry as that payload needs, and refreshes those entries online as hotspots shift.
+Because it leaves the original index unchanged, it can sit on top of any of these layouts.
+
+\paragraph{Caching index data.}
+Memory caches that hold index data reduce disk reads without changing search results.
+DiskANN caches the nodes reachable by BFS from the entry point, and Laser~\cite{laser} caches nodes with high in-degree; both are populated before serving and stay fixed afterwards.
+Run-time buffer pools do follow actual accesses, but they keep only individual nodes and are bounded by DRAM.
+\textsc{NeighborCache}'s N-cache is in this family at node grain, but its D-cache goes further: it learns which edges leave hot nodes under the live query mix and stores those seed-and-neighbor entries on SSD, so one miss can satisfy several soon-needed expansions after the pages are in memory.
+A small shared prefetch buffer, taken from the same DRAM budget as the N-cache, retains recently fetched D-cache pages across threads so that those pages need not be read again immediately.
+
+\paragraph{Caching query results.}
+Another line of work caches the results of earlier queries and returns them for sufficiently similar new queries, skipping the index search altogether.
+Aker~\cite{aker} applies this idea to disk-based vector search: it adjusts the similarity threshold of each cache entry to the local density of vectors and refreshes entries under updates.
+A hit saves an entire search, but such a cache helps only queries close to earlier ones and trades accuracy for hit rate.
+\textsc{NeighborCache} caches index data instead: it never changes search results and also accelerates queries that have not been seen before.
+The two are complementary: a result cache such as Aker can serve near-duplicate queries in front of \textsc{NeighborCache}, while \textsc{NeighborCache} reduces the disk reads of the remaining ones.
+
+\paragraph{Adapting to shifting hotspots.}
+Quake~\cite{quake} adapts a partitioned (IVF) index to skewed and changing workloads by splitting and merging partitions according to their access frequency, reducing the computation per query.
+In contrast, apart from run-time buffer pools of individual nodes, the caches and layouts of disk-based graph indexes discussed above are fixed before serving and do not follow such changes.
+\textsc{NeighborCache} tracks the hotness of nodes and edges online and decays the influence of old accesses at low cost, so that its N-cache and D-cache move to new hotspots as the workload shifts, without changing the index or the search path.

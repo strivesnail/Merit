@@ -1,0 +1,51 @@
+\section{Introduction}
+\label{sec:introduction}
+
+Vector search underpins recommendation~\cite{youtube_dnn}, semantic search~\cite{fb_ebr}, and retrieval-augmented generation (RAG)~\cite{rag}.
+As collections grow to billions of vectors, keeping the full index in memory becomes prohibitively expensive.
+Disk-based graph indexes such as DiskANN~\cite{diskann} address this by keeping only product-quantized vectors in DRAM and storing each node's full vector and adjacency list on SSD, packing several nodes into a 4\,KB page.
+A search walks the proximity graph by repeatedly reading the page of the next node, of which typically only that one node is useful~\cite{starling}---a high read amplification.
+For example, on the SIFT1B graph~\cite{bigann}, DiskANN issues 119 disk reads to visit 121 nodes per query on average, and I/O accounts for about 90\% of query latency.
+Reducing the number of random disk reads is therefore the most direct way to improve the performance of disk-based graph search.
+
+A disk read pays off only when the fetched page also holds nodes that the query will visit next---in a graph traversal, the neighbors of the node just read.
+Proximity graphs give every node dozens of neighbors, while a 4\,KB page holds only a handful of nodes, so no single-copy layout can place a node beside all of its neighbors, and replicating every neighborhood would multiply the index several times over.
+Existing systems therefore decide, before serving and from the index alone, which nodes to keep in memory and how to arrange them on disk.
+In memory, DiskANN caches nodes reachable by BFS from the entry point, and Laser~\cite{laser} caches high-in-degree nodes.
+On SSD, Starling~\cite{starling} and MARGO~\cite{margo} rearrange pages by graph topology so that neighbors tend to share a block.
+Run-time buffer pools follow actual accesses, but they cache only individual nodes and are bounded by DRAM.
+As a result, neither the memory cache nor the on-disk layout reflects which nodes and edges queries actually traverse, and neither adapts when the workload changes.
+
+Real search workloads, however, need only a small part of this locality.
+Queries are often skewed~\cite{quake,ragcache,xie_locality_2002}: many of them concentrate on a few regions of the index, which we call \emph{hotspots}.
+Within a hotspot, a small set of \emph{hot nodes} is read repeatedly, and of the dozens of edges leaving each hot node, queries keep following the same few---its \emph{hot edges} (\S\ref{sec:background}).
+Caching hot nodes in memory removes their disk reads, but DRAM holds only the hottest of them; the remaining reads still follow those hot edges.
+Which edges are hot is decided by where queries go, not by the graph topology or vector distances from which existing caches and layouts are derived.
+Consequently, a BFS or degree-based memory cache barely helps under repetitive queries, while topology-driven page rearrangements cannot put a hot node beside the neighbors that searches will actually need.
+
+We therefore use the SSD itself to install denser pages into memory.
+We present \textsc{NeighborCache}, which tracks node and edge hotness while serving queries, keeps the hottest nodes in an in-memory \emph{N-cache}, and maintains an SSD-side \emph{D-cache}: each entry is centered on a seed node together with neighbors reached through its hot edges (using as many 4\,KB pages as that payload needs), so a miss brings several soon-needed nodes into memory and later hops hit there.
+Every node can be a seed; we cap materialized D-cache space (e.g., 20\% of the index) and leave the index and search algorithm untouched.
+As hotspots shift, stale hotness decays and pages are replaced online.
+The gain is fewer random reads and higher memory-hit efficiency after each read, so the D-cache can live on the same SSD as the index.
+
+Realizing this idea poses three challenges.
+First, maintenance must be cheap: many query threads update node and edge hotness concurrently, and synchronization can erase the I/O savings.
+Second, online page replacement must not disturb queries: a reader may be about to touch a page that is being rewritten, so the system must expose only complete pages and must not block other queries on the write.
+Third, the caches must follow shifting hotspots at low cost: if hotness only accumulates, past hotspots never yield their pages; old accesses must lose influence without locking all metadata on every decay.
+
+\textsc{NeighborCache} addresses them as follows.
+It shards hotness metadata and batches per-query updates at the end of each query, recording edge hotness only from a sampled fraction of queries.
+It writes a new D-cache page to a free location and publishes it only after the write completes, reclaiming the old page after readers drain, so queries always see complete pages and writers hold no lock during I/O.
+Instead of periodically lowering every counter, it gradually increases the weight of new accesses as the global access count grows---equivalent to decaying old hotness---and rescales counters only when a value approaches the limit of its data type, so D-cache pages of fading hotspots are replaced by nodes in the new ones.
+
+We implement \textsc{NeighborCache} in DiskANN and evaluate it on SIFT100M, SIFT1B, and additional datasets under skewed, repetitive, and hotspot-shifting workloads, comparing against DiskANN with a matched BFS memory budget and against Starling and MARGO.
+At the same recall, \textsc{NeighborCache} improves throughput by up to 84\% over DiskANN and reduces disk reads per query by up to 55\%; even on the dataset's nearly uniform query set it already nearly doubles DiskANN, and skewed or repetitive workloads widen the gap further.
+
+We make the following contributions:
+\begin{itemize}
+  \item We show that selectively caching hot nodes and hot edges already nearly doubles DiskANN on the dataset's nearly uniform query set, that skew amplifies this gain, and that topology- and distance-based caches and layouts miss these edges (\S\ref{sec:background}).
+  \item We show that replicating only hot nodes and the neighbors reached through their hot edges, in SSD space bounded to 20\% of the index, overcomes the limit of single-copy layouts without the cost of full neighborhood replication.
+  \item We design \textsc{NeighborCache}, which maintains an in-memory N-cache and SSD-resident D-cache pages online from observed searches, with low maintenance cost, safe concurrent page replacement, and decaying hotness so that the cache follows shifting hotspots (\S\ref{sec:design}).
+  \item We implement \textsc{NeighborCache} in DiskANN and demonstrate its effectiveness under skewed and hotspot-shifting workloads (\S\ref{sec:eval}).
+\end{itemize}

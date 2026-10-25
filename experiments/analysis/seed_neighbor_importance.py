@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Offline seed/neighbor importance analysis from MERIT profile bins."""
+"""Offline seed/neighbor importance analysis from NEIGHBORCACHE profile bins."""
 
 from __future__ import annotations
 

@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Migrate essential Merit code + data (no runs/) to jianz@10.64.1.42:/home/jianz/workload
+# Migrate essential NeighborCache code + data (no runs/) to jianz@10.64.1.42:/home/jianz/workload
 #
 # Layout on destination (code / data separated):
 #   /home/jianz/workload/
-#     code/Merit/          # repo (no data/, no diskann/build/)
+#     code/NeighborCache/          # repo (no data/, no diskann/build/)
 #     data/sift1m/
 #     data/sift10m/
 #     data/sift100m/
-#     code/Merit/data -> ../../data   (symlink so scripts keep using Merit/data/...)
+#     code/NeighborCache/data -> ../../data   (symlink so scripts keep using NeighborCache/data/...)
 #
 # Approx size without runs/: sift1m ~7GB + sift10m ~37GB + sift100m ~129GB ≈ 173GB
 # (+ code <1GB). Fits a 400GB disk with headroom.
@@ -20,7 +20,7 @@
 #   DATASETS="sift1m sift10m" ./experiments/scripts/migrate_essential_to_42.sh
 set -euo pipefail
 
-SRC_ROOT="${SRC_ROOT:-/home/jianz/Merit}"
+SRC_ROOT="${SRC_ROOT:-/home/jianz/NeighborCache}"
 REMOTE="${REMOTE:-jianz@10.64.1.42}"
 DST_ROOT="${DST_ROOT:-/home/jianz/workload}"
 DATASETS="${DATASETS:-sift1m sift10m sift100m}"
@@ -59,7 +59,7 @@ echo
 ssh ${SSH_OPTS} "${REMOTE}" "mkdir -p '${DST_ROOT}/code' '${DST_ROOT}/data' && df -h '${DST_ROOT}' | tail -1"
 
 echo
-echo "=== 1/3 Sync code -> ${DST_ROOT}/code/Merit ==="
+echo "=== 1/3 Sync code -> ${DST_ROOT}/code/NeighborCache ==="
 rsync "${RSYNC_FLAGS[@]}" "${DRY[@]}" \
   --delete \
   --exclude='/.git/' \
@@ -68,7 +68,7 @@ rsync "${RSYNC_FLAGS[@]}" "${DRY[@]}" \
   --exclude='**/__pycache__/' \
   --exclude='**/*.pyc' \
   --exclude='.rsync-partial/' \
-  "${SRC_ROOT}/" "${REMOTE}:${DST_ROOT}/code/Merit/"
+  "${SRC_ROOT}/" "${REMOTE}:${DST_ROOT}/code/NeighborCache/"
 
 echo
 echo "=== 2/3 Sync data (no runs/) ==="
@@ -86,14 +86,14 @@ for ds in ${DATASETS}; do
 done
 
 echo
-echo "=== 3/3 Wire code/Merit/data -> ../../data ==="
+echo "=== 3/3 Wire code/NeighborCache/data -> ../../data ==="
 if [[ ${#DRY[@]} -eq 0 ]]; then
   # shellcheck disable=SC2086
   ssh ${SSH_OPTS} "${REMOTE}" bash -s <<EOF
 set -euo pipefail
-cd '${DST_ROOT}/code/Merit'
+cd '${DST_ROOT}/code/NeighborCache'
 if [[ -e data && ! -L data ]]; then
-  echo "ERROR: ${DST_ROOT}/code/Merit/data exists and is not a symlink; refuse to overwrite."
+  echo "ERROR: ${DST_ROOT}/code/NeighborCache/data exists and is not a symlink; refuse to overwrite."
   exit 1
 fi
 ln -sfn ../../data data
@@ -102,7 +102,7 @@ df -h '${DST_ROOT}'
 du -sh '${DST_ROOT}/code' '${DST_ROOT}/data'/* 2>/dev/null || true
 echo
 echo "Done. On remote, rebuild:"
-echo "  cd ${DST_ROOT}/code/Merit/diskann && mkdir -p build && cd build && cmake .. && make -j\\\$(nproc) search_disk_index"
+echo "  cd ${DST_ROOT}/code/NeighborCache/diskann && mkdir -p build && cd build && cmake .. && make -j\\\$(nproc) search_disk_index"
 EOF
 else
   echo "[dry-run] skip symlink + remote df"

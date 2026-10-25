@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Motivation analysis with parent-based co-read (matches MERIT's query patching).
+"""Motivation analysis with parent-based co-read (matches NEIGHBORCACHE's query patching).
 
 Within a query, the parent of a node c read from SSD is the first expanded node whose
 adjacency list contains c (DiskANN inserts a node into the candidate list only when it is

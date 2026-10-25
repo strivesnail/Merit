@@ -1,0 +1,42 @@
+\documentclass[sigconf,10pt]{acmart}
+
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{amsmath}
+\usepackage{xspace}
+\usepackage[colorinlistoftodos,prependcaption,textsize=tiny]{todonotes}
+
+\begin{document}
+
+% Draft author block so acmart accepts the file.
+\author{Anonymous Author}
+\affiliation{\institution{Anonymous Institution}}
+
+\input{abstract}
+
+\begin{CCSXML}
+<ccs2012>
+ <concept>
+  <concept_id>10002951.10002952</concept_id>
+  <concept_desc>Information systems~Nearest-neighbor search</concept_desc>
+  <concept_significance>500</concept_significance>
+ </concept>
+</ccs2012>
+\end{CCSXML}
+\ccsdesc[500]{Information systems~Nearest-neighbor search}
+
+\keywords{vector search, disk-based graph index, caching, SSD}
+
+\maketitle
+
+\input{introduction}
+\input{background}
+\input{design}
+
+\section{Evaluation}
+\label{sec:eval}
+
+\bibliographystyle{ACM-Reference-Format}
+\bibliography{refs}
+
+\end{document}

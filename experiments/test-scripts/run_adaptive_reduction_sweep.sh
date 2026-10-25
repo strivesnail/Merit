@@ -4,13 +4,13 @@ set -euo pipefail
 
 export LD_LIBRARY_PATH="${HOME}/miniconda3/lib:${LD_LIBRARY_PATH:-}"
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-8}"
-export MERIT_USE_RAMFS=0
-export MERIT_RECORD_DRIVEN_SEED_ACCESS=1
-export MERIT_ADAPTIVE_PARENT_OR_SELF=1
-unset MERIT_ADAPTIVE_EXTENT MERIT_DISABLE_MULTIREAD MERIT_PARENT_SINGLE_PAGE MERIT_CACHE_REPLICA_FALLBACK
+export NEIGHBORCACHE_USE_RAMFS=0
+export NEIGHBORCACHE_RECORD_DRIVEN_SEED_ACCESS=1
+export NEIGHBORCACHE_ADAPTIVE_PARENT_OR_SELF=1
+unset NEIGHBORCACHE_ADAPTIVE_EXTENT NEIGHBORCACHE_DISABLE_MULTIREAD NEIGHBORCACHE_PARENT_SINGLE_PAGE NEIGHBORCACHE_CACHE_REPLICA_FALLBACK
 
-SEARCH="${SEARCH:-/home/jianz/Merit/diskann/build/apps/search_disk_index}"
-DATA="${DATA:-/home/jianz/Merit/data/sift1m}"
+SEARCH="${SEARCH:-/home/jianz/NeighborCache/diskann/build/apps/search_disk_index}"
+DATA="${DATA:-/home/jianz/NeighborCache/data/sift1m}"
 OUT="${OUT:-$DATA/runs/adaptive_reduction_sweep}"
 L=50; W=4; K=1; THREADS=8
 
@@ -59,13 +59,13 @@ run_case() {
     --result_path "$case_out/run"
     --recall_at "$K" --search_list "$L" --beamwidth "$W"
     --num_threads "$THREADS"
-    --merit_disk_cache_layout "$layout"
-    --merit_disk_cache_ratio "$ratio"
+    --neighborcache_disk_cache_layout "$layout"
+    --neighborcache_disk_cache_ratio "$ratio"
     --dump_query_stats "$case_out/qstats.csv"
   )
   if [[ -n "$reuse" ]]; then
     args+=(
-      --merit_disk_cache_reuse_prefix "$reuse"
+      --neighborcache_disk_cache_reuse_prefix "$reuse"
       --access_profile_prefix "$DATA/workloads/profiles/${wl}_10k"
     )
   else
@@ -74,7 +74,7 @@ run_case() {
   "$SEARCH" "${args[@]}" >"$case_out/run.out" 2>&1
   local reads dc
   reads=$(mean_disk_reads "$case_out/qstats.csv")
-  dc=$(dc_ratio "$case_out/run_merit_dc.data")
+  dc=$(dc_ratio "$case_out/run_neighborcache_dc.data")
   echo "$wl $tag reads=$reads dc=$dc layout=$layout ratio=$ratio" | tee -a "$OUT/summary.log"
 }
 

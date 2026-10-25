@@ -63,13 +63,13 @@ chmod +x experiments/relayout/run_sift100k.sh
 DATA_DIR=/your/sift100k experiments/relayout/run_sift100k.sh
 ```
 
-## SIFT1M scripts (MERIT / IO)
+## SIFT1M scripts (NEIGHBORCACHE / IO)
 
-Benchmarks and MERIT tests are in [`../test-scripts/`](../test-scripts/) (cold start, sector cache, memory/disk tiers).  
+Benchmarks and NEIGHBORCACHE tests are in [`../test-scripts/`](../test-scripts/) (cold start, sector cache, memory/disk tiers).  
 `experiments/relayout/run_sift1m_*_compare.sh` are thin forwarders to that directory.
 
 ```bash
-bash experiments/test-scripts/run_sift1m_merit_combined.sh
+bash experiments/test-scripts/run_sift1m_neighborcache_combined.sh
 bash experiments/test-scripts/run_sift1m_cold_compare.sh
 ```
 
@@ -82,6 +82,6 @@ Undirected weight for relayout: `I(u,v) = C(u→v) + C(v→u)`.
 
 ## Not in this README
 
-- MERIT is documented in the repo root README (runtime memory + disk cache).
+- NEIGHBORCACHE is documented in the repo root README (runtime memory + disk cache).
 - EdgeAccessSet / medoid partitioning
 - Search algorithm changes beyond DiskANN baseline beam search

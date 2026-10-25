@@ -158,7 +158,7 @@ def main():
     data_dir = Path(os.environ.get("DATA_DIR", repo_root / "data" / "sift1m"))
     profile = data_dir / "run2_profile_same_trace"
     mem_index = data_dir / "sift1m_index_mem.index"
-    khop_nodes_file = data_dir / "five_way_k2_20260722_083546/disk01_merit_dc.nodes"
+    khop_nodes_file = data_dir / "five_way_k2_20260722_083546/disk01_neighborcache_dc.nodes"
     max_nodes = 100_000
     nps = 5
     k_hops = 2

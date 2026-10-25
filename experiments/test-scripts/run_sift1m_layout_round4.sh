@@ -4,10 +4,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DISKANN_BUILD="${DISKANN_BUILD:-$(cd "${SCRIPT_DIR}/../../diskann/build" && pwd)}"
 PERSIST_DATA_DIR="${DATA_DIR:-/home/jianz/workplace/diskann/anndisk/data/sift1m}"
-# shellcheck source=merit_ramfs_env.sh disable=SC1091
-source "${SCRIPT_DIR}/merit_ramfs_env.sh"
-merit_ramfs_activate "${PERSIST_DATA_DIR}"
-DATA_DIR="${MERIT_RAMFS_ACTIVE_DATA_DIR}"
+# shellcheck source=neighborcache_ramfs_env.sh disable=SC1091
+source "${SCRIPT_DIR}/neighborcache_ramfs_env.sh"
+neighborcache_ramfs_activate "${PERSIST_DATA_DIR}"
+DATA_DIR="${NEIGHBORCACHE_RAMFS_ACTIVE_DATA_DIR}"
 SEARCH="${DISKANN_BUILD}/apps/search_disk_index"
 STAMP="$(date +%Y%m%d_%H%M%S)"
 OUT_ROOT="${PERSIST_DATA_DIR}/workloads_disk01_runs/1m_round4_${STAMP}"
@@ -26,10 +26,10 @@ BASE=(
   --num_threads "${THREADS}"
   --num_nodes_to_cache 0
   --enable_query_sector_cache
-  --merit_memory_gb 0.01
-  --merit_disk_cache_ratio 0.1
-  --merit_profile_prefix "${PROFILE}"
-  --merit_disk_cache_exclude_memory true
+  --neighborcache_memory_gb 0.01
+  --neighborcache_disk_cache_ratio 0.1
+  --neighborcache_profile_prefix "${PROFILE}"
+  --neighborcache_disk_cache_exclude_memory true
 )
 
 run_case() {
@@ -39,8 +39,8 @@ run_case() {
   echo "======== ${tag} layout=${layout} k_hops=${kh} ========"
   /usr/bin/time -f "elapsed=%es" "${SEARCH}" \
     "${BASE[@]}" \
-    --merit_disk_cache_layout "${layout}" \
-    --merit_disk_cache_k_hops "${kh}" \
+    --neighborcache_disk_cache_layout "${layout}" \
+    --neighborcache_disk_cache_k_hops "${kh}" \
     --result_path "${out}/run" \
     >"${OUT_ROOT}/${tag}.out" 2>&1
   grep -E 'packing|split|selected|^\s+'"${L}"'\s+'"${W}"'\s+' "${OUT_ROOT}/${tag}.out" | tail -3
@@ -55,7 +55,7 @@ run_case() {
   run_case parent_star parent_star 1
   run_case desplit dbeam_estar_split 1
   echo "===== SUMMARY L=${L} W=${W} ====="
-  printf "%-16s %12s %12s %12s %10s\n" "case" "DiskReads" "DiskCachePg" "MeritDcHit" "Recall"
+  printf "%-16s %12s %12s %12s %10s\n" "case" "DiskReads" "DiskCachePg" "NeighborCacheDcHit" "Recall"
   for tag in dbeam_w1 dbeam_w2 dbeam_w3 parent_star desplit; do
     row=$(grep -E "^\s+${L}\s+${W}\s+" "${OUT_ROOT}/${tag}.out" | tail -1)
     dr=$(echo "$row" | awk '{print $10}')

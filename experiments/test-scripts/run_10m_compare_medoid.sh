@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Starling / MARGO on SIFT10M starting from the single medoid (mem_L=0), like DiskANN and MERIT.
+# Starling / MARGO on SIFT10M starting from the single medoid (mem_L=0), like DiskANN and NEIGHBORCACHE.
 # The 38 MB navigation graph budget goes to the node cache: ~86.7 MB / ~1.6 KB per node.
 set -uo pipefail
 cd "$(dirname "$0")"

@@ -4,10 +4,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DISKANN_BUILD="${DISKANN_BUILD:-$(cd "${SCRIPT_DIR}/../../diskann/build" && pwd)}"
 PERSIST_DATA_DIR="${DATA_DIR:-/home/jianz/workplace/diskann/anndisk/data/sift1m}"
-# shellcheck source=merit_ramfs_env.sh disable=SC1091
-source "${SCRIPT_DIR}/merit_ramfs_env.sh"
-merit_ramfs_activate "${PERSIST_DATA_DIR}"
-DATA_DIR="${MERIT_RAMFS_ACTIVE_DATA_DIR}"
+# shellcheck source=neighborcache_ramfs_env.sh disable=SC1091
+source "${SCRIPT_DIR}/neighborcache_ramfs_env.sh"
+neighborcache_ramfs_activate "${PERSIST_DATA_DIR}"
+DATA_DIR="${NEIGHBORCACHE_RAMFS_ACTIVE_DATA_DIR}"
 SEARCH="${DISKANN_BUILD}/apps/search_disk_index"
 STAMP="$(date +%Y%m%d_%H%M%S)"
 OUT_ROOT="${PERSIST_DATA_DIR}/workloads_disk01_runs/1m_dbeam_tune_${STAMP}"
@@ -29,11 +29,11 @@ BASE=(
   --num_threads "${THREADS}"
   --num_nodes_to_cache 0
   --enable_query_sector_cache
-  --merit_memory_gb 0.01
-  --merit_profile_prefix "${PROFILE}"
-  --merit_disk_cache_exclude_memory true
-  --merit_disk_cache_layout directed_beam
-  --merit_disk_cache_k_hops 1
+  --neighborcache_memory_gb 0.01
+  --neighborcache_profile_prefix "${PROFILE}"
+  --neighborcache_disk_cache_exclude_memory true
+  --neighborcache_disk_cache_layout directed_beam
+  --neighborcache_disk_cache_k_hops 1
 )
 
 run_case() {
@@ -60,16 +60,16 @@ parse_row() {
   echo "profile=${PROFILE} OUT=${OUT_ROOT}"
 
   echo "--- ratio sweep ---"
-  run_case ratio_010 --merit_disk_cache_ratio 0.10 --merit_unified_disk_cache false
-  run_case ratio_015 --merit_disk_cache_ratio 0.15 --merit_unified_disk_cache false
-  run_case ratio_020 --merit_disk_cache_ratio 0.20 --merit_unified_disk_cache false
+  run_case ratio_010 --neighborcache_disk_cache_ratio 0.10 --neighborcache_unified_disk_cache false
+  run_case ratio_015 --neighborcache_disk_cache_ratio 0.15 --neighborcache_unified_disk_cache false
+  run_case ratio_020 --neighborcache_disk_cache_ratio 0.20 --neighborcache_unified_disk_cache false
 
   echo "--- unified vs disk cache (ratio=0.1) ---"
-  run_case disk_cache_010 --merit_disk_cache_ratio 0.10 --merit_unified_disk_cache false
-  run_case unified_010 --merit_disk_cache_ratio 0.10 --merit_unified_disk_cache true
+  run_case disk_cache_010 --neighborcache_disk_cache_ratio 0.10 --neighborcache_unified_disk_cache false
+  run_case unified_010 --neighborcache_disk_cache_ratio 0.10 --neighborcache_unified_disk_cache true
 
   echo "===== SUMMARY L=${L} W=${W} ====="
-  printf "%-14s %12s %12s %12s %10s %8s\n" "case" "DiskReads" "DiskCachePg" "MeritDcHit" "Selected" "Recall"
+  printf "%-14s %12s %12s %12s %10s %8s\n" "case" "DiskReads" "DiskCachePg" "NeighborCacheDcHit" "Selected" "Recall"
   for tag in ratio_010 ratio_015 ratio_020 disk_cache_010 unified_010; do
     row=$(parse_row "${OUT_ROOT}/${tag}.out")
     dr=$(echo "$row" | awk '{print $10}')

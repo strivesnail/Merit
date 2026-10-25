@@ -1,0 +1,14 @@
+\title{NeighborCache: Caching the SSD on the SSD for Graph-Based Vector Search}
+
+\begin{abstract}
+Disk-based graph indexes such as DiskANN make billion-scale vector search affordable, but each query must fetch tens to hundreds of pages from the SSD, and these reads dominate its latency.
+A read pays off only when the fetched page also holds the nodes the query will visit next, which in a graph traversal are the neighbors of the node just read.
+Proximity graphs, however, give every node dozens of neighbors: no arrangement of a single copy can keep a node beside all of them, and replicating every node's neighborhood multiplies the index size.
+Existing systems therefore settle for one copy, caching nodes near the entry point or reordering the graph on disk, and they make these choices from the index before serving.
+We observe that queries need only a small part of this locality: under skewed workloads, searches concentrate on a few hot nodes and repeatedly follow the same few edges out of them.
+We present \textsc{NeighborCache}, which caches exactly this part, and caches it on the SSD itself.
+\textsc{NeighborCache} tracks the hotness of nodes and edges during search, keeps the hottest nodes in memory, and copies each hot node together with the neighbors reached through its hot edges into a dedicated SSD page, so that one read replaces several reads to the original index.
+The gain comes from fewer reads rather than faster ones, so the cache can live on the same SSD it accelerates.
+Cache pages are capped at 20\% of the index and leave the index and its search algorithm untouched; as hotspots shift, stale hotness decays and pages are replaced online without rebuilding the index.
+A comprehensive experimental study demonstrates that \textsc{NeighborCache} improves search throughput by up to 84\% over DiskANN while maintaining the same recall and memory budget, and reduces disk reads per query by up to 55\%; the gain already appears on the dataset's nearly uniform query set and grows as the workload becomes more skewed or repetitive.
+\end{abstract}

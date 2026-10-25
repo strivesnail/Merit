@@ -1,4 +1,4 @@
-// Load a disk index once, then profile every query file with vanilla DiskANN (no MERIT cache).
+// Load a disk index once, then profile every query file with vanilla DiskANN (no NEIGHBORCACHE cache).
 
 #include "common_includes.h"
 #include "linux_aligned_file_reader.h"

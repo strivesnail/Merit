@@ -5,11 +5,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 DISKANN_BUILD="${DISKANN_BUILD:-$(cd "${SCRIPT_DIR}/../../diskann/build" && pwd)}"
 DATA_DIR="${DATA_DIR:-${REPO_ROOT}/data/sift1m}"
-# shellcheck source=merit_ramfs_env.sh disable=SC1091
-source "${SCRIPT_DIR}/merit_ramfs_env.sh"
+# shellcheck source=neighborcache_ramfs_env.sh disable=SC1091
+source "${SCRIPT_DIR}/neighborcache_ramfs_env.sh"
 PERSIST_DATA_DIR="${DATA_DIR}"
-merit_ramfs_activate "${PERSIST_DATA_DIR}"
-DATA_DIR="${MERIT_RAMFS_ACTIVE_DATA_DIR}"
+neighborcache_ramfs_activate "${PERSIST_DATA_DIR}"
+DATA_DIR="${NEIGHBORCACHE_RAMFS_ACTIVE_DATA_DIR}"
 INDEX_PREFIX="${DATA_DIR}/sift1m_index"
 QUERY_FILE="${DATA_DIR}/sift_query.fbin"
 GT_FILE="${DATA_DIR}/sift_groundtruth.bin"
@@ -39,7 +39,7 @@ run_case() {
     --num_threads "${THREADS}" --enable_query_sector_cache \
     --result_path "${OUT_DIR}/${tag}_kh${kh}" --num_nodes_to_cache 0 \
     "$@" >"${out}" 2>&1
-  grep -E 'MERIT disk-cache|flat Top|k-hop packing|selected_nodes' "${out}" | head -5 || true
+  grep -E 'NEIGHBORCACHE disk-cache|flat Top|k-hop packing|selected_nodes' "${out}" | head -5 || true
   extract_row "${out}" | sed 's/^/  /'
   echo ""
 }
@@ -48,15 +48,15 @@ run_case() {
   echo "Layout A/B disk ratio=${DISK_RATIO} 1M $(date -Is) OUT=${OUT_DIR}"
   for kh in 0 2; do
     run_case disk "${kh}" \
-      --merit_disk_cache_ratio "${DISK_RATIO}" \
-      --merit_profile_prefix "${PROFILE}" \
-      --merit_disk_cache_k_hops "${kh}"
+      --neighborcache_disk_cache_ratio "${DISK_RATIO}" \
+      --neighborcache_profile_prefix "${PROFILE}" \
+      --neighborcache_disk_cache_k_hops "${kh}"
     run_case mem_disk "${kh}" \
-      --merit_memory_gb "${MEM_GB}" \
-      --merit_disk_cache_ratio "${DISK_RATIO}" \
-      --merit_profile_prefix "${PROFILE}" \
-      --merit_disk_cache_exclude_memory true \
-      --merit_disk_cache_k_hops "${kh}"
+      --neighborcache_memory_gb "${MEM_GB}" \
+      --neighborcache_disk_cache_ratio "${DISK_RATIO}" \
+      --neighborcache_profile_prefix "${PROFILE}" \
+      --neighborcache_disk_cache_exclude_memory true \
+      --neighborcache_disk_cache_k_hops "${kh}"
   done
   echo "===== summary L=${L} W=${W} ====="
   printf "%-12s %-6s %10s %10s %10s %10s %8s\n" "case" "kh" "MeanIOs" "BasePages" "DiskReads" "DiskCachePg" "Recall"

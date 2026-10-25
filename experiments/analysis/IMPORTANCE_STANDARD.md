@@ -2,15 +2,15 @@
 
 ## Goal
 
-Reduce MERIT disk-cache space **on top of Adaptive** (~17 mean disk reads on SIFT1M
+Reduce NEIGHBORCACHE disk-cache space **on top of Adaptive** (~17 mean disk reads on SIFT1M
 8 workloads), by ranking what to keep in two independent axes:
 
 1. **Seed axis** — which parent nodes deserve a seed-replica group.
 2. **Neighbor axis** — within each kept seed, which directed children occupy pages.
 
 **Evaluation baseline:** Adaptive full-cover (`directed_seed_replica_pct100` at
-profile-sized ratio + `MERIT_RECORD_DRIVEN_SEED_ACCESS=1` +
-`MERIT_ADAPTIVE_PARENT_OR_SELF=1`). Not Full Extent (~18.3) and not raw DiskANN (~62).
+profile-sized ratio + `NEIGHBORCACHE_RECORD_DRIVEN_SEED_ACCESS=1` +
+`NEIGHBORCACHE_ADAPTIVE_PARENT_OR_SELF=1`). Not Full Extent (~18.3) and not raw DiskANN (~62).
 
 ## Metrics (offline, from same-trace profile)
 

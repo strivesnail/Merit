@@ -6,11 +6,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 DISKANN_BUILD="${DISKANN_BUILD:-$(cd "${SCRIPT_DIR}/../../diskann/build" && pwd)}"
 DATA_DIR="${DATA_DIR:-${REPO_ROOT}/data/sift1m}"
-# shellcheck source=merit_ramfs_env.sh disable=SC1091
-source "${SCRIPT_DIR}/merit_ramfs_env.sh"
+# shellcheck source=neighborcache_ramfs_env.sh disable=SC1091
+source "${SCRIPT_DIR}/neighborcache_ramfs_env.sh"
 PERSIST_DATA_DIR="${DATA_DIR}"
-merit_ramfs_activate "${PERSIST_DATA_DIR}"
-DATA_DIR="${MERIT_RAMFS_ACTIVE_DATA_DIR}"
+neighborcache_ramfs_activate "${PERSIST_DATA_DIR}"
+DATA_DIR="${NEIGHBORCACHE_RAMFS_ACTIVE_DATA_DIR}"
 QUERY_FILE="${QUERY_FILE:-${DATA_DIR}/sift_query.fbin}"
 PROFILE="${PROFILE:-${DATA_DIR}/run2_profile_same_trace}"
 OUT_DIR="${OUT_DIR:-${PERSIST_DATA_DIR}/disk_io_diagnosis_$(date +%Y%m%d_%H%M%S)}"
@@ -26,7 +26,7 @@ DISK_K_HOPS="${DISK_K_HOPS:-2}"
 mkdir -p "${OUT_DIR}"
 SUMMARY="${OUT_DIR}/summary.tsv"
 : > "${SUMMARY}"
-echo -e "case\trep\tQPS\tMeanLat_us\tMeanIOs\tBasePages\tDiskCachePg\tDiskReads\tSectCacheHit\tIoUsPerRead\tMeanIO_us\tMeritDcHit\tRecall" >> "${SUMMARY}"
+echo -e "case\trep\tQPS\tMeanLat_us\tMeanIOs\tBasePages\tDiskCachePg\tDiskReads\tSectCacheHit\tIoUsPerRead\tMeanIO_us\tNeighborCacheDcHit\tRecall" >> "${SUMMARY}"
 
 COMMON=(
   --data_type float --dist_fn l2
@@ -78,8 +78,8 @@ while i < len(hdr):
         cols.append(("DiskCachePg", i)); i += 1; continue
     if hdr[i] == "SectCacheHit":
         cols.append(("SectCacheHit", i)); i += 1; continue
-    if hdr[i] == "MeritDcHit":
-        cols.append(("MeritDcHit", i)); i += 1; continue
+    if hdr[i] == "NeighborCacheDcHit":
+        cols.append(("NeighborCacheDcHit", i)); i += 1; continue
     if hdr[i] == "Recall@10":
         cols.append(("Recall", i)); i += 1; continue
     if hdr[i] == "Beamwidth":
@@ -128,8 +128,8 @@ while hi < len(hdr) and di < len(row):
         hi += 1; di += 1; continue
     if tok == "Jump<=8s%":
         hi += 1; di += 1; continue
-    if tok == "MeritDcHit":
-        out["MeritDcHit"] = row[di]; hi += 1; di += 1; continue
+    if tok == "NeighborCacheDcHit":
+        out["NeighborCacheDcHit"] = row[di]; hi += 1; di += 1; continue
     if tok == "Mean" and hi + 1 < len(hdr) and hdr[hi + 1] == "Hops":
         hi += 2; di += 1; continue
     if tok == "Mean" and hi + 1 < len(hdr) and hdr[hi + 1] == "IO" and hi + 2 < len(hdr) and hdr[hi + 2] == "(us)":
@@ -142,7 +142,7 @@ while hi < len(hdr) and di < len(row):
         out["QPS"] = row[di]; hi += 1; di += 1; continue
     hi += 1; di += 1
 
-for k in ("QPS", "MeanLat", "MeanIOs", "BasePages", "DiskCachePg", "DiskReads", "SectCacheHit", "IoUsPerRead", "MeanIO_us", "MeritDcHit", "Recall"):
+for k in ("QPS", "MeanLat", "MeanIOs", "BasePages", "DiskCachePg", "DiskReads", "SectCacheHit", "IoUsPerRead", "MeanIO_us", "NeighborCacheDcHit", "Recall"):
     print(out.get(k, ""))
 PY
 }
@@ -165,9 +165,9 @@ echo "REPS=${REPS} profile=${PROFILE}"
 
 DISK_COMMON=(
   "${COMMON[@]}"
-  --merit_disk_cache_ratio "${DISK_RATIO}"
-  --merit_profile_prefix "${PROFILE}"
-  --merit_disk_cache_k_hops "${DISK_K_HOPS}"
+  --neighborcache_disk_cache_ratio "${DISK_RATIO}"
+  --neighborcache_profile_prefix "${PROFILE}"
+  --neighborcache_disk_cache_k_hops "${DISK_K_HOPS}"
 )
 
 for r in $(seq 1 "${REPS}"); do
@@ -178,17 +178,17 @@ for r in $(seq 1 "${REPS}"); do
 
   run_one disk_cache_qsc "${r}" \
     "${DISK_COMMON[@]}" --enable_query_sector_cache \
-    --merit_unified_disk_cache false \
+    --neighborcache_unified_disk_cache false \
     --result_path "${OUT_DIR}/disk_cache_qsc_r${r}"
 
   run_one unified_qsc "${r}" \
     "${DISK_COMMON[@]}" --enable_query_sector_cache \
-    --merit_unified_disk_cache true \
+    --neighborcache_unified_disk_cache true \
     --result_path "${OUT_DIR}/unified_qsc_r${r}"
 
   run_one disk_cache_no_qsc "${r}" \
     "${DISK_COMMON[@]}" \
-    --merit_unified_disk_cache false \
+    --neighborcache_unified_disk_cache false \
     --result_path "${OUT_DIR}/disk_cache_no_qsc_r${r}"
 done
 
@@ -198,10 +198,10 @@ if [[ "${DROP_CACHES:-0}" == "1" ]]; then
   run_one baseline_cold 1 "${COMMON[@]}" --enable_query_sector_cache --result_path "${OUT_DIR}/baseline_cold"
   echo 3 | sudo tee /proc/sys/vm/drop_caches >/dev/null || true
   run_one disk_cache_cold 1 "${DISK_COMMON[@]}" --enable_query_sector_cache \
-    --merit_unified_disk_cache false --result_path "${OUT_DIR}/disk_cache_cold"
+    --neighborcache_unified_disk_cache false --result_path "${OUT_DIR}/disk_cache_cold"
   echo 3 | sudo tee /proc/sys/vm/drop_caches >/dev/null || true
   run_one unified_cold 1 "${DISK_COMMON[@]}" --enable_query_sector_cache \
-    --merit_unified_disk_cache true --result_path "${OUT_DIR}/unified_cold"
+    --neighborcache_unified_disk_cache true --result_path "${OUT_DIR}/unified_cold"
 fi
 
 echo ""
@@ -222,7 +222,7 @@ with open(path) as f:
             try: return float(x)
             except: return None
         rows.append((case, int(rep), {k: ffloat(v) for k, v in zip(
-            ["QPS","MeanLat","MeanIOs","BasePages","DiskCachePg","DiskReads","SectCacheHit","IoUsPerRead","MeanIO_us","MeritDcHit","Recall"],
+            ["QPS","MeanLat","MeanIOs","BasePages","DiskCachePg","DiskReads","SectCacheHit","IoUsPerRead","MeanIO_us","NeighborCacheDcHit","Recall"],
             p[2:])}))
 
 by = defaultdict(list)

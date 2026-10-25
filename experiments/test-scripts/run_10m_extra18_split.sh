@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Split MERIT's extra 18 MiB between n-cache and the coupled m/d-cache side.
+# Split NEIGHBORCACHE's extra 18 MiB between n-cache and the coupled m/d-cache side.
 # Workload: SIFT10M Zipf alpha=1.2, sigma=24, L=100, W=4, 20 pinned threads.
 #
 # Calibration from prior capacity sweeps:
@@ -33,9 +33,9 @@ for pct in $POINTS; do
   echo "$tag pct_n=$pct NCAP=$n DPAGES=$d MCAP=$((2*d)) $(date -Is)"
   env INDEX=/mnt/graid_single/sift10m/sift10m_index \
       SEARCH="$SEARCH_BIN" \
-      NET_GATE=1 NET_WRITE_WEIGHT=1 MERIT_BFS=1000 \
+      NET_GATE=1 NET_WRITE_WEIGHT=1 NEIGHBORCACHE_BFS=1000 \
       NCAP="$n" DPAGES="$d" UNIQUE=46929 \
-      QUERY="$WL.u8bin" OUTROOT="$out" LS=100 SYSTEMS=merit \
+      QUERY="$WL.u8bin" OUTROOT="$out" LS=100 SYSTEMS=neighborcache \
       ./run_1b_perturbed.sh
   (
     cd ../scripts

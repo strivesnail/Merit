@@ -24,19 +24,19 @@ os.environ["LD_LIBRARY_PATH"] = (
     os.environ.get("HOME", "") + "/miniconda3/lib:" + os.environ.get("LD_LIBRARY_PATH", "")
 )
 os.environ["OMP_NUM_THREADS"] = "8"
-os.environ["MERIT_USE_RAMFS"] = "0"
-os.environ["MERIT_RECORD_DRIVEN_SEED_ACCESS"] = "1"
-os.environ["MERIT_ADAPTIVE_PARENT_OR_SELF"] = "1"
+os.environ["NEIGHBORCACHE_USE_RAMFS"] = "0"
+os.environ["NEIGHBORCACHE_RECORD_DRIVEN_SEED_ACCESS"] = "1"
+os.environ["NEIGHBORCACHE_ADAPTIVE_PARENT_OR_SELF"] = "1"
 for k in [
-    "MERIT_ADAPTIVE_EXTENT",
-    "MERIT_DISABLE_MULTIREAD",
-    "MERIT_PARENT_SINGLE_PAGE",
-    "MERIT_CACHE_REPLICA_FALLBACK",
+    "NEIGHBORCACHE_ADAPTIVE_EXTENT",
+    "NEIGHBORCACHE_DISABLE_MULTIREAD",
+    "NEIGHBORCACHE_PARENT_SINGLE_PAGE",
+    "NEIGHBORCACHE_CACHE_REPLICA_FALLBACK",
 ]:
     os.environ.pop(k, None)
 
-SEARCH = Path("/home/jianz/Merit/diskann/build/apps/search_disk_index")
-DATA = Path("/home/jianz/Merit/data/sift10m")
+SEARCH = Path("/home/jianz/NeighborCache/diskann/build/apps/search_disk_index")
+DATA = Path("/home/jianz/NeighborCache/data/sift10m")
 PROF_SRC = DATA / "workloads/profiles/uniform_100k"
 QUERY = DATA / "workloads/uniform_100k.u8bin"
 GT = DATA / "workloads/uniform_100k_gt.bin"
@@ -97,7 +97,7 @@ def stats_from_qstats(p):
         "reads": st.mean(float(r["n_disk_reads"]) for r in rows),
         "n_ios": st.mean(float(r["n_ios"]) for r in rows),
         "mem_hits": st.mean(float(r.get("n_mem_hits", 0) or 0) for r in rows),
-        "merit_hits": st.mean(float(r.get("n_merit_hits", 0) or 0) for r in rows),
+        "neighborcache_hits": st.mean(float(r.get("n_neighborcache_hits", 0) or 0) for r in rows),
         "n_queries": len(rows),
     }
 
@@ -114,7 +114,7 @@ def run_case(
     case = out_root / tag
     case.mkdir(parents=True, exist_ok=True)
     qstats = case / "qstats.csv"
-    dc = case / "run_merit_dc.data"
+    dc = case / "run_neighborcache_dc.data"
     meta = case / "cache_meta.json"
     skip = case / "SKIP"
     if skip.exists():
@@ -191,20 +191,20 @@ def run_case(
     ]
     if mem_gb > 0:
         cmd += [
-            "--merit_memory_gb",
+            "--neighborcache_memory_gb",
             str(mem_gb),
-            "--merit_profile_prefix",
+            "--neighborcache_profile_prefix",
             profile,
-            "--merit_disk_cache_exclude_memory",
+            "--neighborcache_disk_cache_exclude_memory",
             "true" if exclude_mem else "false",
         ]
     elif ratio > 0:
-        cmd += ["--merit_profile_prefix", profile]
+        cmd += ["--neighborcache_profile_prefix", profile]
     if ratio > 0:
         cmd += [
-            "--merit_disk_cache_layout",
+            "--neighborcache_disk_cache_layout",
             layout,
-            "--merit_disk_cache_ratio",
+            "--neighborcache_disk_cache_ratio",
             str(ratio),
         ]
 
@@ -217,7 +217,7 @@ def run_case(
         print(f"SKIP {out_root.name}/{tag}: {msg}", flush=True)
         return None
 
-    dc = case / "run_merit_dc.data"
+    dc = case / "run_neighborcache_dc.data"
     sz = dc.stat().st_size if dc.exists() else 0
     if sz:
         meta.write_text(json.dumps({"cache_bytes": sz}) + "\n")
@@ -229,7 +229,7 @@ def run_case(
         "vs_base": (sz / IDX if sz else 0),
     }
     # Drop multi-GB cache blobs after stats are recorded so resume can keep going.
-    for blob in case.glob("run_merit_dc*"):
+    for blob in case.glob("run_neighborcache_dc*"):
         try:
             blob.unlink()
         except OSError:

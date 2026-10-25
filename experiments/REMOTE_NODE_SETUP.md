@@ -1,4 +1,4 @@
-# 在另一台机器（10.64.1.42）上运行 MERIT 实验指南
+# 在另一台机器（10.64.1.42）上运行 NEIGHBORCACHE 实验指南
 
 目标机器示例：`jianz@10.64.1.42`  
 数据与代码根目录：`/home/jianz/workload`  
@@ -10,8 +10,8 @@
 
 ```text
 /home/jianz/workload/
-  code/Merit/                 # 代码（无 data 实体、无 diskann/build）
-  code/Merit/data -> ../../data
+  code/NeighborCache/                 # 代码（无 data 实体、无 diskann/build）
+  code/NeighborCache/data -> ../../data
   data/
     sift1m/                   # 索引 + workloads + profiles（无 runs/）
     sift10m/
@@ -35,13 +35,13 @@ ssh jianz@10.64.1.42 'hostname; df -h /home/jianz/workload'
 
 ```bash
 # 三个数据集都搬
-/home/jianz/Merit/experiments/scripts/migrate_essential_to_42.sh
+/home/jianz/NeighborCache/experiments/scripts/migrate_essential_to_42.sh
 
 # 或只要 1M（先验证环境）
-DATASETS="sift1m" /home/jianz/Merit/experiments/scripts/migrate_essential_to_42.sh
+DATASETS="sift1m" /home/jianz/NeighborCache/experiments/scripts/migrate_essential_to_42.sh
 ```
 
-脚本会：同步 `code/Merit`、同步各 `data/<ds>`（排除 `runs/`）、并创建 `code/Merit/data -> ../../data`。
+脚本会：同步 `code/NeighborCache`、同步各 `data/<ds>`（排除 `runs/`）、并创建 `code/NeighborCache/data -> ../../data`。
 
 中断后可再跑同一命令，rsync 会续传/跳过已有文件。
 
@@ -51,7 +51,7 @@ DATASETS="sift1m" /home/jianz/Merit/experiments/scripts/migrate_essential_to_42.
 ssh jianz@10.64.1.42
 df -h /home/jianz/workload
 du -sh /home/jianz/workload/code /home/jianz/workload/data/*
-ls -ld /home/jianz/workload/code/Merit/data
+ls -ld /home/jianz/workload/code/NeighborCache/data
 ls /home/jianz/workload/data/sift1m/sift1m_index_disk.index
 ls /home/jianz/workload/data/sift1m/workloads/uniform_10k.fbin
 ```
@@ -62,17 +62,17 @@ ls /home/jianz/workload/data/sift1m/workloads/uniform_10k.fbin
 
 很多脚本写死了：
 
-- `SEARCH=/home/jianz/Merit/diskann/build/apps/search_disk_index`
-- `DATA=/home/jianz/Merit/data/sift1m`
+- `SEARCH=/home/jianz/NeighborCache/diskann/build/apps/search_disk_index`
+- `DATA=/home/jianz/NeighborCache/data/sift1m`
 
-远端实际代码在 `/home/jianz/workload/code/Merit`。最省事的做法是在 **42 上**建软链：
+远端实际代码在 `/home/jianz/workload/code/NeighborCache`。最省事的做法是在 **42 上**建软链：
 
 ```bash
-ln -sfn /home/jianz/workload/code/Merit /home/jianz/Merit
-ls -ld /home/jianz/Merit /home/jianz/Merit/data
+ln -sfn /home/jianz/workload/code/NeighborCache /home/jianz/NeighborCache
+ls -ld /home/jianz/NeighborCache /home/jianz/NeighborCache/data
 # 期望：
-#   /home/jianz/Merit -> .../workload/code/Merit
-#   /home/jianz/Merit/data -> ../../data  （指向 /home/jianz/workload/data）
+#   /home/jianz/NeighborCache -> .../workload/code/NeighborCache
+#   /home/jianz/NeighborCache/data -> ../../data  （指向 /home/jianz/workload/data）
 ```
 
 之后下面所有命令都可以沿用本机路径习惯。
@@ -104,10 +104,10 @@ pip3 install --user matplotlib numpy
 
 ---
 
-## 4. 编译 DiskANN / MERIT 搜索程序
+## 4. 编译 DiskANN / NEIGHBORCACHE 搜索程序
 
 ```bash
-cd /home/jianz/Merit/diskann
+cd /home/jianz/NeighborCache/diskann
 mkdir -p build && cd build
 cmake ..
 make -j$(nproc) search_disk_index
@@ -116,7 +116,7 @@ make -j$(nproc) search_disk_index
 成功标志：
 
 ```bash
-ls -lh /home/jianz/Merit/diskann/build/apps/search_disk_index
+ls -lh /home/jianz/NeighborCache/diskann/build/apps/search_disk_index
 ```
 
 若 cmake 报缺库，把报错里的包名补装后再 `cmake .. && make -j$(nproc) search_disk_index`。
@@ -125,7 +125,7 @@ ls -lh /home/jianz/Merit/diskann/build/apps/search_disk_index
 
 ```bash
 export OMP_NUM_THREADS=8
-export MERIT_USE_RAMFS=0
+export NEIGHBORCACHE_USE_RAMFS=0
 # 若用 conda 的 lib：
 # export LD_LIBRARY_PATH="$HOME/miniconda3/lib:${LD_LIBRARY_PATH:-}"
 ```
@@ -141,16 +141,16 @@ source ~/.bashrc
 ```bash
 export LD_LIBRARY_PATH="${HOME}/miniconda3/lib:${LD_LIBRARY_PATH:-}"
 export OMP_NUM_THREADS=8
-export MERIT_USE_RAMFS=0
+export NEIGHBORCACHE_USE_RAMFS=0
 
-SEARCH=/home/jianz/Merit/diskann/build/apps/search_disk_index
-DATA=/home/jianz/Merit/data/sift1m
+SEARCH=/home/jianz/NeighborCache/diskann/build/apps/search_disk_index
+DATA=/home/jianz/NeighborCache/data/sift1m
 
 "$SEARCH" --data_type float --dist_fn l2 \
   --index_path_prefix "$DATA/sift1m_index" \
   --query_file "$DATA/workloads/uniform_10k.fbin" \
   --gt_file "$DATA/workloads/uniform_10k_gt.bin" \
-  --result_path /tmp/merit_smoke_run \
+  --result_path /tmp/neighborcache_smoke_run \
   --recall_at 1 --search_list 50 --beamwidth 4 --num_threads 8 \
   --num_nodes_to_cache 0
 ```
@@ -160,12 +160,12 @@ DATA=/home/jianz/Merit/data/sift1m
 带 access profile（会写 visit / out-heat 等）：
 
 ```bash
-PROF=/home/jianz/Merit/data/sift1m/workloads/profiles/smoke_profile
+PROF=/home/jianz/NeighborCache/data/sift1m/workloads/profiles/smoke_profile
 "$SEARCH" --data_type float --dist_fn l2 \
   --index_path_prefix "$DATA/sift1m_index" \
   --query_file "$DATA/workloads/uniform_10k.fbin" \
   --gt_file "$DATA/workloads/uniform_10k_gt.bin" \
-  --result_path /tmp/merit_smoke_prof \
+  --result_path /tmp/neighborcache_smoke_prof \
   --recall_at 1 --search_list 50 --beamwidth 4 --num_threads 8 \
   --num_nodes_to_cache 0 \
   --enable_access_profile \
@@ -184,7 +184,7 @@ ls -lh ${PROF}_node_expand.bin ${PROF}_node_visit.bin ${PROF}_node_out_heat.bin 
 ### 6.1 SIFT1M disk-only Top5–90 扩展
 
 ```bash
-cd /home/jianz/Merit
+cd /home/jianz/NeighborCache
 python3 -u experiments/scripts/sift1m_disk_seed_nbrtop_extend.py \
   2>&1 | tee /tmp/sift1m_disk_seed_nbrtop_extend.log
 ```
@@ -211,9 +211,9 @@ python3 -u experiments/scripts/sift10m_uniform100k_seed_nbrtop_sweep.py \
 10M 查询是 uint8 + `uniform_100k`，脚本内路径已写死；确认：
 
 ```bash
-ls /home/jianz/Merit/data/sift10m/sift10m_index_disk.index
-ls /home/jianz/Merit/data/sift10m/workloads/uniform_100k.u8bin
-ls /home/jianz/Merit/data/sift10m/workloads/profiles/uniform_100k_node_expand.bin
+ls /home/jianz/NeighborCache/data/sift10m/sift10m_index_disk.index
+ls /home/jianz/NeighborCache/data/sift10m/workloads/uniform_100k.u8bin
+ls /home/jianz/NeighborCache/data/sift10m/workloads/profiles/uniform_100k_node_expand.bin
 ```
 
 ### 6.4 SIFT100M
@@ -233,13 +233,13 @@ python3 -u experiments/scripts/sift100m_uniform10k_seed_nbrtop_sweep.py \
 
 ```bash
 export OMP_NUM_THREADS=8
-export MERIT_USE_RAMFS=0
-export MERIT_RECORD_DRIVEN_SEED_ACCESS=1
-export MERIT_ADAPTIVE_PARENT_OR_SELF=1
-unset MERIT_ADAPTIVE_EXTENT
-unset MERIT_DISABLE_MULTIREAD
-unset MERIT_PARENT_SINGLE_PAGE
-unset MERIT_CACHE_REPLICA_FALLBACK
+export NEIGHBORCACHE_USE_RAMFS=0
+export NEIGHBORCACHE_RECORD_DRIVEN_SEED_ACCESS=1
+export NEIGHBORCACHE_ADAPTIVE_PARENT_OR_SELF=1
+unset NEIGHBORCACHE_ADAPTIVE_EXTENT
+unset NEIGHBORCACHE_DISABLE_MULTIREAD
+unset NEIGHBORCACHE_PARENT_SINGLE_PAGE
+unset NEIGHBORCACHE_CACHE_REPLICA_FALLBACK
 ```
 
 Python 脚本里通常已设置一部分；若手跑 `search_disk_index`，请自己 export。
@@ -263,10 +263,10 @@ Python 脚本里通常已设置一部分；若手跑 `search_disk_index`，请�
 | 现象 | 处理 |
 |------|------|
 | rsync 要密码后 `Connection closed` / code 255 | `ssh-copy-id` 免密后重跑脚本 |
-| `No such file: .../search_disk_index` | 先完成第 4 节编译；检查 `/home/jianz/Merit` 软链 |
+| `No such file: .../search_disk_index` | 先完成第 4 节编译；检查 `/home/jianz/NeighborCache` 软链 |
 | `libxxx.so` 找不到 | 设 `LD_LIBRARY_PATH`（conda/MKL） |
 | cmake 找不到 Boost/AIO/MKL | `apt install` 对应 `-dev` 包 |
-| 脚本找不到 data | 检查 `Merit/data` 软链是否指向 `/home/jianz/workload/data` |
+| 脚本找不到 data | 检查 `NeighborCache/data` 软链是否指向 `/home/jianz/workload/data` |
 | 盘满 | `df -h`；删远端 `runs/` 下旧 case；先只跑 1M |
 | 10M/100M recall/类型不对 | 10M 用 uint8 + u8bin；1M 用 float + fbin |
 
@@ -274,7 +274,7 @@ Python 脚本里通常已设置一部分；若手跑 `search_disk_index`，请�
 
 ## 10. 建议上手顺序
 
-1. 搬迁 + `/home/jianz/Merit` 软链  
+1. 搬迁 + `/home/jianz/NeighborCache` 软链  
 2. 装依赖 + 编译 `search_disk_index`  
 3. SIFT1M smoke 搜索  
 4. 跑 `sift1m_disk_seed_nbrtop_extend.py`  
@@ -285,7 +285,7 @@ Python 脚本里通常已设置一部分；若手跑 `search_disk_index`，请�
 ## 11. 从本机只补拷几张图（可选）
 
 ```bash
-scp /home/jianz/Merit/data/sift1m/runs/adaptive_reduction_sweep/seed_nbrtop_*.png \
+scp /home/jianz/NeighborCache/data/sift1m/runs/adaptive_reduction_sweep/seed_nbrtop_*.png \
   jianz@10.64.1.42:/home/jianz/workload/data/sift1m/runs/adaptive_reduction_sweep/
 # 远端需先 mkdir -p 对应目录
 ```
@@ -293,4 +293,4 @@ scp /home/jianz/Merit/data/sift1m/runs/adaptive_reduction_sweep/seed_nbrtop_*.pn
 ---
 
 文档路径（源仓库）：`experiments/REMOTE_NODE_SETUP.md`  
-搬迁后远端也可直接看：`/home/jianz/workload/code/Merit/experiments/REMOTE_NODE_SETUP.md`
+搬迁后远端也可直接看：`/home/jianz/workload/code/NeighborCache/experiments/REMOTE_NODE_SETUP.md`

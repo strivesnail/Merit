@@ -153,74 +153,74 @@ template <typename T> class SSDQueryScratch : public AbstractScratch<T>
     std::vector<Neighbor> full_retset;
     tsl::robin_map<uint32_t, uint32_t> profile_parent;
     // node_id -> packed D-loc from lookup (sector in high 32, slot in low 16).
-    tsl::robin_map<uint32_t, uint64_t> merit_dcache_loc_cache;
+    tsl::robin_map<uint32_t, uint64_t> neighborcache_dcache_loc_cache;
     // Same-query members already packed when a seed page was served (prefetch buffer).
-    tsl::robin_map<uint32_t, uint64_t> merit_dcache_member_packed_loc;
-    // page index -> generation last copied into merit_dcache_member_packed_loc.
-    tsl::robin_map<uint32_t, uint32_t> merit_prefetched_page_gen;
+    tsl::robin_map<uint32_t, uint64_t> neighborcache_dcache_member_packed_loc;
+    // page index -> generation last copied into neighborcache_dcache_member_packed_loc.
+    tsl::robin_map<uint32_t, uint32_t> neighborcache_prefetched_page_gen;
     // Query patch: seed -> members seen on a served D page, and the reverse map.
-    tsl::robin_map<uint32_t, std::vector<uint32_t>> merit_dcache_seed_members;
+    tsl::robin_map<uint32_t, std::vector<uint32_t>> neighborcache_dcache_seed_members;
     // Later pages of the same seed, allocated only when the previous page is full.
-    tsl::robin_map<uint32_t, std::vector<std::vector<uint32_t>>> merit_dcache_seed_extra;
-    tsl::robin_set<uint32_t> merit_dyn_full_span;
-    tsl::robin_map<uint32_t, uint32_t> merit_dcache_member_to_seed;
-    tsl::robin_map<uint32_t, std::vector<uint32_t>> merit_dcache_patch_new;
-    tsl::robin_set<uint32_t> merit_repack_sectors;
-    uint32_t merit_repack_used = 0;
+    tsl::robin_map<uint32_t, std::vector<std::vector<uint32_t>>> neighborcache_dcache_seed_extra;
+    tsl::robin_set<uint32_t> neighborcache_dyn_full_span;
+    tsl::robin_map<uint32_t, uint32_t> neighborcache_dcache_member_to_seed;
+    tsl::robin_map<uint32_t, std::vector<uint32_t>> neighborcache_dcache_patch_new;
+    tsl::robin_set<uint32_t> neighborcache_repack_sectors;
+    uint32_t neighborcache_repack_used = 0;
     tsl::robin_set<uint64_t> read_sectors; // distinct base _disk.index sectors (frontier reads / base sector cache)
-    tsl::robin_set<uint32_t> read_merit_disk_cache_sectors; // distinct MERIT disk cache file sectors
-    tsl::robin_set<uint64_t> merit_avoided_base_sectors;
+    tsl::robin_set<uint32_t> read_neighborcache_disk_cache_sectors; // distinct NEIGHBORCACHE disk cache file sectors
+    tsl::robin_set<uint64_t> neighborcache_avoided_base_sectors;
     // Per-query sector cache: key = base _disk.index sector id
     tsl::robin_map<uint64_t, std::array<char, defaults::SECTOR_LEN>> sector_cache;
-    // Per-query MERIT disk cache: key = disk cache sector id (not base sector).
+    // Per-query NEIGHBORCACHE disk cache: key = disk cache sector id (not base sector).
     // With the shared page cache on, only dynamic D-cache sectors live here.
-    tsl::robin_map<uint32_t, std::array<char, defaults::SECTOR_LEN>> merit_sector_cache;
+    tsl::robin_map<uint32_t, std::array<char, defaults::SECTOR_LEN>> neighborcache_sector_cache;
     // Static D-cache sectors this query read from disk itself.
-    tsl::robin_set<uint32_t> merit_fetched_sectors;
-    std::vector<uint32_t> merit_dyn_pinned_sectors;
-    std::vector<uint32_t> merit_heap_dirty_slots;
-    std::vector<uint32_t> merit_heap_dirty_nodes;
-    std::vector<float> merit_heap_dirty_scores;
-    std::vector<uint8_t> merit_heap_dirty_eligible;
-    tsl::robin_set<uint32_t> merit_heap_dirty_set;
-    bool merit_dcache_lookup_enabled = false;
-    bool merit_dcache_maintenance_enabled = false;
-    bool merit_dcache_probe = false;
-    uint32_t merit_dyn_physical_reads = 0;
-    uint32_t merit_dyn_served_nodes = 0;
-    uint32_t merit_expand_count = 0;
+    tsl::robin_set<uint32_t> neighborcache_fetched_sectors;
+    std::vector<uint32_t> neighborcache_dyn_pinned_sectors;
+    std::vector<uint32_t> neighborcache_heap_dirty_slots;
+    std::vector<uint32_t> neighborcache_heap_dirty_nodes;
+    std::vector<float> neighborcache_heap_dirty_scores;
+    std::vector<uint8_t> neighborcache_heap_dirty_eligible;
+    tsl::robin_set<uint32_t> neighborcache_heap_dirty_set;
+    bool neighborcache_dcache_lookup_enabled = false;
+    bool neighborcache_dcache_maintenance_enabled = false;
+    bool neighborcache_dcache_probe = false;
+    uint32_t neighborcache_dyn_physical_reads = 0;
+    uint32_t neighborcache_dyn_served_nodes = 0;
+    uint32_t neighborcache_expand_count = 0;
     // This query was chosen for the 1/N real-IO coaccess sample.
-    bool merit_record_real_io = false;
+    bool neighborcache_record_real_io = false;
     // Nodes actually served from base storage or D-cache, in per-query order.
-    std::vector<uint32_t> merit_storage_node_order;
-    // Adjacency of each node in merit_storage_node_order: nbrs[off[i] .. off[i+1]).
-    std::vector<uint32_t> merit_storage_nbrs;
-    std::vector<uint32_t> merit_storage_nbr_off;
+    std::vector<uint32_t> neighborcache_storage_node_order;
+    // Adjacency of each node in neighborcache_storage_node_order: nbrs[off[i] .. off[i+1]).
+    std::vector<uint32_t> neighborcache_storage_nbrs;
+    std::vector<uint32_t> neighborcache_storage_nbr_off;
     // Temporal order of sector ids for cache-miss disk reads (one query)
     std::vector<uint64_t> disk_read_sector_order;
     // Bytes copied out of the separate seed-page LRU for this hop. Deque so a
     // later push does not move the pointers already stored in cached_nhoods.
-    std::deque<std::vector<T>> merit_seed_page_coords;
-    std::deque<std::vector<uint32_t>> merit_seed_page_nbrs;
-    tsl::robin_map<uint32_t, T *> merit_seed_page_coord_ptr;
+    std::deque<std::vector<T>> neighborcache_seed_page_coords;
+    std::deque<std::vector<uint32_t>> neighborcache_seed_page_nbrs;
+    tsl::robin_map<uint32_t, T *> neighborcache_seed_page_coord_ptr;
 
     SSDQueryScratch(size_t aligned_dim, size_t visited_reserve);
     ~SSDQueryScratch();
 
-    bool mark_merit_heap_dirty(uint32_t slot_id)
+    bool mark_neighborcache_heap_dirty(uint32_t slot_id)
     {
-        if (merit_heap_dirty_set.insert(slot_id).second)
+        if (neighborcache_heap_dirty_set.insert(slot_id).second)
         {
-            merit_heap_dirty_slots.push_back(slot_id);
+            neighborcache_heap_dirty_slots.push_back(slot_id);
             return true;
         }
         return false;
     }
 
-    void clear_merit_heap_dirty()
+    void clear_neighborcache_heap_dirty()
     {
-        merit_heap_dirty_set.clear();
-        merit_heap_dirty_slots.clear();
+        neighborcache_heap_dirty_set.clear();
+        neighborcache_heap_dirty_slots.clear();
     }
 
     void reset();
