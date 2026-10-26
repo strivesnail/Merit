@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="PipeANN P-shaped pipe logo">
+  <defs>
+    <style>
+      .pipe { fill: none; stroke: #434343; stroke-width: 22; stroke-linecap: round; stroke-linejoin: round; }
+      .flow { fill: none; stroke: #ffffff; stroke-width: 5; stroke-linecap: round; stroke-linejoin: round; }
+    </style>
+  </defs>
+
+  <g transform="translate(-11 0)">
+    <!-- Flat P-shaped pipe (pipeline). -->
+    <path class="pipe" d="M42 118 V 18"/>
+    <path class="pipe" d="M42 18 H 76 C 96 18 108 30 108 44 C 108 58 96 68 76 68 H 42"/>
+
+    <!-- Flow-direction chevrons -->
+    <polyline class="flow" points="36,66 42,72 48,66"/>
+    <polyline class="flow" points="65,12 71,18 65,24"/>
+  </g>
+</svg>

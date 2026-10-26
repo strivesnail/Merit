@@ -1,0 +1,21 @@
+{
+    "attr_indexes": [
+        {
+            "name": "tags",
+            "key": 0,
+            "type": "label",
+            "file": "/mnt/nvme4/indices/laion/100M.label.0"
+        },
+        {
+            "name": "width",
+            "key": 1,
+            "type": "range",
+            "file": "/mnt/nvme4/indices/laion/100M.label.1"
+        }
+    ],
+    "filter": "tags = $$query_tags or width = $$query_width",
+    "bindings": {
+        "query_tags": "/mnt/nvme/data/laion/metadata_query_cleaned_10k.spmat",
+        "query_width": "/mnt/nvme/data/laion/metadata_width_query_10k.spmat"
+    }
+}

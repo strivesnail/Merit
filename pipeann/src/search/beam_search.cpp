@@ -1,0 +1,209 @@
+#include "aligned_file_reader.h"
+#include "utils/libcuckoo/cuckoohash_map.hh"
+#include "ssd_index.h"
+#include "candidate_pool.h"
+#include <malloc.h>
+#include <algorithm>
+
+#include <omp.h>
+#include <chrono>
+#include <cmath>
+#include <cstdint>
+#include <limits>
+#include <tuple>
+#include "utils/timer.h"
+#include "utils.h"
+#include "utils/page_cache.h"
+
+#include <unistd.h>
+#include <sys/syscall.h>
+#include "linux_aligned_file_reader.h"
+
+namespace pipeann {
+  template<typename T, typename TagT>
+  void SSDIndex<T, TagT>::do_beam_search(const T *query1, uint32_t mem_L, uint64_t l_search, const uint64_t beam_width,
+                                         std::vector<Neighbor> &expanded_nodes_info, QueryStats *stats,
+                                         InsertContext *insert_ctx) {
+    auto diskSearchBegin = std::chrono::high_resolution_clock::now();
+
+    QueryBuffer *query_buf = pop_query_buf(query1);
+    void *ctx = reader->get_ctx();
+
+    const T *query = query_buf->aligned_query<T>();
+
+    query_buf->reset();
+
+
+    char *sector_scratch = query_buf->sector_scratch;
+    uint64_t &sector_scratch_idx = query_buf->sector_idx;
+
+    float *dist_scratch = query_buf->aligned_dist_scratch;
+
+    Timer query_timer, io_timer, cpu_timer;
+    CandidatePool pool(l_search, mem_L + kExpandedNodesFactor * l_search);
+    tsl::robin_set<uint64_t> visited(4096);
+    std::vector<Neighbor> &full_retset = expanded_nodes_info;
+    full_retset.clear();
+    full_retset.reserve(kExpandedNodesFactor * l_search);
+    uint64_t coord_buf_idx = 0;
+
+    auto compute_exact_dist_and_push = [&](const DiskNode<T> &node, const unsigned id) -> float {
+      float cur_expanded_dist = node_distance_->compare_sym(query_buf->aligned_query_, node.coords, meta_.data_dim);
+      if (insert_ctx != nullptr) {
+        if (unlikely(coord_buf_idx >= kExpandedNodesFactor * l_search)) {
+          LOG(ERROR) << "Please allocate larger coord_buf.";
+          crash();
+        }
+        uint8_t *coord_ptr = insert_ctx->coord_buf + coord_buf_idx * meta_.vector_bytes();
+        memcpy(coord_ptr, node.coords, meta_.vector_bytes());
+        insert_ctx->coord_map.insert(std::make_pair(id, static_cast<uint32_t>(coord_buf_idx)));
+        coord_buf_idx++;
+      }
+      full_retset.push_back(Neighbor(id, cur_expanded_dist));
+      return cur_expanded_dist;
+    };
+
+    auto compute_and_add_to_retset = [&](const unsigned *node_ids, const uint64_t n_ids) {
+      nbr_handler->compute_dists(query_buf->nbr_ctx_scratch, node_ids, n_ids, query_buf->aligned_dist_scratch);
+      for (uint64_t i = 0; i < n_ids; ++i) {
+        // Unfiltered search: seeds and expansion nodes share is_member_approx so
+        // the pool stays monotone in distance (is_member_approx is the primary
+        // sort key and is meaningful only for in-filter search).
+        pool.insert(Neighbor(node_ids[i], dist_scratch[i]));
+        visited.insert(node_ids[i]);
+      }
+    };
+
+    if (mem_L) {
+      std::vector<unsigned> mem_tags(mem_L);
+      std::vector<float> mem_dists(mem_L);
+      const size_t found = mem_index_->search_with_tags(query1, mem_L, mem_L, mem_tags.data(), mem_dists.data());
+      initialize_query(query, query_buf);
+      compute_and_add_to_retset(mem_tags.data(), std::min<uint64_t>(found, l_search));
+    } else {
+      initialize_query(query, query_buf);
+      compute_and_add_to_retset(&meta_.entry_point_id, 1);
+    }
+
+    std::vector<unsigned> frontier;
+    using fnhood_t = std::tuple<unsigned, unsigned, char *>;
+    std::vector<fnhood_t> frontier_nhoods;
+    std::vector<IORequest> frontier_read_reqs;
+    std::vector<uint64_t> page_ref;
+    auto *page_ref_out = insert_ctx != nullptr ? &insert_ctx->page_ref : &page_ref;
+
+    while (!pool.all_visited()) {
+      frontier.clear();
+      frontier_nhoods.clear();
+      frontier_read_reqs.clear();
+      sector_scratch_idx = 0;
+
+      for (uint32_t num_seen = 0; num_seen < beam_width; ++num_seen) {
+        Neighbor *node = pool.next_unvisited();
+        if (node == nullptr) {
+          break;
+        }
+        frontier.push_back(node->id);
+      }
+
+      if (!frontier.empty()) {
+        if (stats != nullptr) {
+          stats->n_hops++;
+        }
+        for (uint64_t i = 0; i < frontier.size(); i++) {
+          uint32_t id = frontier[i];
+          uint32_t loc = this->id2loc(id);
+          uint64_t offset = loc_sector_no(loc) * SECTOR_LEN;
+          if (insert_ctx != nullptr) {
+            insert_ctx->hint_pages.push_back(offset / SECTOR_LEN);
+          }
+          auto sector_buf = sector_scratch + sector_scratch_idx * io_size;
+          frontier_nhoods.emplace_back(id, loc, sector_buf);
+          sector_scratch_idx++;
+          frontier_read_reqs.emplace_back(
+              IORequest(offset, io_size, sector_buf, u_loc_offset(loc), meta_.max_node_len, sector_scratch));
+          if (stats != nullptr) {
+            stats->n_ios++;
+          }
+        }
+        io_timer.reset();
+        reader->read_alloc(frontier_read_reqs, ctx, page_ref_out);
+        if (stats != nullptr) {
+          stats->io_us += (double) io_timer.elapsed();
+        }
+      }
+
+      for (auto &frontier_nhood : frontier_nhoods) {
+        auto [id, loc, sector_buf] = frontier_nhood;
+        DiskNode<T> node = node_from_page(sector_buf, loc);
+
+        compute_exact_dist_and_push(node, id);
+
+        cpu_timer.reset();
+        nbr_handler->compute_dists(query_buf->nbr_ctx_scratch, node.nbrs, node.nnbrs, query_buf->aligned_dist_scratch);
+        if (stats != nullptr) {
+          stats->n_cmps += (double) node.nnbrs;
+          stats->cpu_us += (double) cpu_timer.elapsed();
+        }
+
+        cpu_timer.reset();
+        for (uint64_t m = 0; m < node.nnbrs; ++m) {
+          unsigned id = node.nbrs[m];
+          if (unlikely(id > this->cur_id)) {
+            LOG(ERROR) << "ID is larger than current ID, " << id << " vs " << this->cur_id;
+            crash();
+          }
+          if (visited.find(id) != visited.end()) {
+            continue;
+          }
+          visited.insert(id);
+          float dist = dist_scratch[m];
+          if (stats != nullptr) {
+            stats->n_cmps++;
+          }
+          pool.insert(Neighbor(id, dist));
+        }
+
+        if (stats != nullptr) {
+          stats->cpu_us += (double) cpu_timer.elapsed();
+        }
+      }
+
+      if (stats != nullptr && stats->n_current_used != 0) {
+        auto diskSearchEnd = std::chrono::high_resolution_clock::now();
+        double elapsedSeconds =
+            std::chrono::duration_cast<std::chrono::milliseconds>(diskSearchEnd - diskSearchBegin).count();
+        if (elapsedSeconds >= stats->n_current_used) {
+          break;
+        }
+      }
+    }
+
+    std::sort(full_retset.begin(), full_retset.end(),
+              [](const Neighbor &left, const Neighbor &right) { return left < right; });
+
+    if (insert_ctx == nullptr) {
+      reader->deref(&page_ref);
+    }
+    push_query_buf(query_buf);
+
+    if (stats != nullptr) {
+      stats->total_us = (double) query_timer.elapsed();
+    }
+  }
+
+  template<typename T, typename TagT>
+  size_t SSDIndex<T, TagT>::beam_search(const T *query, const uint64_t k_search, const uint32_t mem_L,
+                                        const uint64_t l_search, TagT *res_tags, float *distances,
+                                        const uint64_t beam_width, QueryStats *stats) {
+    std::shared_lock lk(merge_lock);
+    std::vector<Neighbor> expanded_nodes_info;
+    this->do_beam_search(query, mem_L, l_search, beam_width, expanded_nodes_info, stats, nullptr);
+
+    return copy_top_k(expanded_nodes_info, k_search, res_tags, distances);
+  }
+
+  template class SSDIndex<float>;
+  template class SSDIndex<int8_t>;
+  template class SSDIndex<uint8_t>;
+}  // namespace pipeann

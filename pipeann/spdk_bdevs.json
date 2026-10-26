@@ -1,0 +1,6 @@
+{
+  "ssds": [
+    "0000:e4:00.0"
+  ],
+  "hugedir": "/dev/hugepages"
+}

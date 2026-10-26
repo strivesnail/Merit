@@ -1,0 +1,14 @@
+{
+    "attr_indexes": [
+        {
+            "name": "tags",
+            "key": 0,
+            "type": "label",
+            "file": "/mnt/nvme/indices/yfcc10M-and/10M.label.0"
+        }
+    ],
+    "filter": "array_contains_all(tags, $$query_tags)",
+    "bindings": {
+        "query_tags": "/mnt/nvme/data/yfcc10M-filtered/query.metadata.public.100K.spmat"
+    }
+}

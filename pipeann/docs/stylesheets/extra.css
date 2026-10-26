@@ -1,0 +1,143 @@
+:root {
+  --md-text-font: "Calibri";
+  --md-typeset-a-color: #2563eb;
+}
+
+[data-md-color-scheme="slate"] {
+  --md-typeset-a-color: #93c5fd;
+}
+
+body,
+input,
+button,
+select,
+textarea,
+.md-typeset {
+  font-family: Calibri, "Segoe UI", Arial, sans-serif;
+}
+
+.md-header {
+  background: var(--md-primary-fg-color);
+  border-bottom: 1px solid var(--md-default-fg-color--lightest);
+  box-shadow: none;
+}
+
+.md-tabs {
+  background: var(--md-primary-fg-color);
+  border-bottom: 1px solid var(--md-default-fg-color--lightest);
+}
+
+.md-typeset {
+  font-size: 0.82rem;
+  line-height: 1.65;
+}
+
+.md-typeset h1 {
+  font-size: 2.15rem;
+  font-weight: 300;
+  font-family: inherit;
+  letter-spacing: -0.035em;
+}
+
+.md-typeset h2 {
+  font-size: 1.45rem;
+  font-weight: 300;
+  font-family: inherit;
+  letter-spacing: -0.025em;
+}
+
+.md-typeset h3 {
+  font-size: 1.08rem;
+  font-weight: 300;
+  font-family: inherit;
+  letter-spacing: -0.015em;
+}
+
+.md-typeset code,
+.md-typeset pre,
+.md-typeset kbd {
+  font-size: 0.9em;
+}
+
+.md-typeset pre > code {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.md-typeset table:not([class]) {
+  display: table;
+  width: 100%;
+  table-layout: auto;
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.md-typeset table:not([class]) th,
+.md-typeset table:not([class]) td {
+  padding: 0.55em 0.75em;
+  vertical-align: top;
+  white-space: normal;
+  overflow-wrap: break-word;
+  word-break: normal;
+  hyphens: auto;
+}
+
+.md-typeset table:not([class]) th {
+  background: var(--md-default-fg-color--lightest);
+  font-weight: 700;
+}
+
+.md-typeset .tabbed-set,
+.md-typeset details,
+.md-typeset .admonition,
+.md-typeset blockquote {
+  font-size: 0.8rem;
+}
+
+.md-main__inner {
+  margin-top: 1.2rem;
+}
+
+.md-content__inner {
+  padding-bottom: 3rem;
+}
+
+@media screen and (min-width: 76.25em) {
+  .md-sidebar--secondary {
+    order: -1;
+  }
+
+  .md-sidebar--primary {
+    order: 2;
+  }
+
+  [dir="ltr"] .md-sidebar--primary:not([hidden]) ~ .md-content > .md-content__inner {
+    margin-left: 0.8rem;
+    margin-right: 1.2rem;
+  }
+
+  [dir="ltr"] .md-sidebar--secondary:not([hidden]) ~ .md-content > .md-content__inner {
+    margin-left: 1.2rem;
+    margin-right: 1.2rem;
+  }
+}
+
+@media screen and (max-width: 76.2344em) {
+  .md-typeset table:not([class]) {
+    display: block;
+    table-layout: auto;
+    overflow-x: auto;
+  }
+}
+
+
+/* Use a system UI font stack instead of Calibri-like serif/sans fallbacks. */
+body,
+input,
+.md-typeset,
+.md-header,
+.md-tabs,
+.md-nav,
+.md-search {
+  font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, Roboto, Helvetica, Arial, sans-serif;
+}

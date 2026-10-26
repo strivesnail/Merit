@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="16 8 480 132" role="img" aria-label="PipeANN">
+  <defs>
+    <style>
+      .pipe { fill: none; stroke: #434343; stroke-width: 22; stroke-linecap: round; stroke-linejoin: round; }
+      .flow { fill: none; stroke: #ffffff; stroke-width: 5; stroke-linecap: round; stroke-linejoin: round; }
+      .wordmark { fill: #434343; font-family: Arial, "Liberation Sans", Helvetica, sans-serif; font-size: 108px; font-weight: 400; letter-spacing: -1px; }
+      .wordmark-a { fill: #434343; stroke: #434343; }
+      .wordmark-a-line { fill: none; stroke-width: 32; stroke-linecap: round; }
+      .wordmark-a-dot { fill: #434343; stroke-width: 0; }
+    </style>
+  </defs>
+
+  <g transform="translate(7.25 16.75) scale(0.675)">
+    <!-- Flat P-shaped pipe -->
+    <path class="pipe" d="M42 118 V 18"/>
+    <path class="pipe" d="M42 18 H 76 C 96 18 108 30 108 44 C 108 58 96 68 76 68 H 42"/>
+
+    <!-- Flow-direction chevrons -->
+    <polyline class="flow" points="36,66 42,72 48,66"/>
+    <polyline class="flow" points="65,12 71,18 65,24"/>
+  </g>
+
+  <!-- "ipe" wordmark -->
+  <text x="88" y="103" class="wordmark">ipe</text>
+
+  <!-- Graph-shaped "A" -->
+  <g class="wordmark-a" transform="translate(224 18) scale(0.253)">
+    <line x1="200" y1="70" x2="80" y2="310" class="wordmark-a-line" />
+    <line x1="200" y1="70" x2="320" y2="310" class="wordmark-a-line" />
+    <line x1="80" y1="310" x2="200" y2="230" class="wordmark-a-line" />
+    <line x1="320" y1="310" x2="200" y2="230" class="wordmark-a-line" />
+
+    <circle cx="200" cy="70" r="42" class="wordmark-a-dot" />
+    <circle cx="80" cy="310" r="42" class="wordmark-a-dot" />
+    <circle cx="320" cy="310" r="42" class="wordmark-a-dot" />
+    <circle cx="200" cy="230" r="36" class="wordmark-a-dot" />
+  </g>
+
+  <!-- "NN" wordmark -->
+  <text x="316" y="103" class="wordmark">NN</text>
+</svg>
