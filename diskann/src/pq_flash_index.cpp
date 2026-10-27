@@ -42,6 +42,28 @@
 
 namespace
 {
+struct NeighborCacheDemandProbe
+{
+    bool attempted = false;
+    bool hit = false;
+};
+thread_local NeighborCacheDemandProbe *g_neighborcache_demand_probe = nullptr;
+struct NeighborCacheDemandProbeScope
+{
+    NeighborCacheDemandProbe *previous;
+    explicit NeighborCacheDemandProbeScope(NeighborCacheDemandProbe &probe)
+        : previous(g_neighborcache_demand_probe)
+    {
+        g_neighborcache_demand_probe = &probe;
+    }
+    ~NeighborCacheDemandProbeScope() { g_neighborcache_demand_probe = previous; }
+};
+inline bool neighborcache_demand_probe_hit()
+{
+    if (g_neighborcache_demand_probe != nullptr)
+        g_neighborcache_demand_probe->hit = true;
+    return true;
+}
 inline size_t neighborcache_thread_shard()
 {
     static std::atomic<size_t> next{0};
@@ -2275,6 +2297,7 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
                 expand_order.push_back(nbr.id);
                 if (stats != nullptr)
                     stats->n_beam_lookups++;
+                NeighborCacheDemandProbe demand_probe;
                 bool mem_hit = false;
                 if (_neighborcache_mem_pool != nullptr && _neighborcache_mem_pool->active())
                 {
@@ -2305,7 +2328,12 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
                 {
                     std::vector<T> sp_coords;
                     std::vector<uint32_t> sp_nbrs;
-                    if (neighborcache_seed_page_lookup(nbr.id, sp_coords, sp_nbrs) && !sp_coords.empty())
+                    bool sp_hit;
+                    {
+                        NeighborCacheDemandProbeScope probe_scope(demand_probe);
+                        sp_hit = neighborcache_seed_page_lookup(nbr.id, sp_coords, sp_nbrs);
+                    }
+                    if (sp_hit && !sp_coords.empty())
                     {
                         query_scratch->neighborcache_seed_page_coords.push_back(std::move(sp_coords));
                         query_scratch->neighborcache_seed_page_nbrs.push_back(std::move(sp_nbrs));
@@ -2330,6 +2358,7 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
                     bool dc_hit = false;
                     if (!pref_hit)
                     {
+                        NeighborCacheDemandProbeScope probe_scope(demand_probe);
                         dc_hit = neighborcache_disk_cache_lookup_hit(nbr.id, query_scratch);
                     }
                     if (pref_hit)
@@ -2376,6 +2405,12 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
                         if (_record_base_frontier && stats != nullptr)
                             stats->base_frontier_nodes.push_back(nbr.id);
                     }
+                }
+                if (stats != nullptr && demand_probe.attempted)
+                {
+                    stats->n_neighborcache_dcache_demand_probes++;
+                    if (demand_probe.hit)
+                        stats->n_neighborcache_dcache_demand_hits++;
                 }
                 {
                     profile_on_expand(nbr.id);
@@ -5656,6 +5691,44 @@ template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::print_neigh
 {
     if (!_neighborcache_dyn_enabled)
         return;
+    // Optional post-search snapshot for offline page-neighbor coverage analysis.
+    // Called after timed search. Copy under the directory lock, then write outside it.
+    // Format: uint32 magic/version/slots, followed by records of
+    // uint32 page/secondary/count and `slots` uint32 member IDs (slot 0 is seed).
+    if (const char *path = std::getenv("NEIGHBORCACHE_DUMP_DYNAMIC_PAGES"); path && path[0])
+    {
+        std::vector<uint32_t> records;
+        const uint32_t slots = _neighborcache_dyn_members_per_page;
+        {
+            NeighborCacheTimedSharedMutexGuard lock(_neighborcache_dyn_mu, NeighborCacheLockKind::DynamicShared, false);
+            for (size_t page = 0; page < _neighborcache_dyn_page_member_count.size(); ++page)
+            {
+                const uint32_t count = _neighborcache_dyn_page_member_count[page];
+                if (count == 0)
+                    continue;
+                const size_t begin = page * slots;
+                // A seed can have several physical copies. Export the primary page
+                // selected by the live seed lookup, not every copy as a separate seed.
+                uint32_t selected_page = NEIGHBORCACHE_DYN_INVALID_PAGE;
+                if (!neighborcache_dyn_seed_page_unlocked(_neighborcache_dyn_page_members[begin], selected_page) ||
+                    selected_page != page)
+                    continue;
+                records.push_back(static_cast<uint32_t>(page));
+                records.push_back(page < _neighborcache_dyn_page_secondary.size() && _neighborcache_dyn_page_secondary[page]);
+                records.push_back(count);
+                for (uint32_t slot = 0; slot < slots; ++slot)
+                    records.push_back(slot < count ? _neighborcache_dyn_page_members[begin + slot] : UINT32_MAX);
+            }
+        }
+        const uint32_t header[] = {0x4e435047, 1, slots};
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        out.write(reinterpret_cast<const char *>(header), sizeof(header));
+        out.write(reinterpret_cast<const char *>(records.data()), records.size() * sizeof(uint32_t));
+        if (!out)
+            throw ANNException("Failed to export dynamic page snapshot", -1, __FUNCSIG__, __FILE__, __LINE__);
+        diskann::cout << "NEIGHBORCACHE dynamic page snapshot: pages=" << records.size() / (slots + 3)
+                      << " slots=" << slots << " path=" << path << std::endl;
+    }
     uint64_t dynamic_pages = 0;
     uint64_t dynamic_loc_entries = 0;
     uint64_t dynamic_locs = 0;
@@ -12744,6 +12817,8 @@ bool PQFlashIndex<T, LabelT>::neighborcache_resolve_disk_cache_loc(uint32_t node
     // not need the global page-allocation mutex.
     if (_neighborcache_dyn_enabled)
     {
+        if (g_neighborcache_demand_probe != nullptr)
+            g_neighborcache_demand_probe->attempted = true;
         g_dyn_probe.resolve_call++;
         NeighborCacheDiskLoc canon_loc;
         const int canon = neighborcache_canon_lookup(node_id, canon_loc);
@@ -12754,7 +12829,7 @@ bool PQFlashIndex<T, LabelT>::neighborcache_resolve_disk_cache_loc(uint32_t node
             {
                 out_loc = canon_loc;
                 g_dyn_probe.map_hit++;
-                return true;
+                return neighborcache_demand_probe_hit();
             }
         }
         else if (canon == 0)
@@ -12776,7 +12851,7 @@ bool PQFlashIndex<T, LabelT>::neighborcache_resolve_disk_cache_loc(uint32_t node
                 out_loc.sector = NEIGHBORCACHE_DYN_SECTOR_BASE + page_idx;
                 out_loc.slot = static_cast<uint16_t>(k);
                 out_loc.nsectors = 1;
-                return true;
+                return neighborcache_demand_probe_hit();
             }
             return false;
         };
@@ -12798,12 +12873,12 @@ bool PQFlashIndex<T, LabelT>::neighborcache_resolve_disk_cache_loc(uint32_t node
                 }
             });
             if (found)
-                return true;
+                return neighborcache_demand_probe_hit();
         }
         if (loc_from_dir(node_id, node_id))
         {
             g_dyn_probe.self_hit++;
-            return true;
+            return neighborcache_demand_probe_hit();
         }
         static const bool resolve_parent =
             neighborcache_env_u64("NEIGHBORCACHE_RESOLVE_PARENT", 0) != 0;
@@ -12815,7 +12890,7 @@ bool PQFlashIndex<T, LabelT>::neighborcache_resolve_disk_cache_loc(uint32_t node
             else if (loc_from_dir(parent_it->second, node_id))
             {
                 g_dyn_probe.parent_hit++;
-                return true;
+                return neighborcache_demand_probe_hit();
             }
             else
             {

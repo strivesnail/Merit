@@ -937,7 +937,8 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
                         "n_neighborcache_dyn_hits,n_neighborcache_prefetch_hits,n_neighborcache_dcache_seed_hits,n_beam_lookups,"
                         "n_neighborcache_dyn_flushes,n_neighborcache_dyn_pages,n_neighborcache_dyn_disk_reads,"
                         "n_neighborcache_base_pages_avoided,n_neighborcache_dcache_probe,"
-                        "n_neighborcache_mcache_hits,n_neighborcache_mcache_misses,n_cmps\n";
+                        "n_neighborcache_mcache_hits,n_neighborcache_mcache_misses,n_cmps,"
+                        "n_neighborcache_dcache_demand_probes,n_neighborcache_dcache_demand_hits\n";
                 for (size_t qi = 0; qi < query_num; qi++)
                 {
                     const auto &s = stats[qi];
@@ -950,7 +951,8 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
                          << s.n_neighborcache_dyn_flushes << ',' << s.n_neighborcache_dyn_pages << ','
                          << s.n_neighborcache_dyn_disk_reads << ',' << s.n_neighborcache_base_pages_avoided << ','
                          << s.n_neighborcache_dcache_probe << ',' << s.n_neighborcache_mcache_hits << ','
-                         << s.n_neighborcache_mcache_misses << ',' << s.n_cmps << '\n';
+                         << s.n_neighborcache_mcache_misses << ',' << s.n_cmps << ','
+                         << s.n_neighborcache_dcache_demand_probes << ',' << s.n_neighborcache_dcache_demand_hits << '\n';
                 }
                 qout.close();
                 diskann::cout << "      per-query stats written to " << dump_query_stats_path << std::endl;

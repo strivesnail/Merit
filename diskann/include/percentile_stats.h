@@ -49,6 +49,10 @@ struct QueryStats
     // d-cache directory (seed page not yet in query prefetch buffer) → n_neighborcache_dcache_seed_hits.
     unsigned n_neighborcache_prefetch_hits = 0;     // hit in query-local neighborcache_dcache_member_packed_loc
     unsigned n_neighborcache_dcache_seed_hits = 0;  // d-cache directory hit (triggers seed-page serve)
+    // Actual dynamic directory probes for demand beam nodes, once per node request.
+    // Excludes skipped lookup paths and internal maintenance/speculative queries.
+    unsigned n_neighborcache_dcache_demand_probes = 0;
+    unsigned n_neighborcache_dcache_demand_hits = 0;
     unsigned n_beam_lookups = 0;            // process_beam_neighbor invocations
     unsigned n_neighborcache_dyn_flushes = 0;   // seed pages written at query end / n-cache evict
     unsigned n_neighborcache_dyn_pages = 0;     // committed dynamic d-cache pages after this query
