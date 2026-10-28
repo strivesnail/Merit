@@ -1,0 +1,3 @@
+mode,total_prefetch_KiB,private_prefetch_KiB,qps,hit_pct,D_reads_per_query,mean_latency_us,mean_IO_us,reset_us_per_query,result_ids_match
+shared,8240,,7658.49,61.3164692320983,56.252575,2553.894675,1535.9535,0.0,True
+private_reset,8240,412,8439.85,57.61933537859558,61.62885,2294.034875,1667.1224,17.544632399999998,True

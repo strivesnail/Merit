@@ -412,6 +412,7 @@ namespace pipeann {
   /* Graph neighbor-related definitions. */
   struct Neighbor {
     unsigned id;
+    uint32_t nc_parent = UINT32_MAX;
     float distance;
     bool flag;
     bool visited;

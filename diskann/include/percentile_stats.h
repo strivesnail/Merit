@@ -53,6 +53,9 @@ struct QueryStats
     // Excludes skipped lookup paths and internal maintenance/speculative queries.
     unsigned n_neighborcache_dcache_demand_probes = 0;
     unsigned n_neighborcache_dcache_demand_hits = 0;
+    // Child of a D-cache seed. on_page means that child is stored on the parent's seed page.
+    unsigned n_dparent_nbrs = 0;
+    unsigned n_dparent_nbr_on_page = 0;
     unsigned n_beam_lookups = 0;            // process_beam_neighbor invocations
     unsigned n_neighborcache_dyn_flushes = 0;   // seed pages written at query end / n-cache evict
     unsigned n_neighborcache_dyn_pages = 0;     // committed dynamic d-cache pages after this query

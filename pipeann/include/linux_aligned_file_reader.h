@@ -41,6 +41,10 @@ class LinuxAlignedFileReader : public AlignedFileReader {
 
   void send_io(IORequest &reqs, void *ctx, bool write);
   void send_io(std::vector<IORequest> &reqs, void *ctx, bool write);
+  // Queue one read on this thread's ring without waiting. submit_io posts every
+  // queued SQE in one syscall. req.fd >= 0 selects that fd.
+  void enqueue_io(IORequest &req, void *ctx, bool write);
+  void submit_io(void *ctx);
   int poll(void *ctx);
   void poll_alloc(void *ctx, std::vector<uint64_t> *page_ref);
 

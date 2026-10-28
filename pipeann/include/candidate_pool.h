@@ -142,7 +142,7 @@ namespace pipeann {
     // each element. Unlike insert(), slots past size() are not restored to +inf
     // (overflow parks there), so only callers that never read past size()
     // may use it. Both input arrays are permuted in place.
-    void insert_batch(uint32_t *ids, float *dists, unsigned n) {
+    void insert_batch(uint32_t *ids, float *dists, unsigned n, uint32_t parent = UINT32_MAX) {
       if (cur_list_size_ == l_pool_) {
         // Full pool: a candidate no better than the current worst can never
         // rank inside l_pool of the union (merging only tightens the cut).
@@ -195,7 +195,8 @@ namespace pipeann {
       // exactly once as a bulk memmove (element-wise merging is ~10x slower).
       unsigned seg_end = retset_end;  // exclusive end of the unshifted pool prefix
       for (int j = (int) new_end - 1; j >= 0; --j) {
-        const Neighbor nn(ids[j], dists[j]);
+        Neighbor nn(ids[j], dists[j]);
+        nn.nc_parent = parent;
         const unsigned pj =
             (unsigned) (std::upper_bound(retset_.data(), retset_.data() + seg_end, nn) - retset_.data());
         memmove(retset_.data() + pj + j + 1, retset_.data() + pj, (seg_end - pj) * sizeof(Neighbor));

@@ -4,6 +4,7 @@
 #pragma once
 
 #include <array>
+#include <optional>
 #include <deque>
 #include <vector>
 
@@ -151,7 +152,20 @@ template <typename T> class SSDQueryScratch : public AbstractScratch<T>
     tsl::robin_set<size_t> visited;
     NeighborPriorityQueue retset;
     std::vector<Neighbor> full_retset;
+    // Contains only acquired/expanded records, never discovery-only neighbors.
     tsl::robin_map<uint32_t, uint32_t> profile_parent;
+    uint32_t neighborcache_candidate_id = UINT32_MAX;
+    uint32_t neighborcache_candidate_parent = UINT32_MAX;
+    std::vector<std::pair<uint32_t,uint32_t>> neighborcache_beam_parents;
+    std::optional<uint32_t> parent_of(uint32_t id) const {
+        auto it = profile_parent.find(id);
+        if (it != profile_parent.end()) return it->second;
+        if (neighborcache_candidate_id == id && neighborcache_candidate_parent != UINT32_MAX)
+            return neighborcache_candidate_parent;
+        for (const auto &v : neighborcache_beam_parents)
+            if (v.first == id && v.second != UINT32_MAX) return v.second;
+        return std::nullopt;
+    }
     // node_id -> packed D-loc from lookup (sector in high 32, slot in low 16).
     tsl::robin_map<uint32_t, uint64_t> neighborcache_dcache_loc_cache;
     // Same-query members already packed when a seed page was served (prefetch buffer).

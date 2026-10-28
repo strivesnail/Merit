@@ -1,0 +1,50 @@
+{
+  "rows": [
+    {
+      "mode": "shared",
+      "total_prefetch_KiB": 8240,
+      "private_prefetch_KiB": null,
+      "qps": 7658.49,
+      "hit_pct": 61.3164692320983,
+      "D_reads_per_query": 56.252575,
+      "mean_latency_us": 2553.894675,
+      "mean_IO_us": 1535.9535,
+      "reset_us_per_query": 0.0,
+      "result_ids_match": true
+    },
+    {
+      "mode": "private_reset",
+      "total_prefetch_KiB": 8240,
+      "private_prefetch_KiB": 412,
+      "qps": 8439.85,
+      "hit_pct": 57.61933537859558,
+      "D_reads_per_query": 61.62885,
+      "mean_latency_us": 2294.034875,
+      "mean_IO_us": 1667.1224,
+      "reset_us_per_query": 17.544632399999998,
+      "result_ids_match": true
+    }
+  ],
+  "qps_change_pct": 10.202533397575774,
+  "D_read_change_pct": 9.557384706389005,
+  "hit_change_percentage_points": -3.69713385350272,
+  "validation": {
+    "shared": {
+      "result_ids_match": true,
+      "file_residency_zero_before_run": true,
+      "reset_calls": 0,
+      "query_threads": 20
+    },
+    "private_reset": {
+      "result_ids_match": true,
+      "file_residency_zero_before_run": true,
+      "reset_calls": 40000,
+      "query_threads": 20,
+      "same_per_query_counters_as_1thread": {
+        "n_beam_lookups": true,
+        "n_neighborcache_prefetch_hits": true,
+        "n_disk_reads": true
+      }
+    }
+  }
+}

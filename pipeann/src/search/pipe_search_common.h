@@ -7,9 +7,11 @@
 #include "liburing.h"
 #endif
 
+#include <cstring>
 #include <deque>
 
 #include "candidate_pool.h"
+#include "linux_aligned_file_reader.h"
 
 namespace pipeann {
 
@@ -39,9 +41,12 @@ namespace pipeann {
                                              SpecFn is_member_approx, VerifyFn is_member, PrefetchFn prefetch_approx,
                                              std::vector<Neighbor> &full_retset, QueryStats *stats,
                                              InsertContext *insert_ctx, float range_partial, NodeOut *node_out) {
+    NMDCache::QueryGuard nc_query(this->nmd_);
     QueryBuffer *query_buf = pop_query_buf(query1);
 #ifdef USE_URING
-    void *ctx = reader->get_ctx(IORING_SETUP_SQPOLL);
+    // SQPOLL adds one busy kernel thread per search thread. On this 24-core
+    // machine that poller fights the workers, so the meeting run uses a normal ring.
+    void *ctx = reader->get_ctx(0);
 #else
     void *ctx = reader->get_ctx();
 #endif
@@ -126,7 +131,7 @@ namespace pipeann {
 
     // --- Unified neighbor expansion (1-hop approx -> 2-hop approx -> 1-hop connectivity) ---
     uint64_t n_computes = 0;
-    auto compute_and_push_nbrs = [&](DiskNode<T> &node) {
+    auto compute_and_push_nbrs = [&](DiskNode<T> &node, uint32_t parent) {
       unsigned nbors_cand_size = 0;
       uint32_t *nbr_ids = query_buf->nbr_id_scratch;
       // Count matching neighbors among those scanned (folded into the collection
@@ -154,6 +159,7 @@ namespace pipeann {
         if (is_member_approx(node.nbrs[m])) {
           ++match;
           if (visited.insert(node.nbrs[m])) {
+
             nbr_handler->prefetch(node.nbrs[m]);
             nbr_ids[nbors_cand_size++] = node.nbrs[m];
           }
@@ -178,6 +184,7 @@ namespace pipeann {
           if (is_member_approx(node.dense_nbrs[m])) {
             ++match;
             if (visited.insert(node.dense_nbrs[m])) {
+
               nbr_handler->prefetch(node.dense_nbrs[m]);
               nbr_ids[nbors_cand_size++] = node.dense_nbrs[m];
             }
@@ -187,6 +194,7 @@ namespace pipeann {
         // Remaining 1-hop neighbors for connectivity.
         for (unsigned m = 0; m < node.nnbrs && nbors_cand_size < node.nnbrs; ++m) {
           if (visited.insert(node.nbrs[m])) {
+
             nbr_handler->prefetch(node.nbrs[m]);
             nbr_ids[nbors_cand_size++] = node.nbrs[m];
           }
@@ -204,11 +212,13 @@ namespace pipeann {
         // Approx members (TP+FP) [0, n_member) -> candidate pool, merged as one
         // sorted batch so the pool tail shifts once per expansion instead of
         // once per accepted candidate.
-        pool.insert_batch(nbr_ids, dist_scratch, n_member);
+        pool.insert_batch(nbr_ids, dist_scratch, n_member, parent);
 
         // Non-member connectivity candidates -> cand_pool (closest kCandCap kept).
         for (unsigned m = n_member; m < nbors_cand_size; ++m) {
-          cand_pool.insert(Neighbor(nbr_ids[m], dist_scratch[m]));
+          Neighbor candidate(nbr_ids[m], dist_scratch[m]);
+          candidate.nc_parent = parent;
+          cand_pool.insert(candidate);
         }
 
         // Lightweight edge-fill: on a sparse step (density EMA below gate),
@@ -280,32 +290,74 @@ namespace pipeann {
       bool finished() {
         return read_req->finished;
       }
+      bool from_d = false;
+      uint16_t dslot = 0;
+      uint16_t cov_count = 0;
+      uint32_t cov[16] = {};
     };
     std::queue<io_t> on_flight_ios;
 
     std::deque<std::vector<char>> nmd_hit_bufs;
     std::vector<char> nmd_tmp;
+    std::unordered_map<uint32_t, NMDCache::PendingDRead> nc_pending;
+    std::unordered_set<uint32_t> nc_failed;
     if (this->nmd_.enabled()) {
       nmd_tmp.resize(this->meta_.max_node_len);
     }
 
+    bool nmd_sq_pending = false;
+    auto *nmd_reader = static_cast<LinuxAlignedFileReader *>(reader.get());
+
     auto send_read_req = [&](Neighbor &item) -> bool {
-      if (this->nmd_.enabled()) {
-        int kind = 0;
-        if (this->nmd_.lookup(item.id, nmd_tmp.data(), kind)) {
+      if (this->nmd_.enabled() && !nc_failed.count(item.id)) {
+        NMDCache::PendingDRead pending;
+        int kind = this->nmd_.resolve(item.id, nmd_tmp.data(), pending, item.nc_parent);
+        if (kind == 1 || kind == 2 || (kind == 3 && pending.fd < 0)) {
           item.flag = false;
           nmd_hit_bufs.emplace_back(nmd_tmp.begin(), nmd_tmp.end());
           id_buf_map.erase(item.id);
           id_buf_map.emplace(item.id, DiskNode<T>(nmd_hit_bufs.back().data(), 0, this->meta_));
+          if (kind == 3) {
+            this->nmd_.count_d_hit(nmd_hit_bufs.back().data(), pending.cov, pending.cov_count);
+          }
           if (stats != nullptr) {
             if (kind == 1) {
               stats->n_ncache += 1;
             } else if (kind == 2) {
               stats->n_pref += 1;
-            } else if (kind == 3) {
+            } else {
               stats->n_dcache += 1;
             }
           }
+          return true;
+        }
+        // D pages are smaller than one index sector. Post the read on the same
+        // ring as the base index and let the beam submit once.
+        if (kind == 3 && pending.fd >= 0 && pending.len > 0 && pending.len <= 128 * SECTOR_LEN) {
+          item.flag = false;
+          uint64_t &cur_buf_idx = query_buf->sector_idx;
+          auto buf = pending.buffer;
+          nc_pending[item.id] = pending;
+          auto &req = query_buf->reqs[cur_buf_idx];
+          req = IORequest();
+          req.offset = pending.offset;
+          req.len = pending.len;
+          req.buf = buf;
+          req.fd = pending.fd;
+          req.base = sector_scratch;
+          req.finished = false;
+          req.io_res = 0;
+          nmd_reader->enqueue_io(req, ctx, false);
+          nmd_sq_pending = true;
+          io_t io{item, 0, 0, &req, UINT32_MAX};
+          io.from_d = true;
+          io.dslot = pending.slot;
+          io.cov_count = pending.cov_count;
+          if (pending.cov_count > 0) {
+            std::memcpy(io.cov, pending.cov, sizeof(uint32_t) * pending.cov_count);
+          }
+          on_flight_ios.push(io);
+          cur_buf_idx = (cur_buf_idx + 1) % MAX_N_SECTOR_READS;
           return true;
         }
       }
@@ -319,6 +371,7 @@ namespace pipeann {
       req = IORequest(static_cast<uint64_t>(pid) * SECTOR_LEN, read_io_size, buf, u_loc_offset(loc), meta_.max_node_len,
                       sector_scratch);
       reader->send_read(req, ctx);
+      this->nmd_.base_reads(read_io_size / SECTOR_LEN);
 
       on_flight_ios.push(io_t{item, pid, loc, &req, UINT32_MAX});
       cur_buf_idx = (cur_buf_idx + 1) % MAX_N_SECTOR_READS;
@@ -338,6 +391,26 @@ namespace pipeann {
       unsigned n_in = 0, n_out = 0;
       while (!on_flight_ios.empty() && on_flight_ios.front().finished()) {
         io_t &io = on_flight_ios.front();
+        if (io.from_d) {
+          auto pi = nc_pending.find(io.nbr.id);
+          if (pi == nc_pending.end()) throw std::runtime_error("Missing NeighborCache IO ticket");
+          nmd_hit_bufs.emplace_back(this->nmd_.node_len());
+          bool ok = this->nmd_.complete(pi->second, io.read_req->io_res, nmd_hit_bufs.back().data());
+          nc_pending.erase(pi);
+          if (!ok) {
+            Neighbor retry = io.nbr;
+            on_flight_ios.pop();
+            nc_failed.insert(retry.id);
+            send_read_req(retry);
+            continue;
+          }
+          id_buf_map.erase(io.nbr.id);
+          id_buf_map.emplace(io.nbr.id, DiskNode<T>(nmd_hit_bufs.back().data(), 0, this->meta_));
+          if (stats != nullptr) stats->n_dcache += 1;
+          io.nbr.distance <= pool.worst().distance ? ++n_in : ++n_out;
+          on_flight_ios.pop();
+          continue;
+        }
         id_buf_map.insert(std::make_pair(io.nbr.id, node_from_page((char *) io.read_req->buf, io.loc)));
         if (insert_ctx != nullptr) {
           insert_ctx->hint_pages.push_back(io.page_id);
@@ -358,6 +431,10 @@ namespace pipeann {
         }
         n_sent += send_read_req(*item);
       }
+      if (nmd_sq_pending) {
+        nmd_reader->submit_io(ctx);
+        nmd_sq_pending = false;
+      }
       return n_sent != 0;
     };
 
@@ -376,10 +453,10 @@ namespace pipeann {
         if (compute_exact_dists_and_push(dnode, id)) {
           node->is_member = true;
         }
-        compute_and_push_nbrs(dnode);
         if (this->nmd_.enabled()) {
-          this->nmd_.on_expand(id, reinterpret_cast<const char *>(dnode.coords), dnode.nbrs, dnode.nnbrs);
+          this->nmd_.on_expand(id, reinterpret_cast<const char *>(dnode.coords), dnode.nbrs, dnode.nnbrs, node->nc_parent);
         }
+        compute_and_push_nbrs(dnode, id);
         id_buf_map.erase(it);
       }
       return (int) pool.frontier();

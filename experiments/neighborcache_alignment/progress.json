@@ -1,0 +1,91 @@
+{
+  "status": "shared reference backend migration complete for default online LRU mode",
+  "date": "2026-10-27",
+  "reference": "diskann/src/pq_flash_index.cpp compiled into neighborcache_backend",
+  "engines": [
+    "PipeANN",
+    "AiSAQ",
+    "Starling",
+    "MARGO"
+  ],
+  "validation": {
+    "ctest_passed": 5,
+    "full_record_integration": "PASS for all four engines",
+    "comparison": {
+      "pipeann": {
+        "off_vs_off": {
+          "identical_rows": 986,
+          "queries": 1000,
+          "equal_sets": 986,
+          "topk_overlap": 0.9981
+        },
+        "off_vs_online": {
+          "identical_rows": 973,
+          "queries": 1000,
+          "equal_sets": 973,
+          "topk_overlap": 0.9966
+        }
+      },
+      "pipeann_pressure": {
+        "passes": 20,
+        "full_record_verification": true
+      },
+      "starling": {
+        "off_vs_off": {
+          "identical_rows": 1000,
+          "queries": 1000,
+          "equal_sets": 1000,
+          "topk_overlap": 1.0
+        },
+        "off_vs_online": {
+          "identical_rows": 998,
+          "queries": 1000,
+          "equal_sets": 999,
+          "topk_overlap": 0.9999
+        }
+      },
+      "margo": {
+        "off_vs_off": {
+          "identical_rows": 1000,
+          "queries": 1000,
+          "equal_sets": 1000,
+          "topk_overlap": 1.0
+        },
+        "off_vs_online": {
+          "identical_rows": 999,
+          "queries": 1000,
+          "equal_sets": 1000,
+          "topk_overlap": 1.0
+        }
+      },
+      "aisaq_public": {
+        "identical_ids_and_distances": true
+      },
+      "aisaq_x5": {
+        "identical_ids_and_distances": true
+      }
+    },
+    "artifacts": "/mnt/nvme2/nc_shared_backend_20261027/final"
+  },
+  "limitations": [
+    "No full three-dataset performance rerun or plot update",
+    "PipeANN/Starling/MARGO ANN output identity is not established; see measured differences",
+    "Optional hop/shadow admission controllers, mutable/filtered indices and finite IO budgets are not validated",
+    "No independent event-by-event internal-state conformance oracle; policies share the reference implementation directly"
+  ],
+  "performance_comparison": {
+    "report": "qps_20261027.md",
+    "artifacts": "/mnt/nvme2/nc_shared_qps_20261027",
+    "valid_timed_runs": 48,
+    "repeats_per_config": 3,
+    "verification_enabled": false,
+    "datasets": [
+      "SIFT10M for PipeANN/Starling/MARGO",
+      "SIFT100K for AiSAQ"
+    ],
+    "workloads": [
+      "public",
+      "public repeated x5"
+    ]
+  }
+}

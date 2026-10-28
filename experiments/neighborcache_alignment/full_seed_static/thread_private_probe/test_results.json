@@ -1,0 +1,10 @@
+{
+  "private_isolation_reset_replicas": true,
+  "private_20worker_remainder_stress": true,
+  "private_capacity_rejection": true,
+  "shared_global_LRU": true,
+  "shared_remainder": true,
+  "shared_capacity_clamp": true,
+  "shared_20thread_concurrency": true,
+  "assertions_enabled": true
+}

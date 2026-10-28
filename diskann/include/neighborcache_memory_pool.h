@@ -141,7 +141,8 @@ template <typename T> class NeighborCacheMemoryPool
     bool contains_evictable(uint32_t node_id) const;
 
     bool lookup(uint32_t node_id, T *&coords, std::pair<uint32_t, uint32_t *> &nhood,
-                bool track_ghost_value = false);
+                bool track_ghost_value = false, std::vector<T> *coords_copy = nullptr,
+                std::vector<uint32_t> *nbrs_copy = nullptr);
     void shadow_access(uint32_t node_id, uint32_t search_hop);
     bool shadow_enabled() const
     {

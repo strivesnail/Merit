@@ -92,6 +92,8 @@ template <typename T> void SSDQueryScratch<T>::reset()
     retset.clear();
     full_retset.clear();
     profile_parent.clear();
+    neighborcache_beam_parents.clear();
+    neighborcache_candidate_id = neighborcache_candidate_parent = UINT32_MAX;
     neighborcache_dcache_loc_cache.clear();
     neighborcache_dcache_member_packed_loc.clear();
     neighborcache_prefetched_page_gen.clear();

@@ -1,0 +1,133 @@
+--- previous/full_seed_prefetch.h
++++ query_reset/full_seed_prefetch.h
+@@ -13,6 +13,7 @@
+ #include <algorithm>
+ #include <string>
+ #include <limits>
++#include <omp.h>
+ 
+ // Experiment-only immutable D layout: page i contains seed_ids[i] at slot zero,
+ // followed by up to nine distinct visited graph-order neighbors. The last 44 bytes
+@@ -27,6 +28,52 @@
+  struct Page { std::array<char,PAGE> bytes; std::list<uint32_t>::iterator lru; };
+  struct Shard { std::mutex mu; std::list<uint32_t> lru; std::unordered_map<uint32_t,Page> pages; };
+  struct Owner { std::mutex mu; std::unordered_map<uint32_t,std::vector<uint64_t>> locs; };
++ // Each OpenMP query worker owns its payload, LRU and replica directory.
++ // Immutable seed_ids below remain shared. No private-cache operation takes a lock.
++ struct alignas(64) Local {
++  size_t capacity=0;
++  std::list<uint32_t> lru;
++  std::unordered_map<uint32_t,Page> pages;
++  std::unordered_map<uint32_t,std::vector<uint64_t>> locs;
++ };
++ std::unique_ptr<Local[]> locals;
++ bool private_mode=false;
++ Local &local() {
++  const int tid=omp_get_thread_num();
++  if(omp_get_level()>1 || tid<0 || size_t(tid)>=configured_query_threads)
++   throw std::runtime_error("invalid private-cache query worker");
++  return locals[tid];
++ }
++ bool local_lookup(uint32_t id,char *out) {
++  auto &c=local();auto it=c.locs.find(id);if(it==c.locs.end())return false;
++  if(it->second.empty())throw std::runtime_error("empty private owner");
++  const uint64_t loc=it->second.back();const uint32_t seed=loc>>8,slot=loc&255;
++  auto p=c.pages.find(seed);if(p==c.pages.end())throw std::runtime_error("stale private owner");
++  if(slot>=u32(p->second.bytes.data()+FOOT)||u32(p->second.bytes.data()+FOOT+4+4*slot)!=id)
++   throw std::runtime_error("bad private resident location");
++  std::memcpy(out,p->second.bytes.data()+slot*REC,REC);
++  c.lru.splice(c.lru.end(),c.lru,p->second.lru);return true;
++ }
++ void local_put(uint32_t seed,const char *data,uint32_t n) {
++  auto &c=local();auto old=c.pages.find(seed);
++  if(old!=c.pages.end()){c.lru.splice(c.lru.end(),c.lru,old->second.lru);return;}
++  if(c.pages.size()==c.capacity){
++   const uint32_t victim=c.lru.front();auto p=c.pages.find(victim);
++   const uint32_t count=u32(p->second.bytes.data()+FOOT);
++   for(uint32_t i=0;i<count;i++){
++    uint32_t id=u32(p->second.bytes.data()+FOOT+4+4*i);auto o=c.locs.find(id);
++    if(o==c.locs.end())throw std::runtime_error("missing private owner");
++    auto &v=o->second;const uint64_t location=(uint64_t(victim)<<8)|i;
++    auto x=std::find(v.begin(),v.end(),location);
++    if(x==v.end())throw std::runtime_error("missing private replica");
++    v.erase(x);if(v.empty())c.locs.erase(o);
++   }
++   c.pages.erase(p);c.lru.pop_front();
++  }
++  c.lru.push_back(seed);auto p=c.pages.try_emplace(seed).first;
++  std::memcpy(p->second.bytes.data(),data,PAGE);p->second.lru=std::prev(c.lru.end());
++  for(uint32_t i=0;i<n;i++){uint32_t id=u32(data+FOOT+4+4*i);c.locs[id].push_back((uint64_t(seed)<<8)|i);}
++ }
+  std::unique_ptr<Shard[]> shards;
+  std::unique_ptr<Owner[]> owners;
+  size_t shard_count=0, cap=0, extra=0;
+@@ -55,13 +102,15 @@
+  }
+  static FullSeedPrefetch &instance() { static FullSeedPrefetch p;return p; }
+  bool active() const {return on;}
++ bool thread_private() const {return private_mode;}
++ size_t local_capacity() {if(!private_mode)throw std::runtime_error("not private");return local().capacity;}
+  size_t page_count() const {return seed_ids.size();}
+  uint64_t page_for(uint32_t id) const {
+   auto it=std::lower_bound(seed_ids.begin(),seed_ids.end(),id);
+   if(it==seed_ids.end()||*it!=id)throw std::runtime_error("Target outside profiled visited set");
+   return it-seed_ids.begin();
+  }
+- void init(size_t pages,const std::string &seed_file="",size_t query_threads=1) {
++ void init(size_t pages,const std::string &seed_file="",size_t query_threads=1,bool per_thread=false) {
+   if(!seed_file.empty()) {
+    std::ifstream in(seed_file,std::ios::binary|std::ios::ate);auto size=in.tellg();
+    if(!in||size<=0||size%4)throw std::runtime_error("invalid visited seed list");
+@@ -69,6 +118,20 @@
+    if(!in||seed_ids.back()>=100000000||!std::is_sorted(seed_ids.begin(),seed_ids.end())||std::adjacent_find(seed_ids.begin(),seed_ids.end())!=seed_ids.end())throw std::runtime_error("visited seeds not sorted unique");
+   }
+   if(on || pages==0 || query_threads==0)throw std::runtime_error("invalid fullseed prefetch capacity");
++  if(per_thread){
++   if(pages<query_threads)throw std::runtime_error("private prefetch needs at least one page per thread");
++   configured_query_threads=query_threads;private_mode=true;locals=std::make_unique<Local[]>(query_threads);
++   for(size_t i=0;i<query_threads;i++){
++    auto &c=locals[i];c.capacity=pages/query_threads+(i<pages%query_threads);
++    c.pages.reserve(c.capacity+1);c.locs.reserve(c.capacity*10);
++   }
++   on=true;
++   std::cout<<"FULLSEED static: seeds="<<seed_ids.size()<<" pages="<<seed_ids.size()
++    <<" record=388 prefetch_pages="<<pages<<" N=0 M=0 start=empty eviction=clean_drop private_LRU="
++    <<query_threads<<" query_threads="<<query_threads<<" pages_per_thread_min="<<pages/query_threads
++    <<" pages_per_thread_max="<<(pages+query_threads-1)/query_threads<<std::endl;
++   return;
++  }
+   shard_count=std::min(pages,shards_for_threads(query_threads));cap=pages/shard_count;extra=pages%shard_count;
+   shards=std::make_unique<Shard[]>(shard_count);owners=std::make_unique<Owner[]>(shard_count);
+   for(size_t i=0;i<shard_count;i++){const size_t capacity=cap+(i<extra);shards[i].pages.reserve(capacity+1);owners[i].locs.reserve(capacity*10);}
+@@ -76,10 +139,14 @@
+   on=true;
+   std::cout<<"FULLSEED static: seeds="<<seed_ids.size()<<" pages="<<seed_ids.size()<<" record=388 prefetch_pages="<<pages<<" N=0 M=0 start=empty eviction=clean_drop shard_LRU="<<shard_count<<" query_threads="<<query_threads<<std::endl;
+  }
+- // Query-boundary experiment only. Caller must have no in-flight query.
++ // Query boundary: clear only the current worker in private mode.
++ // Shared mode requires a single query thread with no in-flight query.
+  // Reject multithread configurations rather than invalidate another query's pages.
+  // Immutable D contents and seed mapping remain unchanged.
+  size_t clear_between_queries() {
++  if(on && private_mode){
++   auto &c=local();size_t removed=c.pages.size();c.locs.clear();c.pages.clear();c.lru.clear();return removed;
++  }
+   if(!on || configured_query_threads!=1)throw std::runtime_error("query reset requires one query thread");
+   size_t removed=0;
+   for(size_t i=0;i<shard_count;i++) {
+@@ -91,6 +158,7 @@
+   return removed;
+  }
+  bool lookup(uint32_t id,char *out) {
++  if(private_mode)return local_lookup(id,out);
+   std::vector<uint64_t> locs;
+   {auto &o=owners[hash(id)];std::lock_guard<std::mutex> l(o.mu);auto it=o.locs.find(id);if(it==o.locs.end())return false;locs=it->second;}
+   // Never hold an owner lock while acquiring a page lock. Insertion/eviction
+@@ -105,6 +173,7 @@
+  }
+  void put(uint32_t seed,const char *data) {
+   uint32_t n=u32(data+FOOT);if(n==0||n>10||u32(data+FOOT+4)!=seed)throw std::runtime_error("bad fullseed page");
++  if(private_mode){local_put(seed,data,n);return;}
+   const size_t shard=hash(seed);auto &s=shards[shard];std::lock_guard<std::mutex> l(s.mu);
+   auto old=s.pages.find(seed);if(old!=s.pages.end()){s.lru.splice(s.lru.end(),s.lru,old->second.lru);return;}
+   if(s.pages.size()==cap+(shard<extra)){uint32_t victim=s.lru.front();auto it=s.pages.find(victim);remove(victim,it->second);s.pages.erase(it);s.lru.pop_front();}

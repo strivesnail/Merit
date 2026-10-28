@@ -16,6 +16,7 @@
 #endif
 
 #include "defaults.h"
+#include "neighborcache_thread_page_cache.h"
 
 namespace diskann
 {
@@ -69,10 +70,19 @@ class NeighborCacheSharedPageCache
         std::free(_data);
     }
 
-    bool init(uint64_t capacity_pages)
+    bool init(uint64_t capacity_pages, uint64_t query_threads = 1)
     {
         if (capacity_pages == 0)
             return false;
+        const char *mode = std::getenv("NEIGHBORCACHE_PREFETCH_THREAD_PRIVATE");
+        if (mode && std::strcmp(mode, "1") == 0) {
+            const char *frozen = std::getenv("NEIGHBORCACHE_FREEZE_MAINTENANCE");
+            if (!frozen || std::strcmp(frozen, "1") != 0)
+                throw std::runtime_error("Thread-private prefetch currently requires immutable D: FREEZE_MAINTENANCE=1");
+            const char *reset = std::getenv("NEIGHBORCACHE_PREFETCH_RESET_EACH_QUERY");
+            _private = std::make_unique<NeighborCacheThreadPageCache>();
+            return _private->init(capacity_pages, query_threads, reset && std::strcmp(reset,"1")==0);
+        }
         uint64_t nshards = 256;
         while (nshards > 1 && capacity_pages / nshards < 64)
             nshards >>= 1;
@@ -120,16 +130,19 @@ class NeighborCacheSharedPageCache
 
     bool enabled() const
     {
-        return _nshards > 0;
+        return _private || _nshards > 0;
     }
+
+    bool thread_private() const { return bool(_private); }
 
     uint64_t capacity_pages() const
     {
-        return _capacity;
+        return _private ? _private->capacity_pages() : _capacity;
     }
 
     bool contains_range(uint32_t base, uint16_t n) const
     {
+        if (_private) return _private->contains_range(base,n);
         for (uint16_t i = 0; i < n; ++i)
         {
             if (find_slot(shard(base + i), base + i) == kNoKey)
@@ -141,6 +154,7 @@ class NeighborCacheSharedPageCache
     // All-or-nothing copy of sectors [base, base+n) into dst.
     bool get_range(uint32_t base, uint16_t n, char *dst)
     {
+        if (_private) return _private->get_range(base,n,dst);
         for (uint16_t i = 0; i < n; ++i)
         {
             if (!copy_page(shard(base + i), base + i, dst + static_cast<size_t>(i) * defaults::SECTOR_LEN))
@@ -157,6 +171,7 @@ class NeighborCacheSharedPageCache
     // stays valid until that section ends. Returns nullptr on miss.
     const char *get_ptr(uint32_t key)
     {
+        if (_private) return _private->get_ptr(key);
         if (t_reader_depth == 0)
             return nullptr;
         Shard &sh = shard(key);
@@ -187,16 +202,30 @@ class NeighborCacheSharedPageCache
 
     void erase(uint32_t key)
     {
+        if (_private) { _private->erase(key); return; }
         Shard &sh = shard(key);
-        std::lock_guard<SpinMutex> lk(sh.wmu);
-        const uint32_t s = index_find_locked(sh, key);
-        if (s == kNoKey)
-            return;
-        retire_locked(sh, s);
+        // The owner may veto invalidation; the detached writer's hook never
+        // does so. Its IO pins protect the physical sector independently.
+        for (;;)
+        {
+            {
+                std::lock_guard<SpinMutex> lk(sh.wmu);
+                const uint32_t s = index_find_locked(sh, key);
+                if (s == kNoKey)
+                    return;
+                if (fire_evict_locked(sh, s, true))
+                {
+                    retire_locked(sh, s);
+                    return;
+                }
+            }
+            std::this_thread::yield();
+        }
     }
 
-    using EvictHook = void (*)(void *ctx, uint32_t key, const char *page);
+    using EvictHook = bool (*)(void *ctx, uint32_t key, const char *page, bool discard);
     // Called with the page bytes still published, before the LRU slot is dropped.
+    // False keeps the victim resident (asynchronous writeback/backpressure).
     void set_evict_hook(EvictHook hook, void *ctx)
     {
         _evict = hook;
@@ -206,10 +235,20 @@ class NeighborCacheSharedPageCache
     // overwrite rewrites a live page in place. Seed updates use it; a disk-read
     // admission leaves an existing page untouched. Returns false when a new page
     // cannot be stored.
-    bool put(uint32_t key, const char *src, bool overwrite = false)
+    bool put(uint32_t key, const char *src, bool overwrite = false, std::atomic<uint64_t> *dirty = nullptr,
+             const std::atomic<uint64_t> *disk_dirty = nullptr)
     {
+        if (_private) {
+            if (dirty || (disk_dirty && disk_dirty->load(std::memory_order_acquire)))
+                throw std::runtime_error("Thread-private prefetch does not support dirty online pages");
+            return _private->put(key,src,overwrite);
+        }
         Shard &sh = shard(key);
         std::lock_guard<SpinMutex> lk(sh.wmu);
+        // Recheck after acquiring the shard lock: an older disk read may race
+        // with a dirty update followed by eviction of that updated page.
+        if (disk_dirty && disk_dirty->load(std::memory_order_acquire) != 0)
+            return false;
         const uint32_t existing = index_find_locked(sh, key);
         if (existing != kNoKey)
         {
@@ -218,9 +257,21 @@ class NeighborCacheSharedPageCache
                 const uint32_t v = slot_write_begin(sh, existing);
                 std::memcpy(sh.data + static_cast<size_t>(existing) * defaults::SECTOR_LEN, src, defaults::SECTOR_LEN);
                 slot_write_end(sh, existing, v);
+                if (dirty) dirty->fetch_add(1, std::memory_order_release);
             }
             touch(sh, existing);
             return true;
+        }
+        // The hook takes ownership of any dirty snapshot before A is removed.
+        // Detached writeback always accepts eviction, including under overload.
+        if (_evict != nullptr && sh.live >= sh.cap)
+        {
+            if (!retire_lru_locked(sh))
+            {
+                _skipped.fetch_add(1, std::memory_order_relaxed);
+                return false;
+            }
+            _evictions.fetch_add(1, std::memory_order_relaxed);
         }
         uint32_t slot = kNoKey;
         if (!alloc_slot_locked(sh, slot))
@@ -232,6 +283,7 @@ class NeighborCacheSharedPageCache
         std::memcpy(sh.data + static_cast<size_t>(slot) * defaults::SECTOR_LEN, src, defaults::SECTOR_LEN);
         sh.slot_key[slot].store(key, std::memory_order_relaxed);
         slot_write_end(sh, slot, v);
+        if (dirty) dirty->fetch_add(1, std::memory_order_release);
         index_insert_locked(sh, key, slot);
         touch(sh, slot);
         sh.live++;
@@ -247,6 +299,7 @@ class NeighborCacheSharedPageCache
 
     uint64_t hits() const
     {
+        if (_private) return _private->hits();
         uint64_t t = 0;
         for (const auto &c : _stripes)
             t += c.hits.load(std::memory_order_relaxed);
@@ -254,6 +307,7 @@ class NeighborCacheSharedPageCache
     }
     uint64_t misses() const
     {
+        if (_private) return _private->misses();
         uint64_t t = 0;
         for (const auto &c : _stripes)
             t += c.misses.load(std::memory_order_relaxed);
@@ -261,18 +315,22 @@ class NeighborCacheSharedPageCache
     }
     uint64_t inserts() const
     {
+        if (_private) return _private->inserts();
         return _inserts.load(std::memory_order_relaxed);
     }
     uint64_t evictions() const
     {
+        if (_private) return _private->evictions();
         return _evictions.load(std::memory_order_relaxed);
     }
     uint64_t skipped_puts() const
     {
+        if (_private) return 0;
         return _skipped.load(std::memory_order_relaxed);
     }
 
   private:
+    std::unique_ptr<NeighborCacheThreadPageCache> _private;
     struct Shard;
     static constexpr uint32_t kNoKey = 0xFFFFFFFFu;
     static constexpr int kMaxRetries = 1024;
@@ -295,6 +353,7 @@ class NeighborCacheSharedPageCache
 
     void enter()
     {
+        if (_private) { _private->enter(); return; }
         if (t_reader_depth++ != 0)
             return;
         const uint32_t id = reader_id();
@@ -313,6 +372,7 @@ class NeighborCacheSharedPageCache
 
     void exit()
     {
+        if (_private) { _private->exit(); return; }
         if (t_reader_depth == 0 || --t_reader_depth != 0)
             return;
         _readers[reader_id()].epoch.store(0, std::memory_order_release);
@@ -387,6 +447,8 @@ class NeighborCacheSharedPageCache
         if (cached_lru_live(sh, sh.cached_lru, sh.cached_lru_stamp))
         {
             const uint32_t victim = sh.cached_lru;
+            if (!fire_evict_locked(sh, victim))
+                return false;
             if (cached_lru_live(sh, sh.cached_lru2, sh.cached_lru2_stamp))
             {
                 sh.cached_lru = sh.cached_lru2;
@@ -395,7 +457,6 @@ class NeighborCacheSharedPageCache
             else
                 sh.cached_lru = kNoKey;
             sh.cached_lru2 = kNoKey;
-            fire_evict_locked(sh, victim);
             retire_locked(sh, victim);
             return true;
         }
@@ -428,22 +489,29 @@ class NeighborCacheSharedPageCache
             sh.cached_lru2 = kNoKey;
             return false;
         }
+        if (!fire_evict_locked(sh, best))
+        {
+            sh.cached_lru = best;
+            sh.cached_lru_stamp = best_stamp;
+            sh.cached_lru2 = second;
+            sh.cached_lru2_stamp = second_stamp;
+            return false;
+        }
         sh.cached_lru = second;
         sh.cached_lru_stamp = second_stamp;
         sh.cached_lru2 = kNoKey;
-        fire_evict_locked(sh, best);
         retire_locked(sh, best);
         return true;
     }
 
-    void fire_evict_locked(Shard &sh, uint32_t slot)
+    bool fire_evict_locked(Shard &sh, uint32_t slot, bool discard = false)
     {
         if (_evict == nullptr)
-            return;
+            return true;
         const uint32_t key = sh.slot_key[slot].load(std::memory_order_relaxed);
         if (key == kNoKey)
-            return;
-        _evict(_evict_ctx, key, sh.data + static_cast<size_t>(slot) * defaults::SECTOR_LEN);
+            return true;
+        return _evict(_evict_ctx, key, sh.data + static_cast<size_t>(slot) * defaults::SECTOR_LEN, discard);
     }
 
     // Unpublish slot s; it is reusable once every open reader section started after the retire epoch.
@@ -597,27 +665,14 @@ class NeighborCacheSharedPageCache
 
     bool copy_page(Shard &sh, uint32_t key, char *dst)
     {
-        for (int attempt = 0; attempt < kMaxRetries; ++attempt)
-        {
-            const uint32_t s = find_slot(sh, key);
-            if (s == kNoKey)
-                return false;
-            const uint32_t v1 = sh.slot_ver[s].load(std::memory_order_acquire);
-            if (v1 & 1u)
-            {
-                cpu_relax();
-                continue;
-            }
-            if (sh.slot_key[s].load(std::memory_order_relaxed) != key)
-                continue;
-            std::memcpy(dst, sh.data + static_cast<size_t>(s) * defaults::SECTOR_LEN, defaults::SECTOR_LEN);
-            std::atomic_thread_fence(std::memory_order_acquire);
-            if (sh.slot_ver[s].load(std::memory_order_relaxed) != v1)
-                continue;
-            touch(sh, s);
-            return true;
-        }
-        return false;
+        // Dynamic pages can be overwritten. Copy under the page shard lock,
+        // rather than racing memcpy against a writer and checking a version later.
+        std::lock_guard<SpinMutex> lock(sh.wmu);
+        const uint32_t slot = index_find_locked(sh, key);
+        if (slot == kNoKey) return false;
+        std::memcpy(dst, sh.data + static_cast<size_t>(slot) * defaults::SECTOR_LEN, defaults::SECTOR_LEN);
+        touch(sh, slot);
+        return true;
     }
 
     static uint32_t slot_write_begin(Shard &sh, uint32_t s)

@@ -16,6 +16,7 @@ namespace diskann
 struct Neighbor
 {
     unsigned id;
+    uint32_t nc_parent = UINT32_MAX;
     float distance;
     bool expanded;
 
@@ -84,7 +85,8 @@ class NeighborPriorityQueue
         {
             std::memmove(&_data[lo + 1], &_data[lo], (_size - lo) * sizeof(Neighbor));
         }
-        _data[lo] = {nbr.id, nbr.distance};
+        _data[lo] = nbr;
+        _data[lo].expanded = false;
         if (_size < _capacity)
         {
             _size++;

@@ -1,0 +1,59 @@
+{
+  "workload": "SIFT100M A\u2192B, 40K queries, each phase 10K uniform + 10K Zipf0.8 shuffled",
+  "query_threads": 20,
+  "query_cpus": "0-19",
+  "K": 10,
+  "L": 128,
+  "beam": 4,
+  "modes": [
+    "private one LRU per worker; retain across all queries and A\u2192B phase boundary"
+  ],
+  "repetitions": 1,
+  "N_cache": 0,
+  "M_cache": 0,
+  "D_seeds": 2632133,
+  "D_immutable": true,
+  "page_bytes": 4096,
+  "records_per_page_max": 10,
+  "cache_clear": "sync + POSIX_FADV_DONTNEED per file; mincore verification",
+  "timing": "Wall QPS across 40K measured queries. No per-query resets.",
+  "validation": "All 40K\u00d710 result IDs equal existing reference; per-query full-vector node counts unchanged; zero query-reset calls; all N/M counters zero; full D remains immutable.",
+  "scope": "Only private payload capacity changes across runs. Same executable, 20 workers, dynamic OpenMP scheduling. No cross-thread sharing. Each process starts with empty prefetch. Payload excludes metadata and other index memory.",
+  "private_pages_per_thread": [
+    103,
+    256,
+    512,
+    1024,
+    2048,
+    4096,
+    6144,
+    8192,
+    12288,
+    16384
+  ],
+  "private_MiB_per_thread": [
+    0.40234375,
+    1.0,
+    2.0,
+    4.0,
+    8.0,
+    16.0,
+    24.0,
+    32.0,
+    48.0,
+    64.0
+  ],
+  "total_prefetch_MiB": [
+    8.046875,
+    20.0,
+    40.0,
+    80.0,
+    160.0,
+    320.0,
+    480.0,
+    640.0,
+    960.0,
+    1280.0
+  ],
+  "binary_source": "/mnt/nvme2/nc_thread_private_20261028/search_disk_index"
+}

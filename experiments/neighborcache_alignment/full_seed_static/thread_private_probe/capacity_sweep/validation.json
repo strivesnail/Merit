@@ -1,0 +1,72 @@
+{
+  "2060": {
+    "result_ids_match": true,
+    "per_query_visits_match": true,
+    "query_reset_calls": 0,
+    "file_residency_zero_before_run": true,
+    "hit_read_accounting_valid": true
+  },
+  "5120": {
+    "result_ids_match": true,
+    "per_query_visits_match": true,
+    "query_reset_calls": 0,
+    "file_residency_zero_before_run": true,
+    "hit_read_accounting_valid": true
+  },
+  "10240": {
+    "result_ids_match": true,
+    "per_query_visits_match": true,
+    "query_reset_calls": 0,
+    "file_residency_zero_before_run": true,
+    "hit_read_accounting_valid": true
+  },
+  "20480": {
+    "result_ids_match": true,
+    "per_query_visits_match": true,
+    "query_reset_calls": 0,
+    "file_residency_zero_before_run": true,
+    "hit_read_accounting_valid": true
+  },
+  "40960": {
+    "result_ids_match": true,
+    "per_query_visits_match": true,
+    "query_reset_calls": 0,
+    "file_residency_zero_before_run": true,
+    "hit_read_accounting_valid": true
+  },
+  "81920": {
+    "result_ids_match": true,
+    "per_query_visits_match": true,
+    "query_reset_calls": 0,
+    "file_residency_zero_before_run": true,
+    "hit_read_accounting_valid": true
+  },
+  "122880": {
+    "result_ids_match": true,
+    "per_query_visits_match": true,
+    "query_reset_calls": 0,
+    "file_residency_zero_before_run": true,
+    "hit_read_accounting_valid": true
+  },
+  "163840": {
+    "result_ids_match": true,
+    "per_query_visits_match": true,
+    "query_reset_calls": 0,
+    "file_residency_zero_before_run": true,
+    "hit_read_accounting_valid": true
+  },
+  "245760": {
+    "result_ids_match": true,
+    "per_query_visits_match": true,
+    "query_reset_calls": 0,
+    "file_residency_zero_before_run": true,
+    "hit_read_accounting_valid": true
+  },
+  "327680": {
+    "result_ids_match": true,
+    "per_query_visits_match": true,
+    "query_reset_calls": 0,
+    "file_residency_zero_before_run": true,
+    "hit_read_accounting_valid": true
+  }
+}

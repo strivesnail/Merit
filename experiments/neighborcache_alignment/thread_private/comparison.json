@@ -1,0 +1,72 @@
+[
+  {
+    "engine": "diskann",
+    "dataset": "SIFT100M",
+    "workload": "10K+Zipf",
+    "threads": 20,
+    "shared_qps": 5050.12,
+    "private_qps": 5088.27,
+    "change_percent": 0.7554275937997623,
+    "shared_recall": 98.411,
+    "private_recall": 98.411,
+    "identical_rows": 20000,
+    "queries": 20000,
+    "top10_overlap_percent": 100.0
+  },
+  {
+    "engine": "starling",
+    "dataset": "SIFT100M",
+    "workload": "10K+Zipf",
+    "threads": 20,
+    "shared_qps": 6144.76,
+    "private_qps": 5215.14,
+    "change_percent": -15.128662470137154,
+    "shared_recall": 98.7685,
+    "private_recall": 98.7695,
+    "identical_rows": 19980,
+    "queries": 20000,
+    "top10_overlap_percent": 99.995
+  },
+  {
+    "engine": "margo",
+    "dataset": "SIFT100M",
+    "workload": "10K+Zipf",
+    "threads": 20,
+    "shared_qps": 6245.7,
+    "private_qps": 5679.71,
+    "change_percent": -9.062074707398683,
+    "shared_recall": 98.38900000000001,
+    "private_recall": 98.38900000000001,
+    "identical_rows": 19984,
+    "queries": 20000,
+    "top10_overlap_percent": 99.9945
+  },
+  {
+    "engine": "pipeann",
+    "dataset": "SIFT10M",
+    "workload": "10K public",
+    "threads": 20,
+    "shared_qps": 8980.51,
+    "private_qps": 9066.81,
+    "change_percent": 0.9609699226435842,
+    "shared_recall": 97.328,
+    "private_recall": 97.312,
+    "identical_rows": 9905,
+    "queries": 10000,
+    "top10_overlap_percent": 99.886
+  },
+  {
+    "engine": "aisaq",
+    "dataset": "SIFT100K",
+    "workload": "1K public",
+    "threads": 8,
+    "shared_qps": 4539.09,
+    "private_qps": 4396.75,
+    "change_percent": -3.135870846359079,
+    "shared_recall": 97.5,
+    "private_recall": 97.5,
+    "identical_rows": 1000,
+    "queries": 1000,
+    "top10_overlap_percent": 100.0
+  }
+]

@@ -1,0 +1,23 @@
+{
+  "aisaq": {
+    "checkout": "/tmp/nmd-candidates-aisaq",
+    "base_commit": "32881764fad3d2a56b337f17d26cbdd2dca4b554",
+    "patch": "experiments/aisaq_nmd/aisaq.patch",
+    "patch_sha256": "737795812d69d86443fe52c3778c92f347218d111c0b56969dd738de2415d3c7",
+    "validation": "Updated parent-candidate metadata and acquired-record callbacks; patch applies to base commit."
+  },
+  "starling": {
+    "checkout": "/home/jianz/workload/code/baselines/starling",
+    "base_commit": "68aec13e854219bb2baf39b94d56d2bbda689696",
+    "patch": "experiments/neighborcache_alignment/starling_shared.patch",
+    "patch_sha256": "435fbfd0d3e1bc2718f6b4feb999e0079d480bb77ce1ce9fbc2e5cd4317f5c36",
+    "validation": "Updated parent-candidate metadata and acquired-record callbacks; patch applies to base commit."
+  },
+  "margo": {
+    "checkout": "/home/jianz/workload/code/baselines/MARGO",
+    "base_commit": "485a9c25facea68bb3b6c44eb280b95c14ee5076",
+    "patch": "experiments/neighborcache_alignment/margo_shared.patch",
+    "patch_sha256": "435fbfd0d3e1bc2718f6b4feb999e0079d480bb77ce1ce9fbc2e5cd4317f5c36",
+    "validation": "Updated parent-candidate metadata and acquired-record callbacks; patch applies to base commit."
+  }
+}

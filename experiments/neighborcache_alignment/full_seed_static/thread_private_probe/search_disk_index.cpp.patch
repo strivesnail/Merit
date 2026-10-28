@@ -1,0 +1,52 @@
+--- previous/search_disk_index.cpp
++++ query_reset/search_disk_index.cpp
+@@ -424,7 +424,9 @@
+             throw std::runtime_error("Fullseed does not use dynamic M/N maintenance");
+         const char *pages_env = std::getenv("NC_FULLSEED_PREFETCH_PAGES");
+         const uint64_t prefetch_pages = pages_env ? std::stoull(pages_env) : 15104;
+-        FullSeedPrefetch::instance().init(prefetch_pages, seed_file, num_threads);
++        const char *private_env=std::getenv("NC_FULLSEED_THREAD_PRIVATE");
++        const bool per_thread=private_env && std::strcmp(private_env,"1")==0;
++        FullSeedPrefetch::instance().init(prefetch_pages, seed_file, num_threads, per_thread);
+         if (get_file_size(full) != FullSeedPrefetch::instance().page_count() * 4096ULL)
+             throw std::runtime_error("Fullseed file does not match visited seed list");
+         reader->close();
+@@ -647,9 +649,11 @@
+         const uint64_t initial_d_pages = trace_timeline ? (FullSeedPrefetch::instance().active() ? FullSeedPrefetch::instance().page_count() : _pFlashIndex->neighborcache_dynamic_page_count()) : 0;
+         const char *reset_env = std::getenv("NC_FULLSEED_RESET_EACH_QUERY");
+         const bool reset_each_query = reset_env && std::strcmp(reset_env, "1") == 0;
+-        if (reset_each_query && (num_threads != 1 || !FullSeedPrefetch::instance().active()))
+-            throw std::runtime_error("per-query reset requires fullseed mode with one query thread");
++        if (reset_each_query && (!FullSeedPrefetch::instance().active() || (num_threads != 1 && !FullSeedPrefetch::instance().thread_private())))
++            throw std::runtime_error("per-query reset requires fullseed private caches or one query thread");
+         uint64_t reset_ns = 0, reset_calls = 0, reset_removed_pages = 0;
++        std::vector<uint64_t> reset_query_ns(reset_each_query ? query_num : 0);
++        std::vector<uint64_t> reset_query_pages(reset_each_query ? query_num : 0);
+         const auto timeline_start = std::chrono::steady_clock::now();
+         auto s = std::chrono::high_resolution_clock::now();
+ 
+@@ -673,10 +677,10 @@
+             if (reset_each_query)
+             {
+                 const auto reset_begin = std::chrono::steady_clock::now();
+-                reset_removed_pages += FullSeedPrefetch::instance().clear_between_queries();
+-                reset_ns += std::chrono::duration_cast<std::chrono::nanoseconds>(
++                reset_query_pages[i] = FullSeedPrefetch::instance().clear_between_queries();
++                reset_query_ns[i] = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                     std::chrono::steady_clock::now() - reset_begin).count();
+-                ++reset_calls;
++
+             }
+             if (!filtered_search)
+             {
+@@ -717,6 +721,10 @@
+         auto e = std::chrono::high_resolution_clock::now();
+         std::chrono::duration<double> diff = e - s;
+         double qps = (1.0 * query_num) / (1.0 * diff.count());
++        if(reset_each_query){
++            reset_calls=query_num;
++            for(uint64_t qi=0;qi<query_num;qi++){reset_ns+=reset_query_ns[qi];reset_removed_pages+=reset_query_pages[qi];}
++        }
+         std::cout << "FULLSEED query_reset=" << reset_each_query << " reset_calls=" << reset_calls
+                   << " reset_removed_pages=" << reset_removed_pages << " reset_ns=" << reset_ns << std::endl;
+         for (size_t phase = 0; phase < phase_starts.size(); ++phase)

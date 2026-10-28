@@ -440,12 +440,21 @@ void LinuxAlignedFileReader::send_io(std::vector<IORequest> &reqs, void *ctx, bo
   }
 }
 
+void LinuxAlignedFileReader::enqueue_io(IORequest &req, void *ctx, bool write) {
+  send_io(req, ctx, write);
+}
+
+void LinuxAlignedFileReader::submit_io(void *ctx) {
+  (void) ctx;
+}
+
 int LinuxAlignedFileReader::poll(void *ctx) {
   int tid = (intptr_t) ctx;
   IORequest *req;
   int n = 0;
   while (g_spdk.cqs[tid]->pop(req)) {
     if (--req->n_pending == 0) {
+      req->io_res = (int) req->len;
       req->finished = true;
       n++;
     }
@@ -458,6 +467,7 @@ void LinuxAlignedFileReader::poll_alloc(void *ctx, std::vector<uint64_t> *page_r
   IORequest *req;
   while (g_spdk.cqs[tid]->pop(req)) {
     if (--req->n_pending == 0) {
+      req->io_res = (int) req->len;
       req->finished = true;
       for (uint64_t i = 0; i < req->len / SECTOR_LEN; i++) {
         uint32_t blk_no = req->offset / SECTOR_LEN + i;
@@ -539,6 +549,7 @@ void LinuxAlignedFileReader::write_fd(int fd, std::vector<IORequest> &reqs, void
 #include "linux_aligned_file_reader.h"
 
 #include <cassert>
+#include <cerrno>
 #include <cstdint>
 #include <cstdio>
 #include <iostream>
@@ -684,32 +695,49 @@ void LinuxAlignedFileReader::write_fd(int fd, std::vector<IORequest> &write_reqs
   execute_io(ctx, fd, write_reqs, 0, true);
 }
 
-void LinuxAlignedFileReader::send_io(IORequest &req, void *ctx, bool write) {
+static int request_fd(const IORequest &req, int index_fd) {
+  return req.fd >= 0 ? req.fd : index_fd;
+}
+
+void LinuxAlignedFileReader::enqueue_io(IORequest &req, void *ctx, bool write) {
   io_uring *ring = (io_uring *) ctx;
   auto sqe = io_uring_get_sqe(ring);
-  req.finished = false;
-  sqe->user_data = (uint64_t) &req;
-  if (write) {
-    io_uring_prep_write(sqe, fd, req.buf, req.len, req.offset);
-  } else {
-    io_uring_prep_read(sqe, fd, req.buf, req.len, req.offset);
+  if (sqe == nullptr) {
+    io_uring_submit(ring);
+    sqe = io_uring_get_sqe(ring);
   }
-  io_uring_submit(ring);
+  if (sqe == nullptr) {
+    req.finished = true;
+    req.io_res = -EAGAIN;
+    return;
+  }
+  req.finished = false;
+  req.io_res = 0;
+  sqe->user_data = (uint64_t) &req;
+  const int use_fd = request_fd(req, fd);
+  if (write) {
+    io_uring_prep_write(sqe, use_fd, req.buf, req.len, req.offset);
+  } else {
+    io_uring_prep_read(sqe, use_fd, req.buf, req.len, req.offset);
+  }
+}
+
+void LinuxAlignedFileReader::submit_io(void *ctx) {
+  io_uring_submit((io_uring *) ctx);
+}
+
+void LinuxAlignedFileReader::send_io(IORequest &req, void *ctx, bool write) {
+  enqueue_io(req, ctx, write);
+  if (!req.finished) {
+    submit_io(ctx);
+  }
 }
 
 void LinuxAlignedFileReader::send_io(std::vector<IORequest> &reqs, void *ctx, bool write) {
-  io_uring *ring = (io_uring *) ctx;
   for (uint64_t j = 0; j < reqs.size(); j++) {
-    auto sqe = io_uring_get_sqe(ring);
-    reqs[j].finished = false;
-    sqe->user_data = (uint64_t) &reqs[j];
-    if (write) {
-      io_uring_prep_write(sqe, fd, reqs[j].buf, reqs[j].len, reqs[j].offset);
-    } else {
-      io_uring_prep_read(sqe, fd, reqs[j].buf, reqs[j].len, reqs[j].offset);
-    }
+    enqueue_io(reqs[j], ctx, write);
   }
-  io_uring_submit(ring);
+  submit_io(ctx);
 }
 
 int LinuxAlignedFileReader::poll(void *ctx) {
@@ -725,6 +753,7 @@ int LinuxAlignedFileReader::poll(void *ctx) {
     }
     IORequest *req = (IORequest *) cqes[i]->user_data;
     if (req != nullptr) {
+      req->io_res = cqes[i]->res;
       req->finished = true;
     }
     io_uring_cqe_seen(ring, cqes[i]);
@@ -745,6 +774,7 @@ void LinuxAlignedFileReader::poll_alloc(void *ctx, std::vector<uint64_t> *page_r
     }
     IORequest *req = (IORequest *) cqes[i]->user_data;
     if (req != nullptr) {
+      req->io_res = cqes[i]->res;
       req->finished = true;
       for (uint64_t i = 0; i < req->len / SECTOR_LEN; i++) {
         uint32_t blk_no = req->offset / SECTOR_LEN + i;
@@ -921,13 +951,22 @@ void LinuxAlignedFileReader::write_fd(int fd, std::vector<IORequest> &write_reqs
   execute_io(ctx, fd, write_reqs, 0, true);
 }
 
+void LinuxAlignedFileReader::enqueue_io(IORequest &req, void *ctx, bool write) {
+  send_io(req, ctx, write);
+}
+
+void LinuxAlignedFileReader::submit_io(void *ctx) {
+  (void) ctx;
+}
+
 void LinuxAlignedFileReader::send_io(IORequest &req, void *ctx, bool write) {
   auto cb = new iocb_t;
   req.finished = false;
+  const int use_fd = req.fd >= 0 ? req.fd : fd;
   if (write) {
-    io_prep_pwrite(cb, fd, req.buf, req.len, req.offset);
+    io_prep_pwrite(cb, use_fd, req.buf, req.len, req.offset);
   } else {
-    io_prep_pread(cb, fd, req.buf, req.len, req.offset);
+    io_prep_pread(cb, use_fd, req.buf, req.len, req.offset);
   }
   cb->data = (void *) &req;  // set user data to point to the request
 
@@ -945,10 +984,11 @@ void LinuxAlignedFileReader::send_io(std::vector<IORequest> &reqs, void *ctx, bo
   for (uint64_t j = 0; j < n_ops; j++) {
     reqs[j].finished = false;
     cbs[j] = new iocb_t;
+    const int use_fd = reqs[j].fd >= 0 ? reqs[j].fd : fd;
     if (write) {
-      io_prep_pwrite(cbs[j], fd, reqs[j].buf, reqs[j].len, reqs[j].offset);
+      io_prep_pwrite(cbs[j], use_fd, reqs[j].buf, reqs[j].len, reqs[j].offset);
     } else {
-      io_prep_pread(cbs[j], fd, reqs[j].buf, reqs[j].len, reqs[j].offset);
+      io_prep_pread(cbs[j], use_fd, reqs[j].buf, reqs[j].len, reqs[j].offset);
     }
     cbs[j]->data = (void *) &reqs[j];  // set user data to point to the request
   }
@@ -977,6 +1017,7 @@ int LinuxAlignedFileReader::poll(void *ctx) {
   for (int i = 0; i < ret; i++) {
     IORequest *req = (IORequest *) evts[i].data;
     if (req != nullptr) {
+      req->io_res = (int) evts[i].res;
       req->finished = true;
     }
     delete (iocb_t *) evts[i].obj;

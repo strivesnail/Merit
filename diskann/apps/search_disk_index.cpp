@@ -620,6 +620,14 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
         auto stats = new diskann::QueryStats[query_num];
 
         std::vector<uint64_t> query_result_ids_64(recall_at * query_num);
+        // Optional cold-start throughput trace. Each worker writes only its own
+        // query slot; file IO and sorting are deferred until after the search.
+        const char *timeline_path = std::getenv("NEIGHBORCACHE_QUERY_TIMELINE");
+        const bool trace_timeline = timeline_path != nullptr && timeline_path[0] != '\0';
+        std::vector<int64_t> completed_ns(trace_timeline ? query_num : 0);
+        std::vector<int64_t> d_pages_snapshot(trace_timeline ? query_num : 0, -1);
+        const uint64_t initial_d_pages = trace_timeline ? _pFlashIndex->neighborcache_dynamic_page_count() : 0;
+        const auto timeline_start = std::chrono::steady_clock::now();
         auto s = std::chrono::high_resolution_clock::now();
 
 #pragma omp parallel for schedule(dynamic, 1)
@@ -651,10 +659,35 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
                     query_result_dists[test_id].data() + (i * recall_at), optimized_beamwidth, true, label_for_search,
                     use_reorder_data, stats + i);
             }
+            if (trace_timeline)
+            {
+                completed_ns[i] = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - timeline_start).count();
+                // Sparse, approximate cache-growth checkpoints, outside the
+                // completion timestamp. This does not synchronize query batches.
+                if ((i + 1) % 1000 == 0)
+                    d_pages_snapshot[i] = _pFlashIndex->neighborcache_dynamic_page_count();
+            }
         }
         auto e = std::chrono::high_resolution_clock::now();
         std::chrono::duration<double> diff = e - s;
         double qps = (1.0 * query_num) / (1.0 * diff.count());
+        if (trace_timeline)
+        {
+            const std::string path = std::string(timeline_path) + ".L" + std::to_string(L) + ".csv";
+            std::ofstream trace(path);
+            if (!trace)
+                throw std::runtime_error("Cannot write query timeline: " + path);
+            trace << "query_id,completed_ns,d_pages_snapshot\n";
+            for (uint64_t i = 0; i < query_num; ++i)
+                trace << i << ',' << completed_ns[i] << ',' << d_pages_snapshot[i] << '\n';
+            trace.close();
+            if (!trace)
+                throw std::runtime_error("Failed writing query timeline: " + path);
+            diskann::cout << "Query timeline: initial_d_pages=" << initial_d_pages
+                          << " final_d_pages=" << _pFlashIndex->neighborcache_dynamic_page_count()
+                          << " queries=" << query_num << " file=" << path << std::endl;
+        }
 
         diskann::convert_types<uint64_t, uint32_t>(query_result_ids_64.data(), query_result_ids[test_id].data(),
                                                    query_num, recall_at);
@@ -768,6 +801,9 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
                           << " dcache_scratch_hits=" << dc_scratch << " dcache_cross_query_hits=" << dc_cross
                           << " ncache_hits=" << mean_of([](const diskann::QueryStats &s) { return s.n_cache_hits; })
                           << " beam_lookups=" << mean_of([](const diskann::QueryStats &s) { return s.n_beam_lookups; })
+                          << " dparent_nbrs=" << mean_of([](const diskann::QueryStats &s) { return s.n_dparent_nbrs; })
+                          << " dparent_on_page="
+                          << mean_of([](const diskann::QueryStats &s) { return s.n_dparent_nbr_on_page; })
                           << std::endl;
             if (const char *halves = std::getenv("NEIGHBORCACHE_STATS_HALVES");
                 halves != nullptr && std::strcmp(halves, "0") != 0 && query_num >= 2)

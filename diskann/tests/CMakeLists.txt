@@ -3,6 +3,14 @@
 
 set(CMAKE_COMPILE_WARNING_AS_ERROR ON)
 
+if (NOT MSVC)
+    add_executable(prefetch_async_writeback prefetch_async_writeback.cpp)
+    target_compile_options(prefetch_async_writeback PRIVATE -UNDEBUG)
+    target_link_libraries(prefetch_async_writeback ${PROJECT_NAME} ${DISKANN_ASYNC_LIB} ${DISKANN_TOOLS_TCMALLOC_LINK_OPTIONS})
+    add_test(NAME prefetch_async_writeback COMMAND prefetch_async_writeback)
+    set_tests_properties(prefetch_async_writeback PROPERTIES TIMEOUT 60)
+endif()
+
 find_package(Boost COMPONENTS unit_test_framework)
 
 # For Windows, fall back to nuget version if find_package didn't find it.

@@ -1,0 +1,27 @@
+{
+  "workload": "SIFT100M A\u2192B, 40K queries, each phase 10K uniform + 10K Zipf0.8 shuffled",
+  "query_threads": 20,
+  "query_cpus": "0-19",
+  "K": 10,
+  "L": 128,
+  "beam": 4,
+  "total_prefetch_pages": 2060,
+  "total_prefetch_KiB": 8240,
+  "private_pages_per_thread": 103,
+  "private_KiB_per_thread": 412,
+  "modes": [
+    "shared 128-shard LRU, retain across queries",
+    "private one LRU per worker, clear before each query"
+  ],
+  "repetitions": 1,
+  "N_cache": 0,
+  "M_cache": 0,
+  "D_seeds": 2632133,
+  "D_immutable": true,
+  "page_bytes": 4096,
+  "records_per_page_max": 10,
+  "cache_clear": "sync + POSIX_FADV_DONTNEED per file; mincore verification",
+  "timing": "Overall QPS includes per-query reset; summed reset CPU time across workers is not wall time.",
+  "validation": "Every result ID equals existing 40K\u00d710 reference. Private-reset per-query visit/hit/read counts must exactly equal the single-thread 103-page reset run.",
+  "scope": "Experiment-only snapshot; shared version and private version use identical executable and total payload budget. Private version shares immutable D and seed map only. It changes ownership, LRU partitioning, locking and query-boundary retention, so it cannot separately attribute performance to any single factor."
+}

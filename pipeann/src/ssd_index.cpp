@@ -219,7 +219,7 @@ namespace pipeann {
     load_flag = true;
     this->nmd_.init(this->meta_.npoints, this->meta_.max_node_len, this->meta_.nnodes_per_sector,
                     this->meta_.vector_bytes(), disk_index_file + ".nmd", disk_index_file,
-                    (uint32_t) this->meta_.entry_point_id);
+                    (uint32_t) this->meta_.entry_point_id, this->meta_.range);
 
     LOG(INFO) << "SSDIndex loaded successfully.";
     return 0;

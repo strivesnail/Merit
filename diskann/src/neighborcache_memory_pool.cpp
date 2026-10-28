@@ -526,7 +526,7 @@ bool NeighborCacheMemoryPool<T>::low_priority_insert_unlocked(Shard &shard, uint
 
 template <typename T>
 bool NeighborCacheMemoryPool<T>::lookup(uint32_t node_id, T *&coords, std::pair<uint32_t, uint32_t *> &nhood,
-                                bool track_ghost_value)
+                                bool track_ghost_value, std::vector<T> *coords_copy, std::vector<uint32_t> *nbrs_copy)
 {
     Shard &shard = _shards[shard_index(node_id)];
     if (!membership_maybe_contains(node_id))
@@ -552,6 +552,9 @@ bool NeighborCacheMemoryPool<T>::lookup(uint32_t node_id, T *&coords, std::pair<
         coords = _coords_buf + static_cast<uint64_t>(slot) * _aligned_dim;
         uint32_t *nh = _nhood_buf + static_cast<uint64_t>(slot) * (_max_degree + 1);
         nhood = {nh[0], nh + 1};
+        // Optional copies keep external asynchronous readers safe after unlocking.
+        if (coords_copy) coords_copy->assign(coords, coords + _aligned_dim);
+        if (nbrs_copy) nbrs_copy->assign(nh + 1, nh + 1 + nh[0]);
         return true;
     }
     std::lock_guard<NeighborCacheNcacheMutex> lock(shard.mu);
@@ -569,6 +572,9 @@ bool NeighborCacheMemoryPool<T>::lookup(uint32_t node_id, T *&coords, std::pair<
     coords = _coords_buf + static_cast<uint64_t>(slot) * _aligned_dim;
     uint32_t *nh = _nhood_buf + static_cast<uint64_t>(slot) * (_max_degree + 1);
     nhood = {nh[0], nh + 1};
+        // Optional copies keep external asynchronous readers safe after unlocking.
+        if (coords_copy) coords_copy->assign(coords, coords + _aligned_dim);
+        if (nbrs_copy) nbrs_copy->assign(nh + 1, nh + 1 + nh[0]);
     return true;
 }
 

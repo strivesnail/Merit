@@ -4,6 +4,7 @@
 #include "linux_aligned_file_reader.h"
 
 #include <cassert>
+#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -88,6 +89,8 @@ bool neighborcache_lat_wait(io_context_t ctx, struct iocb *cb, uint64_t n_ops, s
     while (done < n_ops)
     {
         const int64_t ret = io_getevents(ctx, 1, (int64_t)(n_ops - done), evts.data(), nullptr);
+        if (ret == -EINTR)
+            continue;
         if (ret <= 0)
             return false;
         const uint64_t t = neighborcache_lat_now_ns();
@@ -106,6 +109,23 @@ bool neighborcache_lat_wait(io_context_t ctx, struct iocb *cb, uint64_t n_ops, s
     (void)cb;
     neighborcache_lat_record(has8k ? kLatBatchWith8k : kLatBatchNo8k, t_last - t0);
     return true;
+}
+
+// A signal can interrupt a blocking wait before all submitted reads complete.
+// Keep the iocbs/buffers alive and reap the remainder; never resubmit completed IO.
+int64_t wait_for_events(io_context_t ctx, uint64_t n_ops, std::vector<io_event_t> &evts)
+{
+    uint64_t done = 0;
+    while (done < n_ops)
+    {
+        const int64_t ret = io_getevents(ctx, n_ops - done, n_ops - done, evts.data() + done, nullptr);
+        if (ret == -EINTR)
+            continue;
+        if (ret <= 0)
+            return ret;
+        done += static_cast<uint64_t>(ret);
+    }
+    return static_cast<int64_t>(done);
 }
 
 void execute_io(io_context_t ctx, int fd, std::vector<AlignedRead> &read_reqs, uint64_t n_retries = 0)
@@ -164,7 +184,7 @@ void execute_io(io_context_t ctx, int fd, std::vector<AlignedRead> &read_reqs, u
                 if (lat)
                     ret = neighborcache_lat_wait(ctx, cb.data(), n_ops, evts, t0) ? (int64_t)n_ops : -1;
                 else
-                    ret = io_getevents(ctx, (int64_t)n_ops, (int64_t)n_ops, evts.data(), nullptr);
+                    ret = wait_for_events(ctx, n_ops, evts);
                 // if requests didn't complete
                 if (ret != (int64_t)n_ops)
                 {
@@ -221,7 +241,7 @@ void execute_io_multi(io_context_t ctx, std::vector<FdAlignedRead> &read_reqs, u
             if (lat)
                 ret = neighborcache_lat_wait(ctx, cb.data(), n_ops, evts, t0) ? (int64_t)n_ops : -1;
             else
-                ret = io_getevents(ctx, (int64_t)n_ops, (int64_t)n_ops, evts.data(), nullptr);
+                ret = wait_for_events(ctx, n_ops, evts);
             if (ret != (int64_t)n_ops)
             {
                 std::cerr << "io_getevents(multi) failed; returned " << ret << ", expected=" << n_ops << std::endl;

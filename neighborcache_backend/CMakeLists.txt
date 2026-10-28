@@ -1,0 +1,102 @@
+cmake_minimum_required(VERSION 3.15)
+project(neighborcache_backend LANGUAGES CXX)
+set(CMAKE_CXX_STANDARD 17)
+find_package(OpenMP REQUIRED)
+set(REF ${CMAKE_CURRENT_SOURCE_DIR}/../diskann)
+add_library(neighborcache_backend SHARED src/backend.cpp
+    ${REF}/src/neighborcache_memory_pool.cpp ${REF}/src/neighborcache_metadata_cache.cpp
+    ${REF}/src/scratch.cpp ${REF}/src/distance.cpp ${REF}/src/ann_exception.cpp
+    ${REF}/src/logger.cpp ${REF}/src/utils.cpp ${REF}/src/pq.cpp
+    ${REF}/src/hotness_profiler.cpp ${REF}/src/relayout_utils.cpp
+    ${REF}/src/linux_aligned_file_reader.cpp ${REF}/src/aligned_file_reader.cpp)
+target_include_directories(neighborcache_backend PRIVATE ${REF}/include include)
+target_compile_definitions(neighborcache_backend PRIVATE diskann=nc_reference USE_AVX2 MKL_ILP64)
+target_compile_options(neighborcache_backend PRIVATE -O2 -mavx2 -mfma -ffunction-sections -fdata-sections -fvisibility=hidden)
+target_link_options(neighborcache_backend PRIVATE -Wl,--gc-sections -Wl,-Bsymbolic
+    -Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/exports.map -Wl,--no-undefined)
+target_link_libraries(neighborcache_backend PRIVATE OpenMP::OpenMP_CXX aio pthread atomic)
+
+include(CTest)
+if(BUILD_TESTING)
+    add_executable(nc_prefetch_expand_groups tests/prefetch_expand_groups.cpp)
+    target_include_directories(nc_prefetch_expand_groups PRIVATE include)
+    target_compile_options(nc_prefetch_expand_groups PRIVATE -UNDEBUG)
+    target_link_libraries(nc_prefetch_expand_groups PRIVATE dl pthread)
+    add_test(NAME prefetch_expand_groups COMMAND nc_prefetch_expand_groups)
+    set_tests_properties(prefetch_expand_groups PROPERTIES TIMEOUT 120
+        ENVIRONMENT "NEIGHBORCACHE_BACKEND_LIBRARY=$<TARGET_FILE:neighborcache_backend>")
+    add_executable(nc_prefetch_expand_concurrent tests/prefetch_expand_concurrent.cpp)
+    target_include_directories(nc_prefetch_expand_concurrent PRIVATE include)
+    target_compile_options(nc_prefetch_expand_concurrent PRIVATE -UNDEBUG)
+    target_link_libraries(nc_prefetch_expand_concurrent PRIVATE dl pthread)
+    add_test(NAME prefetch_expand_concurrent COMMAND nc_prefetch_expand_concurrent)
+    add_test(NAME prefetch_expand_groups_concurrent COMMAND nc_prefetch_expand_concurrent two)
+    set_tests_properties(prefetch_expand_groups_concurrent PROPERTIES TIMEOUT 120
+        ENVIRONMENT "NEIGHBORCACHE_BACKEND_LIBRARY=$<TARGET_FILE:neighborcache_backend>")
+    set_tests_properties(prefetch_expand_concurrent PROPERTIES TIMEOUT 120
+        ENVIRONMENT "NEIGHBORCACHE_BACKEND_LIBRARY=$<TARGET_FILE:neighborcache_backend>")
+    add_executable(nc_prefetch_expand tests/prefetch_expand.cpp)
+    target_include_directories(nc_prefetch_expand PRIVATE include)
+    target_compile_options(nc_prefetch_expand PRIVATE -UNDEBUG)
+    target_link_libraries(nc_prefetch_expand PRIVATE dl pthread)
+    add_test(NAME prefetch_expand COMMAND nc_prefetch_expand)
+    set_tests_properties(prefetch_expand PROPERTIES TIMEOUT 120
+        ENVIRONMENT "NEIGHBORCACHE_BACKEND_LIBRARY=$<TARGET_FILE:neighborcache_backend>")
+    add_executable(nc_hot_prefill_groups tests/hot_prefill_groups.cpp)
+    target_include_directories(nc_hot_prefill_groups PRIVATE include)
+    target_compile_options(nc_hot_prefill_groups PRIVATE -UNDEBUG)
+    target_link_libraries(nc_hot_prefill_groups PRIVATE dl pthread)
+    add_test(NAME hot_prefill_groups COMMAND nc_hot_prefill_groups)
+    set_tests_properties(hot_prefill_groups PROPERTIES TIMEOUT 120
+        ENVIRONMENT "NEIGHBORCACHE_BACKEND_LIBRARY=$<TARGET_FILE:neighborcache_backend>")
+    add_executable(nc_parent_candidate tests/parent_candidate.cpp)
+    target_include_directories(nc_parent_candidate PRIVATE ${REF}/include)
+    target_compile_definitions(nc_parent_candidate PRIVATE MKL_ILP64 USE_AVX2)
+    target_compile_options(nc_parent_candidate PRIVATE -UNDEBUG -mavx2)
+    add_test(NAME parent_candidate COMMAND nc_parent_candidate)
+    add_executable(nc_acquired_parent tests/acquired_parent.cpp)
+    target_include_directories(nc_acquired_parent PRIVATE include)
+    target_compile_options(nc_acquired_parent PRIVATE -UNDEBUG)
+    target_link_libraries(nc_acquired_parent PRIVATE dl pthread)
+    add_test(NAME acquired_parent COMMAND nc_acquired_parent)
+    add_test(NAME static_no_parent COMMAND nc_acquired_parent frozen)
+    set_tests_properties(acquired_parent static_no_parent PROPERTIES TIMEOUT 120
+        ENVIRONMENT "NEIGHBORCACHE_BACKEND_LIBRARY=$<TARGET_FILE:neighborcache_backend>")
+    add_executable(nc_trace tests/trace.cpp)
+    target_include_directories(nc_trace PRIVATE include)
+    target_compile_options(nc_trace PRIVATE -UNDEBUG)
+    target_link_libraries(nc_trace PRIVATE dl pthread)
+    foreach(layout IN ITEMS "260_2" "260_4" "772_4")
+        string(REPLACE "_" ";" args ${layout})
+        add_test(NAME trace_${layout} COMMAND nc_trace ${args})
+        set_tests_properties(trace_${layout} PROPERTIES TIMEOUT 120
+            ENVIRONMENT "NEIGHBORCACHE_BACKEND_LIBRARY=$<TARGET_FILE:neighborcache_backend>")
+    endforeach()
+    add_executable(nc_aio_interrupt tests/aio_interrupt.cpp
+        ${REF}/src/linux_aligned_file_reader.cpp ${REF}/src/aligned_file_reader.cpp
+        ${REF}/src/logger.cpp)
+    target_include_directories(nc_aio_interrupt PRIVATE ${REF}/include)
+    target_compile_definitions(nc_aio_interrupt PRIVATE MKL_ILP64 USE_AVX2)
+    target_compile_options(nc_aio_interrupt PRIVATE -mavx2)
+    target_link_libraries(nc_aio_interrupt PRIVATE aio pthread)
+    target_link_options(nc_aio_interrupt PRIVATE -Wl,--wrap=io_getevents)
+    add_test(NAME aio_interrupt COMMAND nc_aio_interrupt)
+    add_test(NAME aio_interrupt_profiled COMMAND nc_aio_interrupt)
+    set_tests_properties(aio_interrupt_profiled PROPERTIES ENVIRONMENT "NEIGHBORCACHE_IO_LAT_PROFILE=1")
+endif()
+
+if(BUILD_TESTING)
+    add_executable(nc_thread_private_prefetch tests/thread_private_prefetch.cpp)
+    target_include_directories(nc_thread_private_prefetch PRIVATE ${REF}/include)
+    target_compile_options(nc_thread_private_prefetch PRIVATE -UNDEBUG)
+    target_link_libraries(nc_thread_private_prefetch PRIVATE pthread)
+    add_test(NAME thread_private_prefetch COMMAND nc_thread_private_prefetch)
+endif()
+
+if(BUILD_TESTING)
+    add_test(NAME private_prefetch_expand COMMAND nc_prefetch_expand)
+    add_test(NAME private_prefetch_expand_concurrent COMMAND nc_prefetch_expand_concurrent)
+    add_test(NAME private_prefetch_groups_concurrent COMMAND nc_prefetch_expand_concurrent two)
+    set_tests_properties(private_prefetch_expand private_prefetch_expand_concurrent private_prefetch_groups_concurrent
+        PROPERTIES TIMEOUT 120 ENVIRONMENT "NEIGHBORCACHE_BACKEND_LIBRARY=$<TARGET_FILE:neighborcache_backend>;NEIGHBORCACHE_PREFETCH_THREAD_PRIVATE=1")
+endif()

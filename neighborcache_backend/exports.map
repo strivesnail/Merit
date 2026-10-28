@@ -1,0 +1,1 @@
+{ global: nc_backend_api; nc_prefetch_page_members; local: *; };

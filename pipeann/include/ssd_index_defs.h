@@ -18,6 +18,8 @@ struct IORequest {
   uint64_t offset;    // where to read from (page)
   uint64_t len;       // how much to read
   void *buf;          // where to read into
+  int fd = -1;        // >=0: read this fd; -1: the reader's index fd
+  int io_res = 0;     // bytes transferred once finished, or a negative errno
   uint32_t n_pending; // for SPDK internal use: one IORequest may be split.
   bool finished;      // for async IO
   uint64_t u_offset;  // where to read from (unaligned)

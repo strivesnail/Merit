@@ -1,0 +1,26 @@
+[
+  {
+    "engine": "starling",
+    "queries": 100,
+    "full_record_verification": true,
+    "exit_code": 0
+  },
+  {
+    "engine": "margo",
+    "queries": 100,
+    "full_record_verification": true,
+    "exit_code": 0
+  },
+  {
+    "engine": "pipeann",
+    "queries": 100,
+    "full_record_verification": true,
+    "exit_code": 0
+  },
+  {
+    "engine": "aisaq",
+    "queries": 100,
+    "full_record_verification": true,
+    "exit_code": 0
+  }
+]
