@@ -77,11 +77,10 @@ class NeighborCacheSharedPageCache
         const char *mode = std::getenv("NEIGHBORCACHE_PREFETCH_THREAD_PRIVATE");
         if (mode && std::strcmp(mode, "1") == 0) {
             const char *frozen = std::getenv("NEIGHBORCACHE_FREEZE_MAINTENANCE");
-            if (!frozen || std::strcmp(frozen, "1") != 0)
-                throw std::runtime_error("Thread-private prefetch currently requires immutable D: FREEZE_MAINTENANCE=1");
             const char *reset = std::getenv("NEIGHBORCACHE_PREFETCH_RESET_EACH_QUERY");
             _private = std::make_unique<NeighborCacheThreadPageCache>();
-            return _private->init(capacity_pages, query_threads, reset && std::strcmp(reset,"1")==0);
+            return _private->init(capacity_pages, query_threads, reset && std::strcmp(reset,"1")==0,
+                                  frozen && std::strcmp(frozen,"1")==0);
         }
         uint64_t nshards = 256;
         while (nshards > 1 && capacity_pages / nshards < 64)
@@ -134,6 +133,10 @@ class NeighborCacheSharedPageCache
     }
 
     bool thread_private() const { return bool(_private); }
+    void configure_private_dynamic(uint32_t base, uint64_t pages)
+    {
+        if (_private) _private->configure_dynamic(base, pages);
+    }
 
     uint64_t capacity_pages() const
     {
@@ -230,6 +233,7 @@ class NeighborCacheSharedPageCache
     {
         _evict = hook;
         _evict_ctx = ctx;
+        if (_private) _private->set_evict_hook(hook, ctx);
     }
 
     // overwrite rewrites a live page in place. Seed updates use it; a disk-read
@@ -239,9 +243,7 @@ class NeighborCacheSharedPageCache
              const std::atomic<uint64_t> *disk_dirty = nullptr)
     {
         if (_private) {
-            if (dirty || (disk_dirty && disk_dirty->load(std::memory_order_acquire)))
-                throw std::runtime_error("Thread-private prefetch does not support dirty online pages");
-            return _private->put(key,src,overwrite);
+            return _private->put(key,src,overwrite,dirty,disk_dirty);
         }
         Shard &sh = shard(key);
         std::lock_guard<SpinMutex> lk(sh.wmu);

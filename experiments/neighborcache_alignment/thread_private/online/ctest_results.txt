@@ -1,0 +1,47 @@
+Test project /mnt/nvme2/nc_private_dynamic_20261028/build
+      Start  1: prefetch_expand_groups
+ 1/21 Test  #1: prefetch_expand_groups ...............   Passed    0.02 sec
+      Start  2: prefetch_expand_concurrent
+ 2/21 Test  #2: prefetch_expand_concurrent ...........   Passed    0.14 sec
+      Start  3: prefetch_expand_groups_concurrent
+ 3/21 Test  #3: prefetch_expand_groups_concurrent ....   Passed    0.21 sec
+      Start  4: prefetch_expand
+ 4/21 Test  #4: prefetch_expand ......................   Passed    0.02 sec
+      Start  5: hot_prefill_groups
+ 5/21 Test  #5: hot_prefill_groups ...................   Passed    0.02 sec
+      Start  6: parent_candidate
+ 6/21 Test  #6: parent_candidate .....................   Passed    0.00 sec
+      Start  7: acquired_parent
+ 7/21 Test  #7: acquired_parent ......................   Passed    0.02 sec
+      Start  8: static_no_parent
+ 8/21 Test  #8: static_no_parent .....................   Passed    0.02 sec
+      Start  9: trace_260_2
+ 9/21 Test  #9: trace_260_2 ..........................   Passed    0.36 sec
+      Start 10: trace_260_4
+10/21 Test #10: trace_260_4 ..........................   Passed    0.33 sec
+      Start 11: trace_772_4
+11/21 Test #11: trace_772_4 ..........................   Passed    0.33 sec
+      Start 12: aio_interrupt
+12/21 Test #12: aio_interrupt ........................   Passed    0.03 sec
+      Start 13: aio_interrupt_profiled
+13/21 Test #13: aio_interrupt_profiled ...............   Passed    0.02 sec
+      Start 14: thread_private_prefetch
+14/21 Test #14: thread_private_prefetch ..............   Passed    0.00 sec
+      Start 15: private_prefetch_expand
+15/21 Test #15: private_prefetch_expand ..............   Passed    0.03 sec
+      Start 16: private_prefetch_expand_concurrent
+16/21 Test #16: private_prefetch_expand_concurrent ...   Passed    0.14 sec
+      Start 17: private_prefetch_groups_concurrent
+17/21 Test #17: private_prefetch_groups_concurrent ...   Passed    0.23 sec
+      Start 18: private_online_trace_260_2
+18/21 Test #18: private_online_trace_260_2 ...........   Passed    0.14 sec
+      Start 19: private_online_trace_260_4
+19/21 Test #19: private_online_trace_260_4 ...........   Passed    0.13 sec
+      Start 20: private_online_trace_772_4
+20/21 Test #20: private_online_trace_772_4 ...........   Passed    0.19 sec
+      Start 21: thread_private_dynamic
+21/21 Test #21: thread_private_dynamic ...............   Passed    0.04 sec
+
+100% tests passed, 0 tests failed out of 21
+
+Total Test time (real) =   2.44 sec

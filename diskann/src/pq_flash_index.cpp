@@ -5297,6 +5297,8 @@ void PQFlashIndex<T, LabelT>::enable_neighborcache_dynamic_3cache(bool enable, c
                 _neighborcache_prefetch_writeback[i].store(0, std::memory_order_relaxed);
             }
         }
+        _neighborcache_shared_cache.configure_private_dynamic(
+            static_cast<uint32_t>(NEIGHBORCACHE_DYN_SECTOR_BASE), _neighborcache_dyn_physical_cap);
         neighborcache_canon_reset();
         {
             std::lock_guard<std::mutex> rlock(_neighborcache_dyn_reclaim_mu);

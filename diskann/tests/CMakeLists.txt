@@ -9,6 +9,9 @@ if (NOT MSVC)
     target_link_libraries(prefetch_async_writeback ${PROJECT_NAME} ${DISKANN_ASYNC_LIB} ${DISKANN_TOOLS_TCMALLOC_LINK_OPTIONS})
     add_test(NAME prefetch_async_writeback COMMAND prefetch_async_writeback)
     set_tests_properties(prefetch_async_writeback PROPERTIES TIMEOUT 60)
+    add_test(NAME prefetch_async_writeback_private COMMAND prefetch_async_writeback)
+    set_tests_properties(prefetch_async_writeback_private PROPERTIES TIMEOUT 60
+        ENVIRONMENT "NEIGHBORCACHE_PREFETCH_THREAD_PRIVATE=1;NEIGHBORCACHE_FREEZE_MAINTENANCE=0")
 endif()
 
 find_package(Boost COMPONENTS unit_test_framework)

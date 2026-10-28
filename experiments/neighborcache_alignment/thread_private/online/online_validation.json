@@ -1,0 +1,74 @@
+[
+  {
+    "engine": "starling",
+    "full_record_verification": true,
+    "counters": {
+      "N": 132,
+      "prefetch": 98977,
+      "D_attempts": 419650,
+      "D_hits": 20595,
+      "D_reads": 24067,
+      "base_miss": 400330,
+      "seeds": 512,
+      "M": 2048,
+      "opens": 448,
+      "appends": 222,
+      "replaces": 283,
+      "writes": 460
+    }
+  },
+  {
+    "engine": "margo",
+    "full_record_verification": true,
+    "counters": {
+      "N": 167,
+      "prefetch": 107373,
+      "D_attempts": 408745,
+      "D_hits": 21309,
+      "D_reads": 24829,
+      "base_miss": 388569,
+      "seeds": 512,
+      "M": 2048,
+      "opens": 454,
+      "appends": 150,
+      "replaces": 240,
+      "writes": 466
+    }
+  },
+  {
+    "engine": "pipeann",
+    "full_record_verification": true,
+    "counters": {
+      "N": 12251,
+      "prefetch": 129940,
+      "D_attempts": 594990,
+      "D_hits": 31300,
+      "D_reads": 35993,
+      "base_miss": 564954,
+      "seeds": 512,
+      "M": 2048,
+      "opens": 465,
+      "appends": 30,
+      "replaces": 10,
+      "writes": 466
+    }
+  },
+  {
+    "engine": "aisaq",
+    "full_record_verification": true,
+    "counters": {
+      "N": 29977,
+      "prefetch": 61302,
+      "D_attempts": 322845,
+      "D_hits": 43432,
+      "D_reads": 52619,
+      "base_miss": 279702,
+      "seeds": 512,
+      "M": 2048,
+      "opens": 382,
+      "appends": 9,
+      "replaces": 289,
+      "writes": 590
+    }
+  }
+]

@@ -100,3 +100,21 @@ if(BUILD_TESTING)
     set_tests_properties(private_prefetch_expand private_prefetch_expand_concurrent private_prefetch_groups_concurrent
         PROPERTIES TIMEOUT 120 ENVIRONMENT "NEIGHBORCACHE_BACKEND_LIBRARY=$<TARGET_FILE:neighborcache_backend>;NEIGHBORCACHE_PREFETCH_THREAD_PRIVATE=1")
 endif()
+
+if(BUILD_TESTING)
+    foreach(layout IN ITEMS "260_2" "260_4" "772_4")
+        string(REPLACE "_" ";" args ${layout})
+        add_test(NAME private_online_trace_${layout} COMMAND nc_trace ${args})
+        set_tests_properties(private_online_trace_${layout} PROPERTIES TIMEOUT 120
+            ENVIRONMENT "NEIGHBORCACHE_BACKEND_LIBRARY=$<TARGET_FILE:neighborcache_backend>;NEIGHBORCACHE_PREFETCH_THREAD_PRIVATE=1;NEIGHBORCACHE_FREEZE_MAINTENANCE=0")
+    endforeach()
+endif()
+
+if(BUILD_TESTING)
+    add_executable(nc_thread_private_dynamic tests/thread_private_dynamic.cpp)
+    target_include_directories(nc_thread_private_dynamic PRIVATE ${REF}/include)
+    target_compile_options(nc_thread_private_dynamic PRIVATE -UNDEBUG)
+    target_link_libraries(nc_thread_private_dynamic PRIVATE pthread)
+    add_test(NAME thread_private_dynamic COMMAND nc_thread_private_dynamic)
+    set_tests_properties(thread_private_dynamic PROPERTIES TIMEOUT 30)
+endif()

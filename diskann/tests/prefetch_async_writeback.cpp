@@ -174,6 +174,57 @@ public:
         idx.stop_neighborcache_dyn_writer();
         for(unsigned p=0;p<128;++p){assert(idx._neighborcache_prefetch_writeback[p]==0);assert(idx._neighborcache_dyn_page_readers[p]==0);}
     }
+    static void run_private() {
+        std::shared_ptr<AlignedFileReader> reader;
+        Index idx(reader, Metric::L2);
+        char path[] = "/tmp/nc_async_writeback_XXXXXX";
+        int fd = mkstemp(path);assert(fd >= 0);unlink(path);
+        assert(ftruncate(fd, 128 * bytes) == 0);
+        idx._neighborcache_dyn_write_fd = fd;
+        idx._neighborcache_dyn_physical_cap = 128;
+        idx._neighborcache_prefetch_dirty.reset(new std::atomic<uint64_t>[128]);
+        idx._neighborcache_prefetch_writeback.reset(new std::atomic<uint32_t>[128]);
+        idx._neighborcache_dyn_page_readers.reset(new std::atomic<uint32_t>[128]);
+        idx._neighborcache_dyn_page_retired.reset(new std::atomic<uint8_t>[128]);
+        for (unsigned p=0;p<128;++p) {
+            idx._neighborcache_prefetch_dirty[p]=0;idx._neighborcache_prefetch_writeback[p]=0;
+            idx._neighborcache_dyn_page_readers[p]=0;idx._neighborcache_dyn_page_retired[p]=0;
+        }
+        auto &cache=idx._neighborcache_shared_cache;
+        assert(cache.init(2,1));
+        cache.configure_private_dynamic(Index::NEIGHBORCACHE_DYN_SECTOR_BASE,128);
+        cache.set_evict_hook(&Index::neighborcache_prefetch_evict_hook,&idx);
+        NeighborCacheSharedPageCache::ReadSection query(cache);
+        idx._neighborcache_dyn_write_q_cap=1;
+        idx._neighborcache_dyn_writer_thread_count=4;
+        idx._neighborcache_dyn_writer_started=true;
+        idx._neighborcache_dyn_writer_stop=false;
+        auto put=[&](unsigned p,char value) {
+            std::array<char,bytes> data;data.fill(value);
+            assert(cache.put(Index::NEIGHBORCACHE_DYN_SECTOR_BASE+p,data.data(),true,&idx._neighborcache_prefetch_dirty[p]));
+        };
+        auto readable=[&](unsigned p){return idx.neighborcache_dyn_disk_readable(Index::NEIGHBORCACHE_DYN_SECTOR_BASE+p);};
+        auto clear=[&](){for(unsigned p=0;p<128;p++)cache.erase(Index::NEIGHBORCACHE_DYN_SECTOR_BASE+p);};
+        auto start=[&](){idx._neighborcache_dyn_writer_started=false;idx.start_neighborcache_dyn_writer();};
+        auto disk=[&](unsigned p,char expected){std::array<char,bytes> data{};assert(pread(fd,data.data(),bytes,p*bytes)==ssize_t(bytes));for(char v:data)assert(v==expected);};
+        put(1,'A');put(2,'B');put(3,'C'); // A detached, worker is deliberately stopped
+        assert(idx._neighborcache_prefetch_writeback[1]==1 && !readable(1));
+        assert(!cache.contains_range(Index::NEIGHBORCACHE_DYN_SECTOR_BASE+1,1));
+        put(4,'D');assert(idx._neighborcache_writeback_queue_drops==1 && !readable(2));
+        start();idx.stop_neighborcache_dyn_writer();disk(1,'A');assert(readable(1));
+        // Repeated writes to a sector have distinct versions and ordered tasks.
+        clear();idx._neighborcache_dyn_write_q_cap=8;
+        idx._neighborcache_dyn_writer_started=true;idx._neighborcache_dyn_writer_stop=false;
+        put(1,'X');put(2,'B');put(3,'C');put(1,'Z');put(4,'D');put(5,'E');
+        assert(idx._neighborcache_prefetch_writeback[1]==2 && !readable(1));
+        start();idx.stop_neighborcache_dyn_writer();disk(1,'Z');assert(readable(1));
+        // Failed disk writes do not restore the evicted prefetch entry.
+        clear();idx._neighborcache_dyn_write_fd=-1;
+        idx._neighborcache_dyn_writer_started=true;idx._neighborcache_dyn_writer_stop=false;
+        put(6,'F');put(7,'G');put(8,'H');
+        start();idx.stop_neighborcache_dyn_writer();assert(!readable(6));disk(6,0);
+        idx._neighborcache_dyn_write_fd=fd;
+    }
 };
 }
-int main(){diskann::NeighborCacheAdapter::run();std::cout<<"prefetch async writeback tests passed\n";}
+int main(){if(std::getenv("NEIGHBORCACHE_PREFETCH_THREAD_PRIVATE"))diskann::NeighborCacheAdapter::run_private();else diskann::NeighborCacheAdapter::run();std::cout<<"prefetch async writeback tests passed\n";}

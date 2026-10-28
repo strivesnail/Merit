@@ -7,7 +7,7 @@ using Cache=diskann::NeighborCacheSharedPageCache;
 int main(){
  setenv("NEIGHBORCACHE_PREFETCH_THREAD_PRIVATE","1",1);unsetenv("NEIGHBORCACHE_PREFETCH_RESET_EACH_QUERY");
  unsetenv("NEIGHBORCACHE_FREEZE_MAINTENANCE");
- {Cache c;bool rejected=false;try{c.init(4,2);}catch(const std::runtime_error&){rejected=true;}assert(rejected);}
+ {Cache c;assert(c.init(4,2));}
  setenv("NEIGHBORCACHE_FREEZE_MAINTENANCE","1",1);
  {
   Cache c;assert(c.init(4,2));assert(c.thread_private()&&c.capacity_pages()==4);

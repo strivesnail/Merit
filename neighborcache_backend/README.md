@@ -216,68 +216,77 @@ protection; validation/copying of dynamic page membership; maintenance reads
 prefer the resident dirty page over an older disk copy; AIO completion waits
 retry EINTR and accumulate partial completions without resubmitting reads.
 
-Dynamic prefetch dirty-page eviction uses asynchronous writeback. The LRU
-victim stays resident and readable while a bounded writer job owns an aligned
-snapshot. A full queue or an unfinished write refuses the new admission, with
-no disk wait under the prefetch shard lock. Completion clears the dirty version
-only if no newer update occurred; at most one writeback per physical page is
-in flight. Failed writes leave the page dirty and readable for retry. Pending
-writes pin physical pages against reuse. Explicit invalidation drains a pending
-write outside the shard lock before discarding the page; ordinary LRU eviction
-does not wait. Shutdown drains submitted jobs, not every never-evicted dirty page
-(this is an ephemeral cache, not a persistence API).
+Dynamic prefetch dirty-page eviction detaches an owned snapshot to the bounded
+asynchronous writer and immediately removes the resident victim. Query admission
+never waits for disk completion or queue space. Queue overload drops the cache
+write and leaves D unreadable; demands fall back to the immutable base index.
+Submitted jobs pin physical sectors until completion. Writes to the same sector
+are ordered by the writer workers, and an older completion cannot clear a newer
+dirty version. Explicit invalidation does not wait for IO; physical reuse is
+deferred until the outstanding pins are released. Shutdown drains submitted
+jobs, not never-evicted dirty pages (this is an ephemeral cache, not a persistence API).
 
-The native DiskANN `prefetch_async_writeback` test (`UNIT_TEST=ON`) exercises
-the real writer with a deliberately paused consumer, a full queue, updates during
-writeback, injected write failure/retry, sector invalidation/reuse, shutdown drain,
-and four concurrent producers. The backend codec/eviction tests exercise the
-same implementation through the shared ABI.
+The native `prefetch_async_writeback` test exercises the actual writer with a
+paused consumer, queue overflow, multiple versions, failed IO and sector reuse.
+Set `NEIGHBORCACHE_PREFETCH_THREAD_PRIVATE=1` and
+`NEIGHBORCACHE_FREEZE_MAINTENANCE=0` to exercise its private-cache branch.
 
-## Thread-private immutable prefetch (2026-10-28)
+## Thread-private prefetch: static and online (2026-10-28)
 
-The native DiskANN/NeighborCache path and all four adapters now accept:
+Native DiskANN/NeighborCache and PipeANN, AiSAQ, Starling and MARGO accept:
 
 ```sh
-export NEIGHBORCACHE_FREEZE_MAINTENANCE=1
 export NEIGHBORCACHE_PREFETCH_THREAD_PRIVATE=1
 export NEIGHBORCACHE_PREFETCH_RESET_EACH_QUERY=0
 export NEIGHBORCACHE_THREADS=20
 export NEIGHBORCACHE_SHARED_PAGE_CACHE_PAGES=2560
+# Set to 1 for fixed D, or 0 for online N/M/D maintenance:
+export NEIGHBORCACHE_FREEZE_MAINTENANCE=0
 ```
 
-`SHARED_PAGE_CACHE_PAGES` remains the **total resident page budget**, even in
-private mode. The example gives 20 workers 128 pages (512 KiB) each. Remainders
-are assigned to the first registered workers, preserving the exact total.
-The native path obtains its worker count from the loaded index; adapters use
-`NCConfig.threads`, normally set by `NEIGHBORCACHE_THREADS`.
+The page setting is the total resident payload budget, divided exactly among
+query workers: here 128 pages / 512 KiB each. The native path uses the index's
+query thread count; adapters use NCConfig.threads. Each worker owns preallocated
+page slots, a fixed-size hash table and an LRU. Resident-page insertion/eviction
+reuses those structures without allocating page objects or hash/list nodes.
+Pages persist across queries by default. RESET_EACH_QUERY=1 evicts only the
+calling worker's cache at its next outermost ReadSection, asynchronously handing
+off dirty snapshots first. Query objects may be pooled; ownership follows the
+calling worker, not the query object or a hash of the page ID.
 
-Each calling worker owns one LRU and page directory. Hot accesses take no shared
-cache lock. Pages survive query boundaries by default. Set
-`NEIGHBORCACHE_PREFETCH_RESET_EACH_QUERY=1` to clear only the calling worker's
-prefetch at the outermost query ReadSection. N remains governed by its existing
-policy; the immutable D file and routing index remain shared. Query objects may
-be pooled, but cache ownership follows the actual calling worker, not the query
-object or a hash of the page ID.
+N/M policy, D data and D routing metadata remain shared. In online mode a shared
+64-bit generation per physical D sector invalidates old private copies on page
+publication or sector reuse. Hits copy only thread-owned bytes and check that
+generation. Short striped metadata mutexes serialize D publication, invalidation
+and dirty-eviction handoff; they do not protect a shared prefetch LRU and never
+wait for disk IO. Existing N/M and D-routing locks remain. This is not a claim
+that the whole engine is lock-free.
 
-This option currently requires **static, immutable D pages**. Missing
-`FREEZE_MAINTENANCE=1`, dirty admission, or an attempt to overwrite a resident
-page with changed bytes fails explicitly. Independent copies of changing pages
-would otherwise require a coherence protocol; online maintenance keeps the
-existing shared implementation. Native search, candidate ranking, graph
-expansion and distance computations are not changed by this option. Conditional
-prefetch-page expansion in Starling/MARGO can still yield different search
-outputs when cache residency changes; measure recall, not only QPS.
+Only the current dirty replica may enqueue writeback; stale private copies are
+silently discarded. Dirty or pending D images cannot be admitted by disk readback.
+Core query/writer pins still prevent physical reuse while reads or writes are in
+flight. Background maintenance has no query-worker cache: a dirty snapshot from
+that context goes directly to the existing asynchronous writer; clean maintenance
+invalidates replicas without inserting into a query cache. Query caches do not
+steal capacity from each other. Other workers miss until the latest D image is
+readable; they never read another worker's resident prefetch payload.
 
-`get_ptr` pins a page until the current query ReadSection ends, including when
-that page is evicted. Pinned scratch and metadata are outside the resident
-payload budget. This is an equal resident-capacity comparison, not an equal RSS
-claim. The worker pool must be stable over a cache instance's lifetime; registering
-more calling threads than configured fails rather than sharing one private LRU.
-No ABI change is needed: replace the backend library and pass the environment
-flags to PipeANN, AiSAQ, Starling or MARGO. The private-cache header is compiled
-into the backend; it does not need to be copied into the host repositories.
+The pointer API returns a query-lifetime snapshot from reusable scratch so LRU
+slot reuse cannot invalidate a returned pointer. Scratch, generation metadata,
+lookup/LRU metadata and writer tasks are outside the resident payload budget;
+this is not an equal-RSS claim. Query workers must form a stable pool. More query
+workers than configured are rejected; background invalidation does not register
+a query worker. Static mode allocates no dynamic generation array.
 
-Tests cover worker isolation, local reset, pointer lifetime after eviction,
-replicated member pages, multi-page expansion, unchanged shared behavior and
-rejection of mutable configurations. Integration runs and single-pass QPS/recall
-comparisons are in `experiments/neighborcache_alignment/thread_private/`.
+No ABI change is needed: rebuild/replace the backend and pass the environment
+flags to the integrated hosts. The private-cache header is compiled into the
+backend. Native DiskANN must be rebuilt. Conditional Starling/MARGO prefetch-page
+expansion can still change search work with residency; record equality alone
+is not a guarantee of identical ANN outputs or recall.
+
+Tests cover private isolation, fixed-slot LRU churn, snapshot lifetime, query
+reset, stale replicas, cross-worker invalidation, background publication, async
+writeback and three record layouts under concurrent online updates. Historical
+static QPS/recall comparisons remain under
+`experiments/neighborcache_alignment/thread_private/`; their numbers do not
+measure this subsequent online/reusable-slot implementation.

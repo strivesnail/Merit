@@ -1,0 +1,20 @@
+{
+  "backend_ctests_passed": 21,
+  "backend_ctests_total": 21,
+  "native_shared_writer_test": "passed",
+  "native_private_writer_test": "passed",
+  "address_undefined_sanitizers": "passed",
+  "static_adapters_verified": [
+    "starling",
+    "margo",
+    "pipeann",
+    "aisaq"
+  ],
+  "dynamic_adapters_verified": [
+    "starling",
+    "margo",
+    "pipeann",
+    "aisaq"
+  ],
+  "performance_measured": false
+}
