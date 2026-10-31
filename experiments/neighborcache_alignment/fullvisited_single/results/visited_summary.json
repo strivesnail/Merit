@@ -1,0 +1,11 @@
+{
+  "queries": 20000,
+  "full_vector_node_accesses": 2907400,
+  "unique_visited_nodes": 1338445,
+  "d_pages": 1338445,
+  "d_bytes": 5482270720,
+  "d_mib": 5228.30078125,
+  "input_sha256": "a43bcf7c7c8f9e81c77622833c8c9f6fe59ca67e27dd711f368eb38a0ec8cf23",
+  "ids_and_distances_equal_reference": true,
+  "scope": "Same-workload offline oracle; PQ-only candidates excluded; sorted unique actual full-record-expanded target IDs"
+}

@@ -1,0 +1,18 @@
+{
+  "threads": 1,
+  "prefetch_mib": 10,
+  "m_entries": 131072,
+  "d_ssd_mib": 256,
+  "stash_capacity_nodes": 424742,
+  "n_start": 1024,
+  "n_step": "double",
+  "warmup_queries": 20000,
+  "measured_queries": 20000,
+  "no_offline_prefill": true,
+  "screening_repeats": 1,
+  "selected_and_match_repeats": 2,
+  "plateau_rule": "After at least 4 N levels, first of latest 3 points whose next 2 doublings improve neither P/all-accesses nor P/N-misses by more than 0.5 percentage points.",
+  "match_rule": "First tested N-only mean QPS >= selected NMD mean; refine bracket up to 3 times. Observed finite-workload crossing, not a proof of global minimal memory.",
+  "memory": "RSS after_search minus RSS after_load; includes all additional resident allocations, excludes common PQ/index and SSD D payload",
+  "nonly_search_revision": "After NMD selection, bracket starting at 65,536 nodes; double if needed, then 3 single-run bisections and two-run boundary confirmation. Chosen before observing any cached N-only result to avoid unnecessary tiny-capacity runs."
+}

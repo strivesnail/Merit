@@ -1,0 +1,36 @@
+{
+  "name": "smoke",
+  "qps": 572.81,
+  "first_pass_qps": 572.81,
+  "queries": 1000,
+  "passes": 1,
+  "counts": {
+    "n_beam_lookups": 145283,
+    "n_mem_hits": 4512,
+    "n_neighborcache_prefetch_hits": 86553,
+    "n_disk_reads": 54218,
+    "n_base_pages": 0,
+    "n_disk_cache_pages": 54218,
+    "n_neighborcache_dyn_disk_reads": 54218,
+    "n_neighborcache_dcache_demand_probes": 54218,
+    "n_neighborcache_dcache_demand_hits": 54218
+  },
+  "n_hit_pct": 3.1056627409951614,
+  "p_hit_pct": 59.5754492955129,
+  "p_after_n_miss_pct": 61.48496494306356,
+  "d_lookup_hit_pct": 100.0,
+  "d_coverage_including_prefetch_after_n_miss_pct": 100.0,
+  "d_reads_per_query": 54.218,
+  "base_reads_per_query": 0.0,
+  "extra_rss_mib": 19.5859375,
+  "rss_kib": {
+    "after_load": 3933316,
+    "after_ncache": 3934648,
+    "after_static_dcache": 3934656,
+    "after_dyn_init": 3934656,
+    "after_fullvisited_init": 3940128,
+    "after_search": 3953372
+  },
+  "ids_and_distances_equal_reference": true,
+  "elapsed_seconds": 4.2843355243094265
+}

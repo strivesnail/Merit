@@ -1,0 +1,42 @@
+{
+  "method": "sync + per-file POSIX_FADV_DONTNEED + mincore verification; not global drop_caches or device cache reset",
+  "seconds": 1.2493560314178467,
+  "files": [
+    {
+      "path": "/mnt/nvme2/nc_real_shadow_sampling_20261031/A_first20k.u8bin",
+      "bytes": 2560008,
+      "before_pages": 626,
+      "after_pages": 0
+    },
+    {
+      "path": "/mnt/nvme_single/sift100m/sift100m_index_disk.index",
+      "bytes": 40960004096,
+      "before_pages": 4,
+      "after_pages": 0
+    },
+    {
+      "path": "/mnt/nvme_single/sift100m/sift100m_index_pq_compressed.bin",
+      "bytes": 4000000008,
+      "before_pages": 976563,
+      "after_pages": 0
+    },
+    {
+      "path": "/mnt/nvme_single/sift100m/sift100m_index_pq_pivots.bin",
+      "bytes": 135868,
+      "before_pages": 34,
+      "after_pages": 0
+    },
+    {
+      "path": "/mnt/nvme_single/sift100m/sift100m_index_sample_data.bin",
+      "bytes": 12818056,
+      "before_pages": 0,
+      "after_pages": 0
+    },
+    {
+      "path": "/mnt/nvme_single/sift100m/sift100m_index_sample_ids.bin",
+      "bytes": 400572,
+      "before_pages": 0,
+      "after_pages": 0
+    }
+  ]
+}

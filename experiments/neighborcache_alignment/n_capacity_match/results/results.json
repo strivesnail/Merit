@@ -1,0 +1,376 @@
+[
+  {
+    "mode": "nmd",
+    "nodes": 1024,
+    "rep": 0,
+    "qps": 350.0,
+    "cold_first_pass_qps": 320.29,
+    "counts": {
+      "n_beam_lookups": 2907400,
+      "n_mem_hits": 26457,
+      "n_neighborcache_prefetch_hits": 1005116,
+      "n_disk_reads": 1855719,
+      "n_neighborcache_dyn_disk_reads": 244511,
+      "n_neighborcache_dcache_demand_probes": 1854888,
+      "n_neighborcache_dcache_demand_hits": 244976
+    },
+    "n_hit_pct": 0.9099883057026897,
+    "p_hit_pct": 34.57095686867992,
+    "p_after_n_miss_pct": 34.8884375706149,
+    "disk_reads_per_query": 92.78595,
+    "d_reads_per_query": 12.22555,
+    "extra_rss_mib": 323.17578125,
+    "rss_kib": {
+      "after_load": 3935680,
+      "after_ncache": 3936788,
+      "after_static_dcache": 3936796,
+      "after_dyn_init": 3962364,
+      "after_search": 4266612
+    },
+    "ids_and_distances_equal": {
+      "idx_uint32.bin": true,
+      "dists_float.bin": true
+    },
+    "elapsed_seconds": 122.05017328821123
+  },
+  {
+    "mode": "nmd",
+    "nodes": 2048,
+    "rep": 0,
+    "qps": 352.0,
+    "cold_first_pass_qps": 322.17,
+    "counts": {
+      "n_beam_lookups": 2907400,
+      "n_mem_hits": 32244,
+      "n_neighborcache_prefetch_hits": 1003675,
+      "n_disk_reads": 1851434,
+      "n_neighborcache_dyn_disk_reads": 244654,
+      "n_neighborcache_dcache_demand_probes": 1850626,
+      "n_neighborcache_dcache_demand_hits": 245025
+    },
+    "n_hit_pct": 1.1090321249226112,
+    "p_hit_pct": 34.52139368507945,
+    "p_after_n_miss_pct": 34.90854061483968,
+    "disk_reads_per_query": 92.5717,
+    "d_reads_per_query": 12.2327,
+    "extra_rss_mib": 326.54296875,
+    "rss_kib": {
+      "after_load": 3933456,
+      "after_ncache": 3934984,
+      "after_static_dcache": 3934992,
+      "after_dyn_init": 3960624,
+      "after_search": 4267836
+    },
+    "ids_and_distances_equal": {
+      "idx_uint32.bin": true,
+      "dists_float.bin": true
+    },
+    "elapsed_seconds": 121.34842087514699
+  },
+  {
+    "mode": "nmd",
+    "nodes": 2048,
+    "rep": 1,
+    "qps": 352.0,
+    "cold_first_pass_qps": 321.08,
+    "counts": {
+      "n_beam_lookups": 2907400,
+      "n_mem_hits": 32138,
+      "n_neighborcache_prefetch_hits": 1004337,
+      "n_disk_reads": 1851006,
+      "n_neighborcache_dyn_disk_reads": 244467,
+      "n_neighborcache_dcache_demand_probes": 1850097,
+      "n_neighborcache_dcache_demand_hits": 244813
+    },
+    "n_hit_pct": 1.1053862557611611,
+    "p_hit_pct": 34.54416316984247,
+    "p_after_n_miss_pct": 34.93027765817515,
+    "disk_reads_per_query": 92.5503,
+    "d_reads_per_query": 12.22335,
+    "extra_rss_mib": 324.6015625,
+    "rss_kib": {
+      "after_load": 3935244,
+      "after_ncache": 3936900,
+      "after_static_dcache": 3936908,
+      "after_dyn_init": 3962476,
+      "after_search": 4267636
+    },
+    "ids_and_distances_equal": {
+      "idx_uint32.bin": true,
+      "dists_float.bin": true
+    },
+    "elapsed_seconds": 121.54859954118729
+  },
+  {
+    "mode": "nmd",
+    "nodes": 4096,
+    "rep": 0,
+    "qps": 352.0,
+    "cold_first_pass_qps": 320.93,
+    "counts": {
+      "n_beam_lookups": 2907400,
+      "n_mem_hits": 50736,
+      "n_neighborcache_prefetch_hits": 990171,
+      "n_disk_reads": 1846124,
+      "n_neighborcache_dyn_disk_reads": 244405,
+      "n_neighborcache_dcache_demand_probes": 1845478,
+      "n_neighborcache_dcache_demand_hits": 244626
+    },
+    "n_hit_pct": 1.7450643186352066,
+    "p_hit_pct": 34.056923711907544,
+    "p_after_n_miss_pct": 34.66179431672748,
+    "disk_reads_per_query": 92.3062,
+    "d_reads_per_query": 12.22025,
+    "extra_rss_mib": 325.625,
+    "rss_kib": {
+      "after_load": 3935448,
+      "after_ncache": 3937948,
+      "after_static_dcache": 3937956,
+      "after_dyn_init": 3963460,
+      "after_search": 4268888
+    },
+    "ids_and_distances_equal": {
+      "idx_uint32.bin": true,
+      "dists_float.bin": true
+    },
+    "elapsed_seconds": 121.64752456219867
+  },
+  {
+    "mode": "nmd",
+    "nodes": 4096,
+    "rep": 1,
+    "qps": 352.0,
+    "cold_first_pass_qps": 316.06,
+    "counts": {
+      "n_beam_lookups": 2907400,
+      "n_mem_hits": 50721,
+      "n_neighborcache_prefetch_hits": 990020,
+      "n_disk_reads": 1846328,
+      "n_neighborcache_dyn_disk_reads": 244307,
+      "n_neighborcache_dcache_demand_probes": 1845522,
+      "n_neighborcache_dcache_demand_hits": 244659
+    },
+    "n_hit_pct": 1.7445483937538695,
+    "p_hit_pct": 34.05173006810208,
+    "p_after_n_miss_pct": 34.656326454599906,
+    "disk_reads_per_query": 92.3164,
+    "d_reads_per_query": 12.21535,
+    "extra_rss_mib": 325.68359375,
+    "rss_kib": {
+      "after_load": 3935568,
+      "after_ncache": 3937936,
+      "after_static_dcache": 3937944,
+      "after_dyn_init": 3963792,
+      "after_search": 4269068
+    },
+    "ids_and_distances_equal": {
+      "idx_uint32.bin": true,
+      "dists_float.bin": true
+    },
+    "elapsed_seconds": 122.54729402810335
+  },
+  {
+    "mode": "nmd",
+    "nodes": 8192,
+    "rep": 0,
+    "qps": 354.0,
+    "cold_first_pass_qps": 321.54,
+    "counts": {
+      "n_beam_lookups": 2907400,
+      "n_mem_hits": 92180,
+      "n_neighborcache_prefetch_hits": 957592,
+      "n_disk_reads": 1837552,
+      "n_neighborcache_dyn_disk_reads": 244745,
+      "n_neighborcache_dcache_demand_probes": 1836965,
+      "n_neighborcache_dcache_demand_hits": 245050
+    },
+    "n_hit_pct": 3.170530370778015,
+    "p_hit_pct": 32.93636926463507,
+    "p_after_n_miss_pct": 34.014819445727156,
+    "disk_reads_per_query": 91.8776,
+    "d_reads_per_query": 12.23725,
+    "extra_rss_mib": 329.6328125,
+    "rss_kib": {
+      "after_load": 3933224,
+      "after_ncache": 3938728,
+      "after_static_dcache": 3938736,
+      "after_dyn_init": 3963268,
+      "after_search": 4270768
+    },
+    "ids_and_distances_equal": {
+      "idx_uint32.bin": true,
+      "dists_float.bin": true
+    },
+    "elapsed_seconds": 121.10232979990542
+  },
+  {
+    "mode": "nmd",
+    "nodes": 8192,
+    "rep": 1,
+    "qps": 354.0,
+    "cold_first_pass_qps": 321.94,
+    "counts": {
+      "n_beam_lookups": 2907400,
+      "n_mem_hits": 91477,
+      "n_neighborcache_prefetch_hits": 958267,
+      "n_disk_reads": 1837663,
+      "n_neighborcache_dyn_disk_reads": 244648,
+      "n_neighborcache_dcache_demand_probes": 1836757,
+      "n_neighborcache_dcache_demand_hits": 245057
+    },
+    "n_hit_pct": 3.146350691339341,
+    "p_hit_pct": 32.959585884295244,
+    "p_after_n_miss_pct": 34.03029841369952,
+    "disk_reads_per_query": 91.88315,
+    "d_reads_per_query": 12.2324,
+    "extra_rss_mib": 327.5078125,
+    "rss_kib": {
+      "after_load": 3935592,
+      "after_ncache": 3940908,
+      "after_static_dcache": 3940916,
+      "after_dyn_init": 3965448,
+      "after_search": 4270960
+    },
+    "ids_and_distances_equal": {
+      "idx_uint32.bin": true,
+      "dists_float.bin": true
+    },
+    "elapsed_seconds": 121.09763502888381
+  },
+  {
+    "mode": "nonly",
+    "nodes": 0,
+    "rep": 0,
+    "qps": 308.69,
+    "cold_first_pass_qps": 308.25,
+    "counts": {
+      "n_beam_lookups": 2907400,
+      "n_mem_hits": 0,
+      "n_neighborcache_prefetch_hits": 0,
+      "n_disk_reads": 2907400,
+      "n_neighborcache_dyn_disk_reads": 0,
+      "n_neighborcache_dcache_demand_probes": 0,
+      "n_neighborcache_dcache_demand_hits": 0
+    },
+    "n_hit_pct": 0.0,
+    "p_hit_pct": 0.0,
+    "p_after_n_miss_pct": 0.0,
+    "disk_reads_per_query": 145.37,
+    "d_reads_per_query": 0.0,
+    "extra_rss_mib": 14.8671875,
+    "rss_kib": {
+      "after_load": 3935584,
+      "after_ncache": 3935660,
+      "after_static_dcache": 3935660,
+      "after_dyn_init": 3935660,
+      "after_search": 3950808
+    },
+    "ids_and_distances_equal": {
+      "idx_uint32.bin": true,
+      "dists_float.bin": true
+    },
+    "elapsed_seconds": 132.01637469418347
+  },
+  {
+    "mode": "nonly",
+    "nodes": 32768,
+    "rep": 0,
+    "qps": 341.78,
+    "cold_first_pass_qps": 341.03,
+    "counts": {
+      "n_beam_lookups": 2907400,
+      "n_mem_hits": 398369,
+      "n_neighborcache_prefetch_hits": 0,
+      "n_disk_reads": 2509031,
+      "n_neighborcache_dyn_disk_reads": 0,
+      "n_neighborcache_dcache_demand_probes": 0,
+      "n_neighborcache_dcache_demand_hits": 0
+    },
+    "n_hit_pct": 13.701898603563322,
+    "p_hit_pct": 0.0,
+    "p_after_n_miss_pct": 0.0,
+    "disk_reads_per_query": 125.45155,
+    "d_reads_per_query": 0.0,
+    "extra_rss_mib": 29.15234375,
+    "rss_kib": {
+      "after_load": 3935640,
+      "after_ncache": 3949540,
+      "after_static_dcache": 3949548,
+      "after_dyn_init": 3949548,
+      "after_search": 3965492
+    },
+    "ids_and_distances_equal": {
+      "idx_uint32.bin": true,
+      "dists_float.bin": true
+    },
+    "elapsed_seconds": 119.54525467893109
+  },
+  {
+    "mode": "nonly",
+    "nodes": 49152,
+    "rep": 0,
+    "qps": 348.96,
+    "cold_first_pass_qps": 348.5,
+    "counts": {
+      "n_beam_lookups": 2907400,
+      "n_mem_hits": 472077,
+      "n_neighborcache_prefetch_hits": 0,
+      "n_disk_reads": 2435323,
+      "n_neighborcache_dyn_disk_reads": 0,
+      "n_neighborcache_dcache_demand_probes": 0,
+      "n_neighborcache_dcache_demand_hits": 0
+    },
+    "n_hit_pct": 16.237084680470524,
+    "p_hit_pct": 0.0,
+    "p_after_n_miss_pct": 0.0,
+    "disk_reads_per_query": 121.76615,
+    "d_reads_per_query": 0.0,
+    "extra_rss_mib": 36.97265625,
+    "rss_kib": {
+      "after_load": 3935588,
+      "after_ncache": 3955956,
+      "after_static_dcache": 3955964,
+      "after_dyn_init": 3955964,
+      "after_search": 3973448
+    },
+    "ids_and_distances_equal": {
+      "idx_uint32.bin": true,
+      "dists_float.bin": true
+    },
+    "elapsed_seconds": 117.09036778006703
+  },
+  {
+    "mode": "nonly",
+    "nodes": 65536,
+    "rep": 0,
+    "qps": 356.41,
+    "cold_first_pass_qps": 355.77,
+    "counts": {
+      "n_beam_lookups": 2907400,
+      "n_mem_hits": 532130,
+      "n_neighborcache_prefetch_hits": 0,
+      "n_disk_reads": 2375270,
+      "n_neighborcache_dyn_disk_reads": 0,
+      "n_neighborcache_dcache_demand_probes": 0,
+      "n_neighborcache_dcache_demand_hits": 0
+    },
+    "n_hit_pct": 18.302607140400358,
+    "p_hit_pct": 0.0,
+    "p_after_n_miss_pct": 0.0,
+    "disk_reads_per_query": 118.7635,
+    "d_reads_per_query": 0.0,
+    "extra_rss_mib": 44.7578125,
+    "rss_kib": {
+      "after_load": 3935524,
+      "after_ncache": 3962656,
+      "after_static_dcache": 3962656,
+      "after_dyn_init": 3962656,
+      "after_search": 3981356
+    },
+    "ids_and_distances_equal": {
+      "idx_uint32.bin": true,
+      "dists_float.bin": true
+    },
+    "elapsed_seconds": 114.74033522093669
+  }
+]

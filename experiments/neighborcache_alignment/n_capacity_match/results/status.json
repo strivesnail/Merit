@@ -1,0 +1,6 @@
+{
+  "online_nmd_sweep": "complete, selected N=2048; two confirmation runs at N=2048,4096,8192",
+  "online_target_nonly": "352 QPS target bracketed by 49152 and 65536 nodes; interrupted before further refinement on user redirect",
+  "prefetch_reduction": "completed 10,5,2,1 MiB; 0.5 MiB stopped on user redirect to full visited static D",
+  "new_full_d_target": "complete; see ../fullvisited_single/results"
+}

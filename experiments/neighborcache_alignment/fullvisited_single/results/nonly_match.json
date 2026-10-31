@@ -1,0 +1,31 @@
+{
+  "target_qps": 585.0550000000001,
+  "full_d_extra_rss_mib": 17.54296875,
+  "nonly_match": {
+    "mode": "nonly",
+    "nodes": 917504,
+    "runs": 2,
+    "qps_runs": [
+      612.27,
+      612.43
+    ],
+    "extra_rss_runs": [
+      405.28125,
+      405.22265625
+    ],
+    "qps": 612.3499999999999,
+    "extra_rss_mib": 405.251953125,
+    "n_hit_pct": 60.0668982596134,
+    "p_hit_pct": 0.0,
+    "p_after_n_miss_pct": 0.0,
+    "disk_reads_per_query": 58.05075,
+    "d_reads_per_query": 0.0
+  },
+  "nonly_extra_rss_mib": 390.384765625,
+  "n_only_over_full_d_ram": 22.253061678913383,
+  "lower_tested_nodes": 786432,
+  "upper_matched_nodes": 917504,
+  "resolution_nodes": 131072,
+  "baseline_common_query_rss_mib": 14.8671875,
+  "scope": "Finite warmed workload, offline full-visited D versus online N-only; no held-out/oracle-free claim"
+}

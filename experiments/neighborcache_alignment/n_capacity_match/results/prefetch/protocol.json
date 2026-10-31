@@ -1,0 +1,26 @@
+{
+  "threads": 1,
+  "n_nodes": 2048,
+  "m_entries": 131072,
+  "d_pages": 65536,
+  "stash_capacity_nodes": 424742,
+  "prefetch_pages": [
+    2560,
+    1280,
+    512,
+    256,
+    128
+  ],
+  "prefetch_mib": [
+    10,
+    5,
+    2,
+    1,
+    0.5
+  ],
+  "warmup_queries": 20000,
+  "measured_queries": 20000,
+  "main_denominator": "all node accesses",
+  "baseline_reused_from": "nc_n_capacity_match_20261031",
+  "no_other_experiment_running": true
+}

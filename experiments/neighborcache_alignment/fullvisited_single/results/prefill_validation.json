@@ -1,0 +1,10 @@
+{
+  "passed": true,
+  "visited_seeds": 1338445,
+  "sampled_pages": 10002,
+  "records_verified": 64702,
+  "d_bytes": 5482270720,
+  "allocated_bytes": 5482274816,
+  "order": "seed then up to 9 distinct visited graph-order neighbors",
+  "unchanged_full_vectors_and_adjacencies": true
+}
