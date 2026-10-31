@@ -19,6 +19,8 @@ summary=dict(full_visited=mean,online_dynamic=online,visited=visited,
              scope='same-workload oracle: all full-vector visited nodes become offline seeds; M/dynamic maintenance disabled; only target nodes expanded',
              ids_and_distances_equal_reference=all(x['ids_and_distances_equal_reference'] for x in raw))
 if (R/'nonly_match.json').exists():summary['nonly_match']=json.loads((R/'nonly_match.json').read_text())
+if (R/'nonly_dense/analysis.json').exists():
+ summary['dense_measurement_checks']=json.loads((R/'nonly_dense/analysis.json').read_text())
 (R/'summary.json').write_text(json.dumps(summary,indent=2)+'\n')
 plt.rcParams.update({'font.family':'serif','font.size':12,'axes.spines.top':False,'axes.spines.right':False,'pdf.fonttype':42})
 fig,axes=plt.subplots(1,2,figsize=(9.2,4.2))
@@ -36,7 +38,7 @@ if 'nonly_match' in summary:
  match=summary['nonly_match']; nmd_mib=match['full_d_extra_rss_mib']
  points=[]
  old=Path('/mnt/nvme2/nc_n_capacity_match_20261031')
- for d in list(old.glob('nonly_*/result.json'))+list((R/'nonly_match').glob('nonly_*/result.json')):
+ for d in list(old.glob('nonly_*/result.json'))+list((R/'nonly_match').glob('nonly_*/result.json'))+list((R/'nonly_dense').glob('nonly_*/result.json')):
   p=json.loads(d.read_text());points.append(p)
  groups={}
  for p in points:groups.setdefault(p['nodes'],[]).append(p)
@@ -45,12 +47,12 @@ if 'nonly_match' in summary:
  fig,ax=plt.subplots(figsize=(8.4,5.0))
  ax.plot([p['memory'] for p in a],[p['qps'] for p in a],'o-',color='#0072b2',label='N cache only',lw=2,ms=5)
  ax.scatter([nmd_mib],[mean['qps']],marker='D',s=65,color='#009e73',zorder=5)
- ax.axhline(mean['qps'],color='#009e73',ls='--',lw=1.5,label='NMD')
+ ax.axhline(mean['qps'],color='#009e73',ls='--',lw=1.5,label='NC')
  ax.axvline(nmd_mib,color='#009e73',ls='--',lw=1.5)
  ymax=max(p['qps'] for p in a)*1.13
  xmax=max(p['memory'] for p in a)*1.06
  ax.text(xmax*.985,mean['qps']+ymax*.018,f"{mean['qps']:.2f} QPS",ha='right',va='bottom',color='#007d5b')
- ax.text(nmd_mib+xmax*.012,ymax*.58,f'{nmd_mib:.2f} MiB',rotation=90,ha='left',va='center',color='#007d5b')
+ ax.text(nmd_mib+xmax*.014,ymax*.68,f'{nmd_mib:.2f} MiB',ha='left',va='center',color='#007d5b')
  ax.set_xlabel('N cache only memory (MiB)');ax.set_ylabel('QPS')
  ax.set_xlim(0,xmax);ax.set_ylim(0,ymax);ax.grid(alpha=.2);ax.legend(frameon=False,loc='lower right')
  fig.tight_layout()

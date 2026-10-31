@@ -1,0 +1,71 @@
+[
+  {
+    "mode": "nonly",
+    "nodes": 179200,
+    "runs": 2,
+    "qps_runs": [
+      393.18,
+      393.43
+    ],
+    "extra_rss_runs": [
+      94.6015625,
+      94.6640625
+    ],
+    "qps": 393.305,
+    "extra_rss_mib": 94.6328125,
+    "n_hit_pct": 28.018332530783518,
+    "p_hit_pct": 0.0,
+    "p_after_n_miss_pct": 0.0,
+    "disk_reads_per_query": 104.63975,
+    "d_reads_per_query": 0.0,
+    "target_memory_mib": 80,
+    "cache_rss_mib": 79.765625,
+    "qps_range_pct": 0.06356390078946364
+  },
+  {
+    "mode": "nonly",
+    "nodes": 542720,
+    "runs": 2,
+    "qps_runs": [
+      492.95,
+      493.07
+    ],
+    "extra_rss_runs": [
+      260.6953125,
+      260.6953125
+    ],
+    "qps": 493.01,
+    "extra_rss_mib": 260.6953125,
+    "n_hit_pct": 46.25108344225081,
+    "p_hit_pct": 0.0,
+    "p_after_n_miss_pct": 0.0,
+    "disk_reads_per_query": 78.1348,
+    "d_reads_per_query": 0.0,
+    "target_memory_mib": 240,
+    "cache_rss_mib": 245.828125,
+    "qps_range_pct": 0.024340277073488275
+  },
+  {
+    "mode": "nonly",
+    "nodes": 838656,
+    "runs": 2,
+    "qps_runs": [
+      584.51,
+      585.58
+    ],
+    "extra_rss_runs": [
+      374.92578125,
+      376.9296875
+    ],
+    "qps": 585.0450000000001,
+    "extra_rss_mib": 375.927734375,
+    "n_hit_pct": 57.34869642979982,
+    "p_hit_pct": 0.0,
+    "p_after_n_miss_pct": 0.0,
+    "disk_reads_per_query": 62.0022,
+    "d_reads_per_query": 0.0,
+    "target_memory_mib": 360,
+    "cache_rss_mib": 361.060546875,
+    "qps_range_pct": 0.18289191429719934
+  }
+]

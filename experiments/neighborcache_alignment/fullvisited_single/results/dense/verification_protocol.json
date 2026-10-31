@@ -1,0 +1,11 @@
+{
+  "repeat_targets_mib": [
+    80,
+    240,
+    360
+  ],
+  "runs_per_checked_capacity": 2,
+  "nc_reference_control": "one additional independent run, same 10 MiB P and N=2048",
+  "high_point_revision": "Before any repeat result, use 360 instead of 400 MiB to independently verify the newly observed near-585-QPS crossing",
+  "purpose": "Check repeatability of low/middle/high slopes; do not force curvature or smooth measured QPS"
+}

@@ -1,0 +1,92 @@
+{
+  "rule": "40 MiB nominal spacing; N capacity from inverse prior measured RAM curve, rounded to 1024 nodes; actual RAM/QPS are measured, no synthetic points",
+  "repeats": 1,
+  "query_threads": 1,
+  "warmup_queries": 20000,
+  "measured_queries": 20000,
+  "reference_node_memory": [
+    [
+      0.0,
+      0
+    ],
+    [
+      14.28515625,
+      32768
+    ],
+    [
+      22.10546875,
+      49152
+    ],
+    [
+      29.890625,
+      65536
+    ],
+    [
+      232.41796875,
+      524288
+    ],
+    [
+      339.84375,
+      786432
+    ],
+    [
+      390.384765625,
+      917504
+    ],
+    [
+      458.359375,
+      1048576
+    ]
+  ],
+  "points": [
+    {
+      "target_memory_mib": 40,
+      "n_nodes": 88064
+    },
+    {
+      "target_memory_mib": 80,
+      "n_nodes": 179200
+    },
+    {
+      "target_memory_mib": 120,
+      "n_nodes": 269312
+    },
+    {
+      "target_memory_mib": 160,
+      "n_nodes": 360448
+    },
+    {
+      "target_memory_mib": 200,
+      "n_nodes": 450560
+    },
+    {
+      "target_memory_mib": 240,
+      "n_nodes": 542720
+    },
+    {
+      "target_memory_mib": 280,
+      "n_nodes": 640000
+    },
+    {
+      "target_memory_mib": 320,
+      "n_nodes": 738304
+    },
+    {
+      "target_memory_mib": 360,
+      "n_nodes": 838656
+    },
+    {
+      "target_memory_mib": 400,
+      "n_nodes": 935936
+    },
+    {
+      "target_memory_mib": 440,
+      "n_nodes": 1012736
+    },
+    {
+      "target_memory_mib": 480,
+      "n_nodes": 1090560
+    }
+  ],
+  "keep_original_points": true
+}

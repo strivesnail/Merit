@@ -81,5 +81,377 @@
     "resolution_nodes": 131072,
     "baseline_common_query_rss_mib": 14.8671875,
     "scope": "Finite warmed workload, offline full-visited D versus online N-only; no held-out/oracle-free claim"
+  },
+  "dense_measurement_checks": {
+    "measured_grid": [
+      {
+        "target_memory_mib": 40,
+        "nodes": 88064,
+        "runs": 1,
+        "memory_mib": 39.20703125,
+        "qps": 365.03,
+        "qps_runs": [
+          365.03
+        ],
+        "all_access_counts_equal": true,
+        "all_output_checks_passed": true
+      },
+      {
+        "target_memory_mib": 80,
+        "nodes": 179200,
+        "runs": 2,
+        "memory_mib": 79.765625,
+        "qps": 393.305,
+        "qps_runs": [
+          393.18,
+          393.43
+        ],
+        "all_access_counts_equal": true,
+        "all_output_checks_passed": true
+      },
+      {
+        "target_memory_mib": 120,
+        "nodes": 269312,
+        "runs": 1,
+        "memory_mib": 123.41015625,
+        "qps": 417.35,
+        "qps_runs": [
+          417.35
+        ],
+        "all_access_counts_equal": true,
+        "all_output_checks_passed": true
+      },
+      {
+        "target_memory_mib": 160,
+        "nodes": 360448,
+        "runs": 1,
+        "memory_mib": 159.07421875,
+        "qps": 442.34,
+        "qps_runs": [
+          442.34
+        ],
+        "all_access_counts_equal": true,
+        "all_output_checks_passed": true
+      },
+      {
+        "target_memory_mib": 200,
+        "nodes": 450560,
+        "runs": 1,
+        "memory_mib": 196.8125,
+        "qps": 466.12,
+        "qps_runs": [
+          466.12
+        ],
+        "all_access_counts_equal": true,
+        "all_output_checks_passed": true
+      },
+      {
+        "target_memory_mib": 240,
+        "nodes": 542720,
+        "runs": 2,
+        "memory_mib": 245.828125,
+        "qps": 493.01,
+        "qps_runs": [
+          492.95,
+          493.07
+        ],
+        "all_access_counts_equal": true,
+        "all_output_checks_passed": true
+      },
+      {
+        "target_memory_mib": 280,
+        "nodes": 640000,
+        "runs": 1,
+        "memory_mib": 283.26953125,
+        "qps": 519.04,
+        "qps_runs": [
+          519.04
+        ],
+        "all_access_counts_equal": true,
+        "all_output_checks_passed": true
+      },
+      {
+        "target_memory_mib": 320,
+        "nodes": 738304,
+        "runs": 1,
+        "memory_mib": 322.0703125,
+        "qps": 550.69,
+        "qps_runs": [
+          550.69
+        ],
+        "all_access_counts_equal": true,
+        "all_output_checks_passed": true
+      },
+      {
+        "target_memory_mib": 360,
+        "nodes": 838656,
+        "runs": 2,
+        "memory_mib": 361.060546875,
+        "qps": 585.0450000000001,
+        "qps_runs": [
+          584.51,
+          585.58
+        ],
+        "all_access_counts_equal": true,
+        "all_output_checks_passed": true
+      },
+      {
+        "target_memory_mib": 400,
+        "nodes": 935936,
+        "runs": 1,
+        "memory_mib": 397.91796875,
+        "qps": 620.53,
+        "qps_runs": [
+          620.53
+        ],
+        "all_access_counts_equal": true,
+        "all_output_checks_passed": true
+      },
+      {
+        "target_memory_mib": 440,
+        "nodes": 1012736,
+        "runs": 1,
+        "memory_mib": 427.1015625,
+        "qps": 649.84,
+        "qps_runs": [
+          649.84
+        ],
+        "all_access_counts_equal": true,
+        "all_output_checks_passed": true
+      },
+      {
+        "target_memory_mib": 480,
+        "nodes": 1090560,
+        "runs": 1,
+        "memory_mib": 487.47265625,
+        "qps": 682.63,
+        "qps_runs": [
+          682.63
+        ],
+        "all_access_counts_equal": true,
+        "all_output_checks_passed": true
+      }
+    ],
+    "adjacent_measured_slopes": [
+      {
+        "from_target_mib": 0,
+        "to_target_mib": 40,
+        "actual_memory_delta_mib": 39.20703125,
+        "qps_delta": 56.339999999999975,
+        "qps_per_mib": 1.4369871475540494
+      },
+      {
+        "from_target_mib": 40,
+        "to_target_mib": 80,
+        "actual_memory_delta_mib": 40.55859375,
+        "qps_delta": 28.275000000000034,
+        "qps_per_mib": 0.6971395550418963
+      },
+      {
+        "from_target_mib": 80,
+        "to_target_mib": 120,
+        "actual_memory_delta_mib": 43.64453125,
+        "qps_delta": 24.045000000000016,
+        "qps_per_mib": 0.5509281303141506
+      },
+      {
+        "from_target_mib": 120,
+        "to_target_mib": 160,
+        "actual_memory_delta_mib": 35.6640625,
+        "qps_delta": 24.989999999999952,
+        "qps_per_mib": 0.7007053669222331
+      },
+      {
+        "from_target_mib": 160,
+        "to_target_mib": 200,
+        "actual_memory_delta_mib": 37.73828125,
+        "qps_delta": 23.78000000000003,
+        "qps_per_mib": 0.6301293861919064
+      },
+      {
+        "from_target_mib": 200,
+        "to_target_mib": 240,
+        "actual_memory_delta_mib": 49.015625,
+        "qps_delta": 26.889999999999986,
+        "qps_per_mib": 0.5486005737966207
+      },
+      {
+        "from_target_mib": 240,
+        "to_target_mib": 280,
+        "actual_memory_delta_mib": 37.44140625,
+        "qps_delta": 26.029999999999973,
+        "qps_per_mib": 0.6952196139801766
+      },
+      {
+        "from_target_mib": 280,
+        "to_target_mib": 320,
+        "actual_memory_delta_mib": 38.80078125,
+        "qps_delta": 31.65000000000009,
+        "qps_per_mib": 0.8157052250075529
+      },
+      {
+        "from_target_mib": 320,
+        "to_target_mib": 360,
+        "actual_memory_delta_mib": 38.990234375,
+        "qps_delta": 34.35500000000002,
+        "qps_per_mib": 0.8811180684265897
+      },
+      {
+        "from_target_mib": 360,
+        "to_target_mib": 400,
+        "actual_memory_delta_mib": 36.857421875,
+        "qps_delta": 35.4849999999999,
+        "qps_per_mib": 0.9627640294631948
+      },
+      {
+        "from_target_mib": 400,
+        "to_target_mib": 440,
+        "actual_memory_delta_mib": 29.18359375,
+        "qps_delta": 29.31000000000006,
+        "qps_per_mib": 1.0043314148039104
+      },
+      {
+        "from_target_mib": 440,
+        "to_target_mib": 480,
+        "actual_memory_delta_mib": 60.37109375,
+        "qps_delta": 32.789999999999964,
+        "qps_per_mib": 0.5431407311549654
+      }
+    ],
+    "linear_fit_diagnostic_only": {
+      "slope": 0.7355870228391965,
+      "intercept": 322.7991470107852,
+      "r_squared": 0.9931289364397423,
+      "note": "Diagnostic only; the figure connects measured point means, without plotting this fitted model"
+    },
+    "all_counts_repeatable": true,
+    "all_output_checks_passed": true,
+    "independent_nonly_reruns": [
+      {
+        "mode": "nonly",
+        "nodes": 179200,
+        "runs": 2,
+        "qps_runs": [
+          393.18,
+          393.43
+        ],
+        "extra_rss_runs": [
+          94.6015625,
+          94.6640625
+        ],
+        "qps": 393.305,
+        "extra_rss_mib": 94.6328125,
+        "n_hit_pct": 28.018332530783518,
+        "p_hit_pct": 0.0,
+        "p_after_n_miss_pct": 0.0,
+        "disk_reads_per_query": 104.63975,
+        "d_reads_per_query": 0.0,
+        "target_memory_mib": 80,
+        "cache_rss_mib": 79.765625,
+        "qps_range_pct": 0.06356390078946364
+      },
+      {
+        "mode": "nonly",
+        "nodes": 542720,
+        "runs": 2,
+        "qps_runs": [
+          492.95,
+          493.07
+        ],
+        "extra_rss_runs": [
+          260.6953125,
+          260.6953125
+        ],
+        "qps": 493.01,
+        "extra_rss_mib": 260.6953125,
+        "n_hit_pct": 46.25108344225081,
+        "p_hit_pct": 0.0,
+        "p_after_n_miss_pct": 0.0,
+        "disk_reads_per_query": 78.1348,
+        "d_reads_per_query": 0.0,
+        "target_memory_mib": 240,
+        "cache_rss_mib": 245.828125,
+        "qps_range_pct": 0.024340277073488275
+      },
+      {
+        "mode": "nonly",
+        "nodes": 838656,
+        "runs": 2,
+        "qps_runs": [
+          584.51,
+          585.58
+        ],
+        "extra_rss_runs": [
+          374.92578125,
+          376.9296875
+        ],
+        "qps": 585.0450000000001,
+        "extra_rss_mib": 375.927734375,
+        "n_hit_pct": 57.34869642979982,
+        "p_hit_pct": 0.0,
+        "p_after_n_miss_pct": 0.0,
+        "disk_reads_per_query": 62.0022,
+        "d_reads_per_query": 0.0,
+        "target_memory_mib": 360,
+        "cache_rss_mib": 361.060546875,
+        "qps_range_pct": 0.18289191429719934
+      }
+    ],
+    "nc_reference_rerun": {
+      "control": {
+        "name": "control_after_dense",
+        "qps": 584.38,
+        "first_pass_qps": 581.87,
+        "queries": 20000,
+        "passes": 2,
+        "counts": {
+          "n_beam_lookups": 2907400,
+          "n_mem_hits": 88068,
+          "n_neighborcache_prefetch_hits": 1736011,
+          "n_disk_reads": 1083321,
+          "n_base_pages": 0,
+          "n_disk_cache_pages": 1083321,
+          "n_neighborcache_dyn_disk_reads": 1083321,
+          "n_neighborcache_dcache_demand_probes": 1083321,
+          "n_neighborcache_dcache_demand_hits": 1083321
+        },
+        "n_hit_pct": 3.0290981633074225,
+        "p_hit_pct": 59.71008461168054,
+        "p_after_n_miss_pct": 61.5752596714399,
+        "d_lookup_hit_pct": 100.0,
+        "d_coverage_including_prefetch_after_n_miss_pct": 100.0,
+        "d_reads_per_query": 54.16605,
+        "base_reads_per_query": 0.0,
+        "extra_rss_mib": 32.28125,
+        "rss_kib": {
+          "after_load": 3935612,
+          "after_ncache": 3936816,
+          "after_static_dcache": 3936824,
+          "after_dyn_init": 3936824,
+          "after_fullvisited_init": 3942296,
+          "after_search": 3968668
+        },
+        "ids_and_distances_equal_reference": true,
+        "elapsed_seconds": 71.05910746799782
+      },
+      "original_reference_qps": 585.0550000000001,
+      "change_pct": -0.11537376827820411
+    },
+    "closest_measured_grid_point": {
+      "target_memory_mib": 360,
+      "nodes": 838656,
+      "runs": 2,
+      "memory_mib": 361.060546875,
+      "qps": 585.0450000000001,
+      "qps_runs": [
+        584.51,
+        585.58
+      ],
+      "all_access_counts_equal": true,
+      "all_output_checks_passed": true,
+      "reference_qps": 585.055,
+      "relative_qps_difference_pct": -0.0017092410115049361,
+      "memory_ratio_to_nc": 20.581496325985302
+    }
   }
 }

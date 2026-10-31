@@ -73,6 +73,31 @@ points. The green horizontal reference is 585.06 QPS; the vertical reference is
 17.54 MiB total additional RAM for the full-D scheme. It is not N's 0.758 MiB
 payload alone. `results/nonly_memory_qps.csv` contains the plotted values.
 
+### Uniform memory-grid additions
+
+At the user's request, `densify_nonly.py` retains these eight observations and
+adds twelve measured capacities targeting approximately 40, 80, ..., 480 MiB of
+N-only RAM. Capacities are chosen prospectively by inverting the existing
+node-capacity versus RAM measurements and rounding to 1,024 nodes. Each new point
+executes a fresh one-worker process with the same 20K warmup + 20K measured stream.
+Actual RSS and QPS, rather than the requested grid or an interpolated QPS, are
+plotted. The run manifest records the requested budget and actual node capacity.
+Because allocator/hash capacity is discrete, actual RAM spacings are approximate.
+The figure is updated after every completed point; incomplete trials are excluded.
+The green reference legend is `NC`; its memory and QPS are unchanged.
+
+The completed figure has 20 distinct N-only capacities. Independent repetitions
+at nominal 80, 240 and 360 MiB differ by at most 0.183% in QPS, and all access
+counts/output checks match. An additional full-D reference check gives 584.38
+QPS, 0.115% below the original primary two-run mean; it is retained separately
+as a stability control rather than changing the predeclared reference line.
+The 360 MiB-grid point measures 361.061 MiB and 585.045 QPS (584.51 / 585.58),
+compared with NC's 17.543 MiB and 585.055 QPS: about 20.58 times the cache RAM
+at almost identical throughput, in this static same-workload experiment.
+The denser data still look approximately linear in the middle of the tested
+range. `results/dense/analysis.json` records measured interval slopes and a
+diagnostic fit; the fit is never used to generate or smooth plotted points.
+
 ## Interpretation and validation
 
 This is a **same-workload offline oracle/static experiment**: the seed set and

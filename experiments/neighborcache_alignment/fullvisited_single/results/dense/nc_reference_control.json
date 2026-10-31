@@ -1,0 +1,40 @@
+{
+  "control": {
+    "name": "control_after_dense",
+    "qps": 584.38,
+    "first_pass_qps": 581.87,
+    "queries": 20000,
+    "passes": 2,
+    "counts": {
+      "n_beam_lookups": 2907400,
+      "n_mem_hits": 88068,
+      "n_neighborcache_prefetch_hits": 1736011,
+      "n_disk_reads": 1083321,
+      "n_base_pages": 0,
+      "n_disk_cache_pages": 1083321,
+      "n_neighborcache_dyn_disk_reads": 1083321,
+      "n_neighborcache_dcache_demand_probes": 1083321,
+      "n_neighborcache_dcache_demand_hits": 1083321
+    },
+    "n_hit_pct": 3.0290981633074225,
+    "p_hit_pct": 59.71008461168054,
+    "p_after_n_miss_pct": 61.5752596714399,
+    "d_lookup_hit_pct": 100.0,
+    "d_coverage_including_prefetch_after_n_miss_pct": 100.0,
+    "d_reads_per_query": 54.16605,
+    "base_reads_per_query": 0.0,
+    "extra_rss_mib": 32.28125,
+    "rss_kib": {
+      "after_load": 3935612,
+      "after_ncache": 3936816,
+      "after_static_dcache": 3936824,
+      "after_dyn_init": 3936824,
+      "after_fullvisited_init": 3942296,
+      "after_search": 3968668
+    },
+    "ids_and_distances_equal_reference": true,
+    "elapsed_seconds": 71.05910746799782
+  },
+  "original_reference_qps": 585.0550000000001,
+  "change_pct": -0.11537376827820411
+}
