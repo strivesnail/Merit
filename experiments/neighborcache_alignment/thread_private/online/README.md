@@ -1,5 +1,9 @@
 # Static and online thread-private prefetch validation
 
+Historical 2026-10-28 results follow. For the later private-record directory,
+compact payloads, sampled heat and all-host checks, see
+[compact memory validation](../../compact_memory/README.md).
+
 This revision replaces the earlier static-only private cache with reusable page slots, a fixed hash table and an indexed LRU. It also supports dynamic D publication, invalidation and asynchronous dirty eviction. N/M policies and host search policies are unchanged. Shared prefetch remains the default; the private flag now works with either explicit freeze setting.
 
 ## Semantics

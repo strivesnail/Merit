@@ -92,7 +92,9 @@ void NeighborCacheMetadataCache::init(uint64_t capacity, uint8_t sig_threshold, 
                      : static_cast<size_t>(std::max<unsigned long long>(
                            1, std::min<unsigned long long>(256, std::strtoull(max_edges, nullptr, 10))));
     _node_count = node_count;
-    if (_adaptive_update_enabled && _node_count > 0)
+    const char *lookup_bitmap = std::getenv("NEIGHBORCACHE_MCACHE_LOOKUP_BITMAP");
+    const bool accelerate_lookups = lookup_bitmap != nullptr && std::strcmp(lookup_bitmap, "0") != 0;
+    if ((_adaptive_update_enabled || accelerate_lookups) && _node_count > 0)
     {
         _membership_word_count = (_node_count + 63) / 64;
         _membership_words = std::make_unique<std::atomic<uint64_t>[]>(_membership_word_count);
@@ -559,6 +561,10 @@ NeighborCacheMetadataCache::TouchResult NeighborCacheMetadataCache::on_real_io_e
 
 bool NeighborCacheMetadataCache::contains(uint32_t node_id) const
 {
+    // Only a definite absence bypasses the shard lock. IDs beyond the bitmap
+    // retain the ordinary lookup path, and hits still validate the live map.
+    if (_membership_words != nullptr && node_id < _node_count && !membership_contains(node_id))
+        return false;
     const Shard &shard = *_shards[shard_index(node_id)];
     NeighborCacheTimedSharedMutexGuard lock(shard.mu, NeighborCacheLockKind::Metadata, false);
     return shard.node_to_slot.find(node_id) != shard.node_to_slot.end();
@@ -566,6 +572,10 @@ bool NeighborCacheMetadataCache::contains(uint32_t node_id) const
 
 uint32_t NeighborCacheMetadataCache::slot_of(uint32_t node_id) const
 {
+    // Only a definite absence bypasses the shard lock. IDs beyond the bitmap
+    // retain the ordinary lookup path, and hits still validate the live map.
+    if (_membership_words != nullptr && node_id < _node_count && !membership_contains(node_id))
+        return kInvalid;
     const Shard &shard = *_shards[shard_index(node_id)];
     NeighborCacheTimedSharedMutexGuard lock(shard.mu, NeighborCacheLockKind::Metadata, false);
     const auto it = shard.node_to_slot.find(node_id);
@@ -611,6 +621,10 @@ bool NeighborCacheMetadataCache::node_score_at(uint32_t slot_id, uint32_t &node_
 
 float NeighborCacheMetadataCache::score(uint32_t node_id) const
 {
+    // Only a definite absence bypasses the shard lock. IDs beyond the bitmap
+    // retain the ordinary lookup path, and hits still validate the live map.
+    if (_membership_words != nullptr && node_id < _node_count && !membership_contains(node_id))
+        return 0.0f;
     const Shard &shard = *_shards[shard_index(node_id)];
     NeighborCacheTimedSharedMutexGuard lock(shard.mu, NeighborCacheLockKind::Metadata, false);
     const auto it = shard.node_to_slot.find(node_id);
@@ -636,6 +650,10 @@ float NeighborCacheMetadataCache::score_at(uint32_t slot_id) const
 
 bool NeighborCacheMetadataCache::set_evictable(uint32_t node_id, bool evictable)
 {
+    // Only a definite absence bypasses the shard lock. IDs beyond the bitmap
+    // retain the ordinary lookup path, and hits still validate the live map.
+    if (_membership_words != nullptr && node_id < _node_count && !membership_contains(node_id))
+        return false;
     Shard &shard = *_shards[shard_index(node_id)];
     NeighborCacheTimedSharedMutexGuard lock(shard.mu, NeighborCacheLockKind::Metadata, true);
     auto it = shard.node_to_slot.find(node_id);
@@ -741,25 +759,31 @@ void NeighborCacheMetadataCache::add_edge_heat_unlocked(Edge &edge, uint8_t incr
 
 bool NeighborCacheMetadataCache::snapshot(uint32_t node_id, Snapshot &out) const
 {
-    const Shard &shard = *_shards[shard_index(node_id)];
-    NeighborCacheTimedSharedMutexGuard lock(shard.mu, NeighborCacheLockKind::Metadata, false);
-    const auto it = shard.node_to_slot.find(node_id);
-    if (it == shard.node_to_slot.end())
+    // Only a definite absence bypasses the shard lock. IDs beyond the bitmap
+    // retain the ordinary lookup path, and hits still validate the live map.
+    if (_membership_words != nullptr && node_id < _node_count && !membership_contains(node_id))
         return false;
-    const uint32_t local_slot = it->second;
-    const uint32_t slot_stride = _slot_stride.load(std::memory_order_relaxed);
-    out.slot_id =
-        static_cast<uint32_t>(static_cast<uint64_t>(shard_index(node_id)) * slot_stride + local_slot);
-    out.score = shard.scores[local_slot];
-    out.significant.clear();
-    const std::vector<Edge> &edges = shard.edges_by_slot[local_slot];
-    out.significant.reserve(edges.size());
-    const uint8_t sig_t = _sig_t.load(std::memory_order_relaxed);
-    for (const Edge &ed : edges)
+    const Shard &shard = *_shards[shard_index(node_id)];
     {
-        const uint8_t heat = ed.heat();
-        if (heat >= sig_t)
-            out.significant.emplace_back(ed.child(), heat);
+        NeighborCacheTimedSharedMutexGuard lock(shard.mu, NeighborCacheLockKind::Metadata, false);
+        const auto it = shard.node_to_slot.find(node_id);
+        if (it == shard.node_to_slot.end())
+            return false;
+        const uint32_t local_slot = it->second;
+        const uint32_t slot_stride = _slot_stride.load(std::memory_order_relaxed);
+        out.slot_id =
+            static_cast<uint32_t>(static_cast<uint64_t>(shard_index(node_id)) * slot_stride + local_slot);
+        out.score = shard.scores[local_slot];
+        out.significant.clear();
+        const std::vector<Edge> &edges = shard.edges_by_slot[local_slot];
+        out.significant.reserve(edges.size());
+        const uint8_t sig_t = _sig_t.load(std::memory_order_relaxed);
+        for (const Edge &ed : edges)
+        {
+            const uint8_t heat = ed.heat();
+            if (heat >= sig_t)
+                out.significant.emplace_back(ed.child(), heat);
+        }
     }
     std::sort(out.significant.begin(), out.significant.end(),
               [](const std::pair<uint32_t, uint8_t> &a, const std::pair<uint32_t, uint8_t> &b) {

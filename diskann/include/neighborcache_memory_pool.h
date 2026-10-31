@@ -181,6 +181,9 @@ template <typename T> class NeighborCacheMemoryPool
     void bump(uint32_t node_id, uint64_t delta = 1);
 
     uint32_t peek_lru_victim(uint32_t incoming_node_id, bool *hit_hot_prefix = nullptr) const;
+    // Inspect membership and a possible victim under one shard lock. This is
+    // a snapshot, not a reservation; try_admit still rechecks under its lock.
+    uint32_t inspect_admission(uint32_t node_id, bool &present) const;
     uint32_t coldest_held_node(uint32_t incoming_node_id) const;
     void enable_seed_hold_limit(bool on);
     bool hold_seed_neighbor(uint32_t node_id, uint32_t times = 1);
@@ -189,6 +192,8 @@ template <typename T> class NeighborCacheMemoryPool
     uint32_t drop_coldest_seed_hold(uint32_t incoming_node_id);
 
     bool copy_payload(uint32_t node_id, std::vector<T> &coords, std::vector<uint32_t> &nbrs) const;
+    // Copies one complete disk-format record under the owning shard lock.
+    bool copy_record(uint32_t node_id, char *dst, size_t capacity, size_t coord_bytes) const;
 
     bool should_admit(uint32_t node_id, uint32_t search_hop, bool &admitted_after_rejection);
 

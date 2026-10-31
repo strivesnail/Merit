@@ -2,6 +2,7 @@
 // Licensed under the MIT license.
 
 #include "linux_aligned_file_reader.h"
+#include "neighborcache_lock_metrics.h"
 
 #include <cassert>
 #include <cerrno>
@@ -38,11 +39,15 @@ struct NeighborCacheLatAcc
 };
 bool neighborcache_lat_on()
 {
+#if NEIGHBORCACHE_ENABLE_PROFILING
     static const bool on = [] {
         const char *v = std::getenv("NEIGHBORCACHE_IO_LAT_PROFILE");
         return v != nullptr && std::strcmp(v, "0") != 0;
     }();
     return on;
+#else
+    return false;
+#endif
 }
 std::mutex &neighborcache_lat_mu()
 {

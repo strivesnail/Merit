@@ -19,12 +19,16 @@ outputs across engines, or between cached and uncached asynchronous searches.
   seed construction, N/stash lookup, reverse-owner updates, prefetch LRU,
   dirty eviction, D readback, bounded seed replacement and query-end maintenance
   are used directly. No host adapter selects seeds using `heat >= 2`.
-- A later admitted graph neighbor can update an existing seed page regardless of
-  which parent discovered it. The reference ownership/graph relation decides
-  eligibility; the traversed parent is recorded separately for co-access scoring.
+- A later admitted node can update its acquired path parent's resident seed page.
+  Private mode checks only the calling worker's parent-seed index for this
+  update. Demand lookup uses that worker's reverse record index and can hit any
+  locally resident seed page; it is not restricted to the parent.
 - PipeANN and AiSAQ submit demand D reads through their existing asynchronous
-  readers. Starling/MARGO retain a separate libaio D batch. Reference maintenance
-  may perform blocking reads and writeback; this is not an all-asynchronous claim.
+  readers. Starling/MARGO retain a separate libaio D batch. Dynamic seed pages
+  are assembled/updated in prefetch; dirty eviction hands an owned full-page
+  snapshot to the background writer. Legacy direct-to-D seed commits are
+  disabled in this mode. Metadata locks and enqueue work remain on the query
+  path; this is not an all-asynchronous claim.
 - D demand lookup attempts/hits and physical D reads are separate diagnostics.
   Query-local locations and pages can avoid a fresh routing lookup, so D reads
   must not be used as the denominator of the lookup hit rate.
@@ -247,8 +251,8 @@ export NEIGHBORCACHE_FREEZE_MAINTENANCE=0
 The page setting is the total resident payload budget, divided exactly among
 query workers: here 128 pages / 512 KiB each. The native path uses the index's
 query thread count; adapters use NCConfig.threads. Each worker owns preallocated
-page slots, a fixed-size hash table and an LRU. Resident-page insertion/eviction
-reuses those structures without allocating page objects or hash/list nodes.
+page slots, a fixed-size page hash table and an LRU. Payload and reverse-record
+storage can allocate; page lookup/LRU entries reuse the preallocated slots.
 Pages persist across queries by default. RESET_EACH_QUERY=1 evicts only the
 calling worker's cache at its next outermost ReadSection, asynchronously handing
 off dirty snapshots first. Query objects may be pooled; ownership follows the
@@ -256,14 +260,17 @@ calling worker, not the query object or a hash of the page ID.
 
 N/M policy, D data and D routing metadata remain shared. In online mode a shared
 64-bit generation per physical D sector invalidates old private copies on page
-publication or sector reuse. Hits copy only thread-owned bytes and check that
-generation. Short striped metadata mutexes serialize D publication, invalidation
+publication or sector reuse. Demand record hits copy immutable thread-owned
+bytes even if another worker has published a different replica. These bytes
+remain valid original-index records; only the current dirty generation can
+write the shared D slot. Current-version page APIs still validate generations.
+Short striped metadata mutexes serialize D publication, invalidation
 and dirty-eviction handoff; they do not protect a shared prefetch LRU and never
 wait for disk IO. Existing N/M and D-routing locks remain. This is not a claim
 that the whole engine is lock-free.
 
 Only the current dirty replica may enqueue writeback; stale private copies are
-silently discarded. Dirty or pending D images cannot be admitted by disk readback.
+discarded on eviction. Dirty or pending D images cannot be admitted by disk readback.
 Core query/writer pins still prevent physical reuse while reads or writes are in
 flight. Background maintenance has no query-worker cache: a dirty snapshot from
 that context goes directly to the existing asynchronous writer; clean maintenance
@@ -290,3 +297,39 @@ writeback and three record layouts under concurrent online updates. Historical
 static QPS/recall comparisons remain under
 `experiments/neighborcache_alignment/thread_private/`; their numbers do not
 measure this subsequent online/reusable-slot implementation.
+
+## Compact private records and sampled heat (2026-10-31)
+
+Native NeighborCache and all four adapters now share the following changes:
+
+- A worker-local reverse index stores a single page/record location inline;
+  duplicate locations use reusable overflow vectors. Lookup preserves the
+  existing registration order and LRU behavior.
+- Private page payloads omit only trailing zero bytes, rounded up to 512 bytes.
+  Reads and writer handoff reconstruct the identical 4 KiB image. Neighbor
+  membership and the configured logical page capacity are unchanged. Set
+  `NEIGHBORCACHE_PREFETCH_TRIM_ZERO_TAIL=0` to retain full payloads for comparison;
+  the default is `1`. The shared-cache payload representation is unchanged.
+- Seed packing copies resident N/stash records directly into the final page.
+  N hits retain an owned snapshot copied under the N shard lock, so later slot
+  reuse cannot change an acquired record.
+- Every acquired full record has a 1-in-10 chance to update node heat, sampled
+  before M-cache decision/locking. Native search and adapter `selected` use
+  `neighborcache_heat_sample.h`. PQ-only candidates do not sample node heat.
+  `NEIGHBORCACHE_HEAT_SAMPLE_SEED` gives reproducible per-worker RNG streams;
+  concurrent scheduling and shared cache state can still vary between runs.
+- `NEIGHBORCACHE_CANON_SLOTS=0` retains automatic sizing. A power of two from
+  1,024 to 8,388,608 selects an explicit D-location accelerator capacity.
+  Saturation falls back to the complete sharded directory. Tombstone reuse now
+  checks for an existing key before inserting, avoiding duplicate stale routes.
+- Optional `NEIGHBORCACHE_MCACHE_LOOKUP_BITMAP=1` skips M locks for definite
+  misses. It consumes one bit per index node and is **off by default**; it was
+  not selected in the memory-saving configuration.
+
+ABI 2 is unchanged. Replace the common shared library for Starling, MARGO,
+PipeANN and AiSAQ; they do not carry independent copies of these policies.
+Rebuild native DiskANN separately. Profiling stays enabled by default.
+
+The measured configuration, two-run results, validation scope and host checking
+script are saved in
+[`experiments/neighborcache_alignment/compact_memory`](../experiments/neighborcache_alignment/compact_memory/README.md).

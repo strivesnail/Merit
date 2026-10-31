@@ -1,0 +1,1666 @@
+[
+  {
+    "qps": 3876.98,
+    "latency_us": 4992.66,
+    "p99_us": 6675.0,
+    "mean_ios": 117.82,
+    "base_pages": 116.26,
+    "duplicate_ios": 0.71,
+    "disk_reads_per_query": 117.7508,
+    "sector_cache_hits": 0.0,
+    "io_us_per_read": 32.57,
+    "mean_sector_jump": 3097155.56,
+    "near_jump_pct": 0.13,
+    "hops": 32.01,
+    "io_us_per_query": 3769.05,
+    "cpu_s": 260.37,
+    "mode": "control",
+    "rep": 1,
+    "wall_seconds": 11.456311936955899,
+    "counts": {
+      "n_beam_lookups": 2907400,
+      "n_mem_hits": 406046,
+      "n_neighborcache_prefetch_hits": 144871,
+      "n_neighborcache_hits": 18523,
+      "n_disk_reads": 2355016,
+      "n_neighborcache_dyn_disk_reads": 17056
+    },
+    "n_hit_pct": 13.96594895783174,
+    "prefetch_hit_pct": 4.982836898947514,
+    "bit_identical_to_bfs": {
+      "idx_uint32.bin": true,
+      "dists_float.bin": true
+    },
+    "costs": {
+      "total_query": {
+        "calls": 1.0,
+        "inclusive_us": 5293.509416666667,
+        "exclusive_us": 564.5420633333333
+      },
+      "n_lookup": {
+        "calls": 145.46666666666667,
+        "inclusive_us": 50.80774666666667,
+        "exclusive_us": 33.20451
+      },
+      "prefetch_lookup": {
+        "calls": 120.24666666666667,
+        "inclusive_us": 37.02326333333333,
+        "exclusive_us": 37.02326333333333
+      },
+      "d_lookup": {
+        "calls": 113.44333333333333,
+        "inclusive_us": 29.3582,
+        "exclusive_us": 21.599676666666667
+      },
+      "n_admit": {
+        "calls": 113.44333333333333,
+        "inclusive_us": 822.9565066666667,
+        "exclusive_us": 38.78680333333334
+      },
+      "n_evict": {
+        "calls": 113.16666666666667,
+        "inclusive_us": 587.8171433333333,
+        "exclusive_us": 91.53846333333334
+      },
+      "access_record": {
+        "calls": 145.46666666666667,
+        "inclusive_us": 34.30567333333333,
+        "exclusive_us": 11.02365
+      },
+      "m_expand": {
+        "calls": 145.46666666666667,
+        "inclusive_us": 23.282023333333335,
+        "exclusive_us": 16.86141
+      },
+      "seed_update": {
+        "calls": 113.44333333333333,
+        "inclusive_us": 77.48783333333333,
+        "exclusive_us": 16.863553333333332
+      },
+      "seed_create": {
+        "calls": 8.7,
+        "inclusive_us": 254.82876000000002,
+        "exclusive_us": 102.21249333333333
+      },
+      "pair_refresh": {
+        "calls": 16.243333333333332,
+        "inclusive_us": 451.38545666666664,
+        "exclusive_us": 85.48044999999999
+      },
+      "prepare_d_io": {
+        "calls": 6.72,
+        "inclusive_us": 21.86969,
+        "exclusive_us": 8.972206666666667
+      },
+      "issue_io": {
+        "calls": 30.723333333333333,
+        "inclusive_us": 3644.754716666667,
+        "exclusive_us": 11.510333333333334
+      },
+      "query_end": {
+        "calls": 1.0,
+        "inclusive_us": 30.33482,
+        "exclusive_us": 1.1202233333333333
+      },
+      "query_patch": {
+        "calls": 1.0,
+        "inclusive_us": 5.539033333333334,
+        "exclusive_us": 4.669073333333333
+      },
+      "heap_flush": {
+        "calls": 1.0,
+        "inclusive_us": 17.586256666666667,
+        "exclusive_us": 11.58676
+      },
+      "base_load_note": {
+        "calls": 113.44333333333333,
+        "inclusive_us": 53.354949999999995,
+        "exclusive_us": 29.09484
+      },
+      "n_lock_wait": {
+        "calls": 1288.6766666666667,
+        "inclusive_us": 94.95129333333334,
+        "exclusive_us": 94.95129333333334
+      },
+      "n_contains": {
+        "calls": 383.18333333333334,
+        "inclusive_us": 41.444563333333335,
+        "exclusive_us": 27.546913333333332
+      },
+      "n_victim_probe": {
+        "calls": 113.44333333333333,
+        "inclusive_us": 34.97304333333334,
+        "exclusive_us": 21.173913333333335
+      },
+      "n_install": {
+        "calls": 113.44333333333333,
+        "inclusive_us": 47.65759,
+        "exclusive_us": 44.102470000000004
+      },
+      "n_payload_copy": {
+        "calls": 416.1933333333333,
+        "inclusive_us": 95.70737333333334,
+        "exclusive_us": 59.04571
+      },
+      "prefetch_snapshot": {
+        "calls": 113.44333333333333,
+        "inclusive_us": 12.959959999999999,
+        "exclusive_us": 12.959959999999999
+      },
+      "prefetch_register": {
+        "calls": 8.32,
+        "inclusive_us": 9.358236666666667,
+        "exclusive_us": 8.859623333333333
+      },
+      "prefetch_evict": {
+        "calls": 5.1,
+        "inclusive_us": 12.96837,
+        "exclusive_us": 4.501223333333334
+      },
+      "private_mutation_wait": {
+        "calls": 13.296666666666667,
+        "inclusive_us": 1.6886266666666667,
+        "exclusive_us": 1.6886266666666667
+      },
+      "metadata_lock_wait": {
+        "calls": 916.39,
+        "inclusive_us": 233.14935333333332,
+        "exclusive_us": 233.14935333333332
+      },
+      "stash_lock_wait": {
+        "calls": 377.9533333333333,
+        "inclusive_us": 28.271323333333335,
+        "exclusive_us": 28.271323333333335
+      },
+      "seed_lock_wait": {
+        "calls": 12.71,
+        "inclusive_us": 1.3342533333333333,
+        "exclusive_us": 1.3342533333333333
+      },
+      "record_unregister": {
+        "calls": 13.42,
+        "inclusive_us": 8.263223333333332,
+        "exclusive_us": 8.263223333333332
+      },
+      "io_submit": {
+        "calls": 31.286666666666665,
+        "inclusive_us": 277.27165333333335,
+        "exclusive_us": 277.27165333333335
+      },
+      "io_wait": {
+        "calls": 31.286666666666665,
+        "inclusive_us": 3384.2351766666666,
+        "exclusive_us": 3384.2351766666666
+      },
+      "seed_already_local": {
+        "calls": 2.6766666666666667,
+        "inclusive_us": 0.06492666666666666,
+        "exclusive_us": 0.06492666666666666
+      }
+    },
+    "rss_kib": {
+      "after_load": 3942672,
+      "after_ncache": 4169416,
+      "after_static_dcache": 4169416,
+      "after_dyn_init": 4203320,
+      "after_search": 4367680
+    },
+    "extra_rss_mib": 415.046875
+  },
+  {
+    "qps": 3861.36,
+    "latency_us": 4984.26,
+    "p99_us": 6864.0,
+    "mean_ios": 117.68,
+    "base_pages": 116.03,
+    "duplicate_ios": 0.71,
+    "disk_reads_per_query": 117.60115,
+    "sector_cache_hits": 0.0,
+    "io_us_per_read": 32.43,
+    "mean_sector_jump": 3095041.55,
+    "near_jump_pct": 0.12,
+    "hops": 32.02,
+    "io_us_per_query": 3766.8,
+    "cpu_s": 268.04,
+    "mode": "compact8",
+    "rep": 1,
+    "wall_seconds": 11.511009979993105,
+    "counts": {
+      "n_beam_lookups": 2907400,
+      "n_mem_hits": 406015,
+      "n_neighborcache_prefetch_hits": 147788,
+      "n_neighborcache_hits": 20204,
+      "n_disk_reads": 2352023,
+      "n_neighborcache_dyn_disk_reads": 18630
+    },
+    "n_hit_pct": 13.964882713076976,
+    "prefetch_hit_pct": 5.083167090871569,
+    "bit_identical_to_bfs": {
+      "idx_uint32.bin": true,
+      "dists_float.bin": true
+    },
+    "costs": {
+      "total_query": {
+        "calls": 1.0,
+        "inclusive_us": 5273.33201,
+        "exclusive_us": 572.98212
+      },
+      "n_lookup": {
+        "calls": 145.46666666666667,
+        "inclusive_us": 48.74912333333334,
+        "exclusive_us": 31.401153333333333
+      },
+      "prefetch_lookup": {
+        "calls": 119.95666666666666,
+        "inclusive_us": 21.163466666666668,
+        "exclusive_us": 21.163466666666668
+      },
+      "d_lookup": {
+        "calls": 113.12666666666667,
+        "inclusive_us": 29.657303333333335,
+        "exclusive_us": 21.099130000000002
+      },
+      "n_admit": {
+        "calls": 113.12666666666667,
+        "inclusive_us": 811.98127,
+        "exclusive_us": 38.92863333333333
+      },
+      "n_evict": {
+        "calls": 112.95333333333333,
+        "inclusive_us": 572.5305366666666,
+        "exclusive_us": 92.3742
+      },
+      "access_record": {
+        "calls": 145.46666666666667,
+        "inclusive_us": 34.86435,
+        "exclusive_us": 11.380096666666667
+      },
+      "m_expand": {
+        "calls": 145.46666666666667,
+        "inclusive_us": 23.484253333333335,
+        "exclusive_us": 16.9333
+      },
+      "seed_update": {
+        "calls": 113.12666666666667,
+        "inclusive_us": 80.00283333333333,
+        "exclusive_us": 18.04089
+      },
+      "seed_create": {
+        "calls": 8.81,
+        "inclusive_us": 250.76441666666665,
+        "exclusive_us": 99.28393
+      },
+      "pair_refresh": {
+        "calls": 16.363333333333333,
+        "inclusive_us": 438.42276,
+        "exclusive_us": 84.43762333333333
+      },
+      "prepare_d_io": {
+        "calls": 6.87,
+        "inclusive_us": 19.92523,
+        "exclusive_us": 8.97815
+      },
+      "issue_io": {
+        "calls": 30.736666666666668,
+        "inclusive_us": 3631.3350766666667,
+        "exclusive_us": 11.872983333333334
+      },
+      "query_end": {
+        "calls": 1.0,
+        "inclusive_us": 34.31946666666667,
+        "exclusive_us": 1.57533
+      },
+      "query_patch": {
+        "calls": 1.0,
+        "inclusive_us": 5.30677,
+        "exclusive_us": 4.567256666666667
+      },
+      "heap_flush": {
+        "calls": 1.0,
+        "inclusive_us": 17.523276666666668,
+        "exclusive_us": 11.48825
+      },
+      "base_load_note": {
+        "calls": 113.12666666666667,
+        "inclusive_us": 65.21962333333333,
+        "exclusive_us": 29.006636666666665
+      },
+      "n_lock_wait": {
+        "calls": 1301.5466666666666,
+        "inclusive_us": 94.98237666666667,
+        "exclusive_us": 94.98237666666667
+      },
+      "n_contains": {
+        "calls": 381.21,
+        "inclusive_us": 41.62520333333333,
+        "exclusive_us": 27.87077
+      },
+      "n_victim_probe": {
+        "calls": 113.12666666666667,
+        "inclusive_us": 36.58331333333333,
+        "exclusive_us": 23.03917
+      },
+      "n_install": {
+        "calls": 113.12666666666667,
+        "inclusive_us": 47.08763666666667,
+        "exclusive_us": 43.611959999999996
+      },
+      "n_payload_copy": {
+        "calls": 430.9766666666667,
+        "inclusive_us": 95.36287666666666,
+        "exclusive_us": 57.83202
+      },
+      "prefetch_snapshot": {
+        "calls": 113.12666666666667,
+        "inclusive_us": 9.55836,
+        "exclusive_us": 9.55836
+      },
+      "prefetch_register": {
+        "calls": 8.723333333333333,
+        "inclusive_us": 4.733576666666667,
+        "exclusive_us": 4.40326
+      },
+      "prefetch_evict": {
+        "calls": 5.506666666666667,
+        "inclusive_us": 8.630796666666667,
+        "exclusive_us": 4.81913
+      },
+      "private_mutation_wait": {
+        "calls": 14.016666666666667,
+        "inclusive_us": 1.91875,
+        "exclusive_us": 1.91875
+      },
+      "metadata_lock_wait": {
+        "calls": 923.21,
+        "inclusive_us": 241.17857999999998,
+        "exclusive_us": 241.17857999999998
+      },
+      "stash_lock_wait": {
+        "calls": 391.28333333333336,
+        "inclusive_us": 40.98052,
+        "exclusive_us": 40.98052
+      },
+      "seed_lock_wait": {
+        "calls": 13.223333333333333,
+        "inclusive_us": 1.4871766666666668,
+        "exclusive_us": 1.4871766666666668
+      },
+      "record_unregister": {
+        "calls": 14.23,
+        "inclusive_us": 3.3702966666666665,
+        "exclusive_us": 3.3702966666666665
+      },
+      "io_submit": {
+        "calls": 31.406666666666666,
+        "inclusive_us": 277.27783,
+        "exclusive_us": 277.27783
+      },
+      "io_wait": {
+        "calls": 31.406666666666666,
+        "inclusive_us": 3365.4387266666668,
+        "exclusive_us": 3365.4387266666668
+      },
+      "seed_already_local": {
+        "calls": 2.51,
+        "inclusive_us": 0.04993333333333333,
+        "exclusive_us": 0.04993333333333333
+      }
+    },
+    "rss_kib": {
+      "after_load": 3942144,
+      "after_ncache": 4168956,
+      "after_static_dcache": 4168964,
+      "after_dyn_init": 4194544,
+      "after_search": 4360596
+    },
+    "extra_rss_mib": 408.64453125
+  },
+  {
+    "qps": 3854.99,
+    "latency_us": 4986.76,
+    "p99_us": 6827.0,
+    "mean_ios": 117.91,
+    "base_pages": 116.33,
+    "duplicate_ios": 0.71,
+    "disk_reads_per_query": 117.8348,
+    "sector_cache_hits": 0.0,
+    "io_us_per_read": 32.68,
+    "mean_sector_jump": 3105753.46,
+    "near_jump_pct": 0.13,
+    "hops": 32.05,
+    "io_us_per_query": 3773.73,
+    "cpu_s": 275.84,
+    "mode": "heap4k",
+    "rep": 1,
+    "wall_seconds": 11.362796403001994,
+    "counts": {
+      "n_beam_lookups": 2907400,
+      "n_mem_hits": 403873,
+      "n_neighborcache_prefetch_hits": 145337,
+      "n_neighborcache_hits": 18880,
+      "n_disk_reads": 2356696,
+      "n_neighborcache_dyn_disk_reads": 17386
+    },
+    "n_hit_pct": 13.891208640022013,
+    "prefetch_hit_pct": 4.998864965261058,
+    "bit_identical_to_bfs": {
+      "idx_uint32.bin": true,
+      "dists_float.bin": true
+    },
+    "costs": {
+      "total_query": {
+        "calls": 1.0,
+        "inclusive_us": 5300.8658399999995,
+        "exclusive_us": 573.5034899999999
+      },
+      "n_lookup": {
+        "calls": 145.46666666666667,
+        "inclusive_us": 49.92939666666667,
+        "exclusive_us": 31.779433333333333
+      },
+      "prefetch_lookup": {
+        "calls": 120.81,
+        "inclusive_us": 20.982406666666666,
+        "exclusive_us": 20.982406666666666
+      },
+      "d_lookup": {
+        "calls": 113.52333333333333,
+        "inclusive_us": 27.268866666666664,
+        "exclusive_us": 20.759846666666668
+      },
+      "n_admit": {
+        "calls": 113.52333333333333,
+        "inclusive_us": 818.6828833333333,
+        "exclusive_us": 39.307269999999995
+      },
+      "n_evict": {
+        "calls": 113.25666666666666,
+        "inclusive_us": 581.9874833333333,
+        "exclusive_us": 92.70183333333333
+      },
+      "access_record": {
+        "calls": 145.46666666666667,
+        "inclusive_us": 33.786730000000006,
+        "exclusive_us": 10.829306666666668
+      },
+      "m_expand": {
+        "calls": 145.46666666666667,
+        "inclusive_us": 22.95742333333333,
+        "exclusive_us": 16.65328
+      },
+      "seed_update": {
+        "calls": 113.52333333333333,
+        "inclusive_us": 78.65255333333333,
+        "exclusive_us": 18.170786666666668
+      },
+      "seed_create": {
+        "calls": 8.246666666666666,
+        "inclusive_us": 228.13209333333333,
+        "exclusive_us": 92.48767333333333
+      },
+      "pair_refresh": {
+        "calls": 15.436666666666667,
+        "inclusive_us": 441.07690333333335,
+        "exclusive_us": 82.93494
+      },
+      "prepare_d_io": {
+        "calls": 6.87,
+        "inclusive_us": 19.27571,
+        "exclusive_us": 8.784516666666667
+      },
+      "issue_io": {
+        "calls": 30.946666666666665,
+        "inclusive_us": 3655.8593133333334,
+        "exclusive_us": 11.939963333333333
+      },
+      "query_end": {
+        "calls": 1.0,
+        "inclusive_us": 26.27344666666667,
+        "exclusive_us": 0.8158366666666667
+      },
+      "query_patch": {
+        "calls": 1.0,
+        "inclusive_us": 5.429673333333334,
+        "exclusive_us": 4.5774799999999995
+      },
+      "heap_flush": {
+        "calls": 1.0,
+        "inclusive_us": 17.289476666666665,
+        "exclusive_us": 11.23728
+      },
+      "base_load_note": {
+        "calls": 113.52333333333333,
+        "inclusive_us": 72.51415666666666,
+        "exclusive_us": 28.528200000000002
+      },
+      "n_lock_wait": {
+        "calls": 1262.6766666666667,
+        "inclusive_us": 95.69069666666667,
+        "exclusive_us": 95.69069666666667
+      },
+      "n_contains": {
+        "calls": 381.2133333333333,
+        "inclusive_us": 41.88366666666666,
+        "exclusive_us": 28.142496666666666
+      },
+      "n_victim_probe": {
+        "calls": 113.52333333333333,
+        "inclusive_us": 33.909956666666666,
+        "exclusive_us": 19.872603333333334
+      },
+      "n_install": {
+        "calls": 113.52333333333333,
+        "inclusive_us": 46.99285333333333,
+        "exclusive_us": 43.418526666666665
+      },
+      "n_payload_copy": {
+        "calls": 396.2633333333333,
+        "inclusive_us": 88.79253999999999,
+        "exclusive_us": 52.017603333333334
+      },
+      "prefetch_snapshot": {
+        "calls": 113.52333333333333,
+        "inclusive_us": 8.880256666666666,
+        "exclusive_us": 8.880256666666666
+      },
+      "prefetch_register": {
+        "calls": 8.123333333333333,
+        "inclusive_us": 5.75893,
+        "exclusive_us": 5.448
+      },
+      "prefetch_evict": {
+        "calls": 5.1033333333333335,
+        "inclusive_us": 8.167646666666666,
+        "exclusive_us": 4.661123333333333
+      },
+      "private_mutation_wait": {
+        "calls": 13.063333333333333,
+        "inclusive_us": 1.6174433333333333,
+        "exclusive_us": 1.6174433333333333
+      },
+      "metadata_lock_wait": {
+        "calls": 905.6933333333334,
+        "inclusive_us": 227.16685666666666,
+        "exclusive_us": 227.16685666666666
+      },
+      "stash_lock_wait": {
+        "calls": 360.9033333333333,
+        "inclusive_us": 66.70142999999999,
+        "exclusive_us": 66.70142999999999
+      },
+      "seed_lock_wait": {
+        "calls": 12.45,
+        "inclusive_us": 1.4219833333333334,
+        "exclusive_us": 1.4219833333333334
+      },
+      "record_unregister": {
+        "calls": 13.226666666666667,
+        "inclusive_us": 3.16548,
+        "exclusive_us": 3.16548
+      },
+      "io_submit": {
+        "calls": 31.486666666666668,
+        "inclusive_us": 278.14709999999997,
+        "exclusive_us": 278.14709999999997
+      },
+      "io_wait": {
+        "calls": 31.486666666666668,
+        "inclusive_us": 3398.4712833333333,
+        "exclusive_us": 3398.4712833333333
+      },
+      "seed_already_local": {
+        "calls": 2.4766666666666666,
+        "inclusive_us": 0.04941333333333334,
+        "exclusive_us": 0.04941333333333334
+      }
+    },
+    "rss_kib": {
+      "after_load": 3942332,
+      "after_ncache": 3964948,
+      "after_static_dcache": 3964956,
+      "after_dyn_init": 3990616,
+      "after_search": 4359200
+    },
+    "extra_rss_mib": 407.09765625
+  },
+  {
+    "qps": 3798.74,
+    "latency_us": 5033.66,
+    "p99_us": 8645.0,
+    "mean_ios": 117.71,
+    "base_pages": 116.12,
+    "duplicate_ios": 0.71,
+    "disk_reads_per_query": 117.6352,
+    "sector_cache_hits": 0.0,
+    "io_us_per_read": 32.56,
+    "mean_sector_jump": 3093552.07,
+    "near_jump_pct": 0.13,
+    "hops": 32.01,
+    "io_us_per_query": 3773.06,
+    "cpu_s": 304.36,
+    "mode": "trim",
+    "rep": 1,
+    "wall_seconds": 11.444200000725687,
+    "counts": {
+      "n_beam_lookups": 2907400,
+      "n_mem_hits": 408298,
+      "n_neighborcache_prefetch_hits": 144891,
+      "n_neighborcache_hits": 19225,
+      "n_disk_reads": 2352704,
+      "n_neighborcache_dyn_disk_reads": 17718
+    },
+    "n_hit_pct": 14.04340648001651,
+    "prefetch_hit_pct": 4.983524798789296,
+    "bit_identical_to_bfs": {
+      "idx_uint32.bin": true,
+      "dists_float.bin": true
+    },
+    "costs": {
+      "total_query": {
+        "calls": 1.0,
+        "inclusive_us": 5224.080656666666,
+        "exclusive_us": 593.7505866666667
+      },
+      "n_lookup": {
+        "calls": 145.46666666666667,
+        "inclusive_us": 48.19121,
+        "exclusive_us": 30.82834666666667
+      },
+      "prefetch_lookup": {
+        "calls": 119.25,
+        "inclusive_us": 22.28752666666667,
+        "exclusive_us": 22.28752666666667
+      },
+      "d_lookup": {
+        "calls": 112.28,
+        "inclusive_us": 28.341540000000002,
+        "exclusive_us": 21.275389999999998
+      },
+      "n_admit": {
+        "calls": 112.28,
+        "inclusive_us": 784.5360633333333,
+        "exclusive_us": 38.85775
+      },
+      "n_evict": {
+        "calls": 112.06333333333333,
+        "inclusive_us": 552.5656066666667,
+        "exclusive_us": 93.48589333333332
+      },
+      "access_record": {
+        "calls": 145.46666666666667,
+        "inclusive_us": 36.070800000000006,
+        "exclusive_us": 10.856023333333333
+      },
+      "m_expand": {
+        "calls": 145.46666666666667,
+        "inclusive_us": 25.21477666666667,
+        "exclusive_us": 18.278893333333333
+      },
+      "seed_update": {
+        "calls": 112.28,
+        "inclusive_us": 72.83133333333333,
+        "exclusive_us": 18.835126666666667
+      },
+      "seed_create": {
+        "calls": 8.363333333333333,
+        "inclusive_us": 232.58100666666667,
+        "exclusive_us": 95.58038333333333
+      },
+      "pair_refresh": {
+        "calls": 15.873333333333333,
+        "inclusive_us": 407.72322333333335,
+        "exclusive_us": 83.01233333333333
+      },
+      "prepare_d_io": {
+        "calls": 6.79,
+        "inclusive_us": 21.027823333333334,
+        "exclusive_us": 9.436346666666667
+      },
+      "issue_io": {
+        "calls": 30.57,
+        "inclusive_us": 3591.6776433333334,
+        "exclusive_us": 12.821293333333333
+      },
+      "query_end": {
+        "calls": 1.0,
+        "inclusive_us": 32.19815333333333,
+        "exclusive_us": 2.120346666666667
+      },
+      "query_patch": {
+        "calls": 1.0,
+        "inclusive_us": 5.616243333333333,
+        "exclusive_us": 4.645693333333334
+      },
+      "heap_flush": {
+        "calls": 1.0,
+        "inclusive_us": 17.713676666666665,
+        "exclusive_us": 11.467600000000001
+      },
+      "base_load_note": {
+        "calls": 112.28,
+        "inclusive_us": 53.07018,
+        "exclusive_us": 28.920240000000003
+      },
+      "n_lock_wait": {
+        "calls": 1273.58,
+        "inclusive_us": 93.17452666666667,
+        "exclusive_us": 93.17452666666667
+      },
+      "n_contains": {
+        "calls": 376.37333333333333,
+        "inclusive_us": 40.85916,
+        "exclusive_us": 27.483430000000002
+      },
+      "n_victim_probe": {
+        "calls": 112.28,
+        "inclusive_us": 35.88622666666667,
+        "exclusive_us": 22.30540333333333
+      },
+      "n_install": {
+        "calls": 112.28,
+        "inclusive_us": 47.337113333333335,
+        "exclusive_us": 43.826816666666666
+      },
+      "n_payload_copy": {
+        "calls": 411.67333333333335,
+        "inclusive_us": 89.87037,
+        "exclusive_us": 53.838123333333336
+      },
+      "prefetch_snapshot": {
+        "calls": 112.28,
+        "inclusive_us": 8.550243333333334,
+        "exclusive_us": 8.550243333333334
+      },
+      "prefetch_register": {
+        "calls": 8.22,
+        "inclusive_us": 4.34496,
+        "exclusive_us": 4.035433333333334
+      },
+      "prefetch_evict": {
+        "calls": 4.933333333333334,
+        "inclusive_us": 8.13065,
+        "exclusive_us": 4.580956666666667
+      },
+      "private_mutation_wait": {
+        "calls": 12.953333333333333,
+        "inclusive_us": 1.5994533333333334,
+        "exclusive_us": 1.5994533333333334
+      },
+      "metadata_lock_wait": {
+        "calls": 901.7533333333333,
+        "inclusive_us": 234.38860333333332,
+        "exclusive_us": 234.38860333333332
+      },
+      "stash_lock_wait": {
+        "calls": 374.11333333333334,
+        "inclusive_us": 34.22744,
+        "exclusive_us": 34.22744
+      },
+      "seed_lock_wait": {
+        "calls": 12.526666666666667,
+        "inclusive_us": 1.3501433333333335,
+        "exclusive_us": 1.3501433333333335
+      },
+      "record_unregister": {
+        "calls": 13.153333333333334,
+        "inclusive_us": 3.246536666666667,
+        "exclusive_us": 3.246536666666667
+      },
+      "io_submit": {
+        "calls": 31.093333333333334,
+        "inclusive_us": 281.38892,
+        "exclusive_us": 281.38892
+      },
+      "io_wait": {
+        "calls": 31.093333333333334,
+        "inclusive_us": 3313.57327,
+        "exclusive_us": 3313.57327
+      },
+      "seed_already_local": {
+        "calls": 2.4033333333333333,
+        "inclusive_us": 0.051583333333333335,
+        "exclusive_us": 0.051583333333333335
+      }
+    },
+    "rss_kib": {
+      "after_load": 3942116,
+      "after_ncache": 3964860,
+      "after_static_dcache": 3964868,
+      "after_dyn_init": 3990528,
+      "after_search": 4301476
+    },
+    "extra_rss_mib": 350.9375
+  },
+  {
+    "qps": 3891.14,
+    "latency_us": 4957.98,
+    "p99_us": 6423.0,
+    "mean_ios": 117.72,
+    "base_pages": 116.1,
+    "duplicate_ios": 0.71,
+    "disk_reads_per_query": 117.6485,
+    "sector_cache_hits": 0.0,
+    "io_us_per_read": 32.53,
+    "mean_sector_jump": 3098124.75,
+    "near_jump_pct": 0.13,
+    "hops": 32.03,
+    "io_us_per_query": 3767.7,
+    "cpu_s": 275.41,
+    "mode": "trim",
+    "rep": 2,
+    "wall_seconds": 11.320839876309037,
+    "counts": {
+      "n_beam_lookups": 2907400,
+      "n_mem_hits": 406063,
+      "n_neighborcache_prefetch_hits": 146857,
+      "n_neighborcache_hits": 19803,
+      "n_disk_reads": 2352970,
+      "n_neighborcache_dyn_disk_reads": 18293
+    },
+    "n_hit_pct": 13.966533672697254,
+    "prefetch_hit_pct": 5.051145353236569,
+    "bit_identical_to_bfs": {
+      "idx_uint32.bin": true,
+      "dists_float.bin": true
+    },
+    "costs": {
+      "total_query": {
+        "calls": 1.0,
+        "inclusive_us": 5249.543406666667,
+        "exclusive_us": 571.6081899999999
+      },
+      "n_lookup": {
+        "calls": 145.46666666666667,
+        "inclusive_us": 48.28334333333333,
+        "exclusive_us": 31.036360000000002
+      },
+      "prefetch_lookup": {
+        "calls": 119.55333333333333,
+        "inclusive_us": 21.42393666666667,
+        "exclusive_us": 21.42393666666667
+      },
+      "d_lookup": {
+        "calls": 112.21333333333334,
+        "inclusive_us": 27.646746666666665,
+        "exclusive_us": 20.60294
+      },
+      "n_admit": {
+        "calls": 112.21333333333334,
+        "inclusive_us": 789.45413,
+        "exclusive_us": 39.12246
+      },
+      "n_evict": {
+        "calls": 111.89,
+        "inclusive_us": 571.6059333333334,
+        "exclusive_us": 95.55875999999999
+      },
+      "access_record": {
+        "calls": 145.46666666666667,
+        "inclusive_us": 34.62989666666667,
+        "exclusive_us": 10.612746666666666
+      },
+      "m_expand": {
+        "calls": 145.46666666666667,
+        "inclusive_us": 24.01715,
+        "exclusive_us": 16.70109
+      },
+      "seed_update": {
+        "calls": 112.21333333333334,
+        "inclusive_us": 58.742419999999996,
+        "exclusive_us": 22.721503333333334
+      },
+      "seed_create": {
+        "calls": 8.91,
+        "inclusive_us": 242.62047,
+        "exclusive_us": 101.80717999999999
+      },
+      "pair_refresh": {
+        "calls": 16.596666666666668,
+        "inclusive_us": 427.82017333333334,
+        "exclusive_us": 87.97926333333334
+      },
+      "prepare_d_io": {
+        "calls": 6.556666666666667,
+        "inclusive_us": 20.208603333333333,
+        "exclusive_us": 8.543426666666667
+      },
+      "issue_io": {
+        "calls": 30.516666666666666,
+        "inclusive_us": 3617.0086866666666,
+        "exclusive_us": 12.029716666666667
+      },
+      "query_end": {
+        "calls": 1.0,
+        "inclusive_us": 27.48668,
+        "exclusive_us": 0.4822366666666667
+      },
+      "query_patch": {
+        "calls": 1.0,
+        "inclusive_us": 5.794523333333333,
+        "exclusive_us": 4.796609999999999
+      },
+      "heap_flush": {
+        "calls": 1.0,
+        "inclusive_us": 17.327143333333332,
+        "exclusive_us": 11.369453333333333
+      },
+      "base_load_note": {
+        "calls": 112.21333333333334,
+        "inclusive_us": 88.88801,
+        "exclusive_us": 47.77924
+      },
+      "n_lock_wait": {
+        "calls": 1303.64,
+        "inclusive_us": 95.44016666666667,
+        "exclusive_us": 95.44016666666667
+      },
+      "n_contains": {
+        "calls": 378.5566666666667,
+        "inclusive_us": 41.63736,
+        "exclusive_us": 28.100616666666664
+      },
+      "n_victim_probe": {
+        "calls": 112.21333333333334,
+        "inclusive_us": 36.241393333333335,
+        "exclusive_us": 22.73594
+      },
+      "n_install": {
+        "calls": 112.21333333333334,
+        "inclusive_us": 46.54663,
+        "exclusive_us": 43.06654666666667
+      },
+      "n_payload_copy": {
+        "calls": 436.88,
+        "inclusive_us": 95.88639666666667,
+        "exclusive_us": 57.57115
+      },
+      "prefetch_snapshot": {
+        "calls": 112.21333333333334,
+        "inclusive_us": 9.298166666666667,
+        "exclusive_us": 9.298166666666667
+      },
+      "prefetch_register": {
+        "calls": 8.71,
+        "inclusive_us": 4.43702,
+        "exclusive_us": 4.091446666666667
+      },
+      "prefetch_evict": {
+        "calls": 5.496666666666667,
+        "inclusive_us": 8.804293333333334,
+        "exclusive_us": 5.131166666666667
+      },
+      "private_mutation_wait": {
+        "calls": 13.943333333333333,
+        "inclusive_us": 1.7589733333333333,
+        "exclusive_us": 1.7589733333333333
+      },
+      "metadata_lock_wait": {
+        "calls": 920.4666666666667,
+        "inclusive_us": 203.18912333333333,
+        "exclusive_us": 203.18912333333333
+      },
+      "stash_lock_wait": {
+        "calls": 397.49333333333334,
+        "inclusive_us": 49.063073333333335,
+        "exclusive_us": 49.063073333333335
+      },
+      "seed_lock_wait": {
+        "calls": 13.293333333333333,
+        "inclusive_us": 1.4792166666666666,
+        "exclusive_us": 1.4792166666666666
+      },
+      "record_unregister": {
+        "calls": 14.206666666666667,
+        "inclusive_us": 3.3346233333333335,
+        "exclusive_us": 3.3346233333333335
+      },
+      "io_submit": {
+        "calls": 31.1,
+        "inclusive_us": 274.80044666666663,
+        "exclusive_us": 274.80044666666663
+      },
+      "io_wait": {
+        "calls": 31.1,
+        "inclusive_us": 3346.2514633333335,
+        "exclusive_us": 3346.2514633333335
+      },
+      "seed_already_local": {
+        "calls": 2.58,
+        "inclusive_us": 0.05617333333333333,
+        "exclusive_us": 0.05617333333333333
+      }
+    },
+    "rss_kib": {
+      "after_load": 3942384,
+      "after_ncache": 3965128,
+      "after_static_dcache": 3965136,
+      "after_dyn_init": 3990860,
+      "after_search": 4311080
+    },
+    "extra_rss_mib": 360.0546875
+  },
+  {
+    "qps": 3862.08,
+    "latency_us": 4964.07,
+    "p99_us": 6539.0,
+    "mean_ios": 117.91,
+    "base_pages": 116.29,
+    "duplicate_ios": 0.71,
+    "disk_reads_per_query": 117.8306,
+    "sector_cache_hits": 0.0,
+    "io_us_per_read": 32.41,
+    "mean_sector_jump": 3097123.75,
+    "near_jump_pct": 0.13,
+    "hops": 32.05,
+    "io_us_per_query": 3770.99,
+    "cpu_s": 286.83,
+    "mode": "heap4k",
+    "rep": 2,
+    "wall_seconds": 11.343807274941355,
+    "counts": {
+      "n_beam_lookups": 2907400,
+      "n_mem_hits": 403813,
+      "n_neighborcache_prefetch_hits": 145430,
+      "n_neighborcache_hits": 19621,
+      "n_disk_reads": 2356612,
+      "n_neighborcache_dyn_disk_reads": 18076
+    },
+    "n_hit_pct": 13.889144940496664,
+    "prefetch_hit_pct": 5.002063699525349,
+    "bit_identical_to_bfs": {
+      "idx_uint32.bin": true,
+      "dists_float.bin": true
+    },
+    "costs": {
+      "total_query": {
+        "calls": 1.0,
+        "inclusive_us": 5286.70721,
+        "exclusive_us": 576.3961433333333
+      },
+      "n_lookup": {
+        "calls": 145.46666666666667,
+        "inclusive_us": 47.83382,
+        "exclusive_us": 30.493206666666666
+      },
+      "prefetch_lookup": {
+        "calls": 121.1,
+        "inclusive_us": 21.457706666666667,
+        "exclusive_us": 21.457706666666667
+      },
+      "d_lookup": {
+        "calls": 113.67666666666666,
+        "inclusive_us": 27.57752,
+        "exclusive_us": 20.797563333333333
+      },
+      "n_admit": {
+        "calls": 113.67666666666666,
+        "inclusive_us": 787.5455233333333,
+        "exclusive_us": 38.418863333333334
+      },
+      "n_evict": {
+        "calls": 113.65,
+        "inclusive_us": 573.2700500000001,
+        "exclusive_us": 91.73199000000001
+      },
+      "access_record": {
+        "calls": 145.46666666666667,
+        "inclusive_us": 34.65171,
+        "exclusive_us": 10.695603333333333
+      },
+      "m_expand": {
+        "calls": 145.46666666666667,
+        "inclusive_us": 23.956106666666667,
+        "exclusive_us": 16.768726666666666
+      },
+      "seed_update": {
+        "calls": 113.67666666666666,
+        "inclusive_us": 55.024660000000004,
+        "exclusive_us": 17.24260333333333
+      },
+      "seed_create": {
+        "calls": 9.126666666666667,
+        "inclusive_us": 248.36919666666665,
+        "exclusive_us": 104.62405333333334
+      },
+      "pair_refresh": {
+        "calls": 16.82,
+        "inclusive_us": 435.89233,
+        "exclusive_us": 89.87687
+      },
+      "prepare_d_io": {
+        "calls": 6.75,
+        "inclusive_us": 18.845603333333333,
+        "exclusive_us": 8.79118
+      },
+      "issue_io": {
+        "calls": 30.903333333333332,
+        "inclusive_us": 3669.2741466666666,
+        "exclusive_us": 12.074393333333333
+      },
+      "query_end": {
+        "calls": 1.0,
+        "inclusive_us": 28.893653333333333,
+        "exclusive_us": 0.4948666666666667
+      },
+      "query_patch": {
+        "calls": 1.0,
+        "inclusive_us": 5.353876666666667,
+        "exclusive_us": 4.408546666666667
+      },
+      "heap_flush": {
+        "calls": 1.0,
+        "inclusive_us": 16.918503333333334,
+        "exclusive_us": 10.972496666666666
+      },
+      "base_load_note": {
+        "calls": 113.67666666666666,
+        "inclusive_us": 70.49976666666666,
+        "exclusive_us": 28.48652666666667
+      },
+      "n_lock_wait": {
+        "calls": 1322.1466666666668,
+        "inclusive_us": 96.91292333333334,
+        "exclusive_us": 96.91292333333334
+      },
+      "n_contains": {
+        "calls": 384.14666666666665,
+        "inclusive_us": 41.9996,
+        "exclusive_us": 28.14171
+      },
+      "n_victim_probe": {
+        "calls": 113.67666666666666,
+        "inclusive_us": 36.50281,
+        "exclusive_us": 22.97608333333333
+      },
+      "n_install": {
+        "calls": 113.67666666666666,
+        "inclusive_us": 46.87730666666666,
+        "exclusive_us": 43.31526666666667
+      },
+      "n_payload_copy": {
+        "calls": 445.78,
+        "inclusive_us": 97.43521000000001,
+        "exclusive_us": 58.205886666666665
+      },
+      "prefetch_snapshot": {
+        "calls": 113.67666666666666,
+        "inclusive_us": 8.314093333333334,
+        "exclusive_us": 8.314093333333334
+      },
+      "prefetch_register": {
+        "calls": 8.966666666666667,
+        "inclusive_us": 6.319923333333334,
+        "exclusive_us": 5.994173333333333
+      },
+      "prefetch_evict": {
+        "calls": 5.66,
+        "inclusive_us": 9.459163333333334,
+        "exclusive_us": 5.6269
+      },
+      "private_mutation_wait": {
+        "calls": 14.47,
+        "inclusive_us": 1.7539733333333334,
+        "exclusive_us": 1.7539733333333334
+      },
+      "metadata_lock_wait": {
+        "calls": 931.8833333333333,
+        "inclusive_us": 205.71588333333332,
+        "exclusive_us": 205.71588333333332
+      },
+      "stash_lock_wait": {
+        "calls": 403.8833333333333,
+        "inclusive_us": 47.977873333333335,
+        "exclusive_us": 47.977873333333335
+      },
+      "seed_lock_wait": {
+        "calls": 13.52,
+        "inclusive_us": 1.3721733333333335,
+        "exclusive_us": 1.3721733333333335
+      },
+      "record_unregister": {
+        "calls": 14.626666666666667,
+        "inclusive_us": 3.4586033333333335,
+        "exclusive_us": 3.4586033333333335
+      },
+      "io_submit": {
+        "calls": 31.463333333333335,
+        "inclusive_us": 278.45991,
+        "exclusive_us": 278.45991
+      },
+      "io_wait": {
+        "calls": 31.463333333333335,
+        "inclusive_us": 3394.69875,
+        "exclusive_us": 3394.69875
+      },
+      "seed_already_local": {
+        "calls": 2.6066666666666665,
+        "inclusive_us": 0.051666666666666666,
+        "exclusive_us": 0.051666666666666666
+      }
+    },
+    "rss_kib": {
+      "after_load": 3942016,
+      "after_ncache": 3964696,
+      "after_static_dcache": 3964704,
+      "after_dyn_init": 3990492,
+      "after_search": 4367272
+    },
+    "extra_rss_mib": 415.2890625
+  },
+  {
+    "qps": 3912.6,
+    "latency_us": 4957.25,
+    "p99_us": 6467.0,
+    "mean_ios": 117.64,
+    "base_pages": 115.95,
+    "duplicate_ios": 0.71,
+    "disk_reads_per_query": 117.55675,
+    "sector_cache_hits": 0.0,
+    "io_us_per_read": 32.52,
+    "mean_sector_jump": 3101870.8,
+    "near_jump_pct": 0.13,
+    "hops": 32.06,
+    "io_us_per_query": 3763.82,
+    "cpu_s": 276.13,
+    "mode": "compact8",
+    "rep": 2,
+    "wall_seconds": 11.425478134304285,
+    "counts": {
+      "n_beam_lookups": 2907400,
+      "n_mem_hits": 403794,
+      "n_neighborcache_prefetch_hits": 150879,
+      "n_neighborcache_hits": 20990,
+      "n_disk_reads": 2351135,
+      "n_neighborcache_dyn_disk_reads": 19398
+    },
+    "n_hit_pct": 13.88849143564697,
+    "prefetch_hit_pct": 5.189482011419138,
+    "bit_identical_to_bfs": {
+      "idx_uint32.bin": true,
+      "dists_float.bin": true
+    },
+    "costs": {
+      "total_query": {
+        "calls": 1.0,
+        "inclusive_us": 5228.1348,
+        "exclusive_us": 573.4473633333333
+      },
+      "n_lookup": {
+        "calls": 145.46666666666667,
+        "inclusive_us": 49.14473333333333,
+        "exclusive_us": 31.385740000000002
+      },
+      "prefetch_lookup": {
+        "calls": 120.69,
+        "inclusive_us": 21.289876666666668,
+        "exclusive_us": 21.289876666666668
+      },
+      "d_lookup": {
+        "calls": 113.01333333333334,
+        "inclusive_us": 31.420009999999998,
+        "exclusive_us": 21.04789
+      },
+      "n_admit": {
+        "calls": 113.01333333333334,
+        "inclusive_us": 774.6931933333334,
+        "exclusive_us": 38.056156666666666
+      },
+      "n_evict": {
+        "calls": 112.85333333333334,
+        "inclusive_us": 559.7677766666666,
+        "exclusive_us": 93.56698333333334
+      },
+      "access_record": {
+        "calls": 145.46666666666667,
+        "inclusive_us": 34.59028333333333,
+        "exclusive_us": 10.877883333333333
+      },
+      "m_expand": {
+        "calls": 145.46666666666667,
+        "inclusive_us": 23.712400000000002,
+        "exclusive_us": 16.946703333333335
+      },
+      "seed_update": {
+        "calls": 113.01333333333334,
+        "inclusive_us": 56.01948,
+        "exclusive_us": 17.565586666666665
+      },
+      "seed_create": {
+        "calls": 8.87,
+        "inclusive_us": 243.09178333333332,
+        "exclusive_us": 99.71393666666665
+      },
+      "pair_refresh": {
+        "calls": 16.89666666666667,
+        "inclusive_us": 424.4044733333333,
+        "exclusive_us": 86.64662
+      },
+      "prepare_d_io": {
+        "calls": 6.806666666666667,
+        "inclusive_us": 19.361253333333334,
+        "exclusive_us": 8.93525
+      },
+      "issue_io": {
+        "calls": 30.776666666666667,
+        "inclusive_us": 3623.0593766666666,
+        "exclusive_us": 11.873940000000001
+      },
+      "query_end": {
+        "calls": 1.0,
+        "inclusive_us": 35.53784666666667,
+        "exclusive_us": 1.6653499999999999
+      },
+      "query_patch": {
+        "calls": 1.0,
+        "inclusive_us": 5.63647,
+        "exclusive_us": 4.674180000000001
+      },
+      "heap_flush": {
+        "calls": 1.0,
+        "inclusive_us": 17.745283333333333,
+        "exclusive_us": 11.662936666666667
+      },
+      "base_load_note": {
+        "calls": 113.01333333333334,
+        "inclusive_us": 61.366456666666664,
+        "exclusive_us": 28.325923333333332
+      },
+      "n_lock_wait": {
+        "calls": 1317.6866666666667,
+        "inclusive_us": 97.59698333333334,
+        "exclusive_us": 97.59698333333334
+      },
+      "n_contains": {
+        "calls": 382.2866666666667,
+        "inclusive_us": 41.864626666666666,
+        "exclusive_us": 27.946463333333334
+      },
+      "n_victim_probe": {
+        "calls": 113.01333333333334,
+        "inclusive_us": 36.655876666666664,
+        "exclusive_us": 23.093503333333334
+      },
+      "n_install": {
+        "calls": 113.01333333333334,
+        "inclusive_us": 47.217980000000004,
+        "exclusive_us": 43.62805
+      },
+      "n_payload_copy": {
+        "calls": 442.98,
+        "inclusive_us": 98.90794333333334,
+        "exclusive_us": 59.684776666666664
+      },
+      "prefetch_snapshot": {
+        "calls": 113.01333333333334,
+        "inclusive_us": 9.223733333333334,
+        "exclusive_us": 9.223733333333334
+      },
+      "prefetch_register": {
+        "calls": 8.963333333333333,
+        "inclusive_us": 5.945930000000001,
+        "exclusive_us": 5.61101
+      },
+      "prefetch_evict": {
+        "calls": 5.503333333333333,
+        "inclusive_us": 8.694343333333334,
+        "exclusive_us": 4.888633333333333
+      },
+      "private_mutation_wait": {
+        "calls": 14.266666666666667,
+        "inclusive_us": 1.86104,
+        "exclusive_us": 1.86104
+      },
+      "metadata_lock_wait": {
+        "calls": 934.1033333333334,
+        "inclusive_us": 207.61409333333333,
+        "exclusive_us": 207.61409333333333
+      },
+      "stash_lock_wait": {
+        "calls": 401.27,
+        "inclusive_us": 38.75045333333333,
+        "exclusive_us": 38.75045333333333
+      },
+      "seed_lock_wait": {
+        "calls": 13.476666666666667,
+        "inclusive_us": 1.4189733333333334,
+        "exclusive_us": 1.4189733333333334
+      },
+      "record_unregister": {
+        "calls": 14.466666666666667,
+        "inclusive_us": 3.372716666666667,
+        "exclusive_us": 3.372716666666667
+      },
+      "io_submit": {
+        "calls": 31.313333333333333,
+        "inclusive_us": 276.67977666666667,
+        "exclusive_us": 276.67977666666667
+      },
+      "io_wait": {
+        "calls": 31.313333333333333,
+        "inclusive_us": 3349.034796666667,
+        "exclusive_us": 3349.034796666667
+      },
+      "seed_already_local": {
+        "calls": 2.4066666666666667,
+        "inclusive_us": 0.04747666666666667,
+        "exclusive_us": 0.04747666666666667
+      }
+    },
+    "rss_kib": {
+      "after_load": 3942088,
+      "after_ncache": 4168900,
+      "after_static_dcache": 4168908,
+      "after_dyn_init": 4194488,
+      "after_search": 4368132
+    },
+    "extra_rss_mib": 416.05859375
+  },
+  {
+    "qps": 3859.02,
+    "latency_us": 4981.37,
+    "p99_us": 6492.0,
+    "mean_ios": 117.94,
+    "base_pages": 116.33,
+    "duplicate_ios": 0.71,
+    "disk_reads_per_query": 117.86825,
+    "sector_cache_hits": 0.0,
+    "io_us_per_read": 32.5,
+    "mean_sector_jump": 3103841.55,
+    "near_jump_pct": 0.13,
+    "hops": 32.08,
+    "io_us_per_query": 3769.59,
+    "cpu_s": 280.67,
+    "mode": "control",
+    "rep": 2,
+    "wall_seconds": 11.460881187114865,
+    "counts": {
+      "n_beam_lookups": 2907400,
+      "n_mem_hits": 401905,
+      "n_neighborcache_prefetch_hits": 146652,
+      "n_neighborcache_hits": 19545,
+      "n_disk_reads": 2357365,
+      "n_neighborcache_dyn_disk_reads": 18067
+    },
+    "n_hit_pct": 13.823519295590563,
+    "prefetch_hit_pct": 5.044094379858293,
+    "bit_identical_to_bfs": {
+      "idx_uint32.bin": true,
+      "dists_float.bin": true
+    },
+    "costs": {
+      "total_query": {
+        "calls": 1.0,
+        "inclusive_us": 5228.311336666667,
+        "exclusive_us": 569.24239
+      },
+      "n_lookup": {
+        "calls": 145.46666666666667,
+        "inclusive_us": 49.29620333333333,
+        "exclusive_us": 31.687286666666665
+      },
+      "prefetch_lookup": {
+        "calls": 120.06666666666666,
+        "inclusive_us": 36.67699333333333,
+        "exclusive_us": 36.67699333333333
+      },
+      "d_lookup": {
+        "calls": 113.19,
+        "inclusive_us": 39.21897666666667,
+        "exclusive_us": 20.532040000000002
+      },
+      "n_admit": {
+        "calls": 113.19,
+        "inclusive_us": 764.4871433333333,
+        "exclusive_us": 38.76796
+      },
+      "n_evict": {
+        "calls": 112.83333333333333,
+        "inclusive_us": 550.4013100000001,
+        "exclusive_us": 93.41920333333334
+      },
+      "access_record": {
+        "calls": 145.46666666666667,
+        "inclusive_us": 33.48453333333333,
+        "exclusive_us": 10.256456666666667
+      },
+      "m_expand": {
+        "calls": 145.46666666666667,
+        "inclusive_us": 23.228076666666666,
+        "exclusive_us": 16.556886666666664
+      },
+      "seed_update": {
+        "calls": 113.19,
+        "inclusive_us": 57.603559999999995,
+        "exclusive_us": 16.702193333333334
+      },
+      "seed_create": {
+        "calls": 8.576666666666666,
+        "inclusive_us": 233.5358,
+        "exclusive_us": 96.82701333333334
+      },
+      "pair_refresh": {
+        "calls": 15.896666666666667,
+        "inclusive_us": 410.06872999999996,
+        "exclusive_us": 81.90184333333333
+      },
+      "prepare_d_io": {
+        "calls": 6.743333333333333,
+        "inclusive_us": 22.656209999999998,
+        "exclusive_us": 8.62125
+      },
+      "issue_io": {
+        "calls": 30.68,
+        "inclusive_us": 3627.7142433333333,
+        "exclusive_us": 12.023399999999999
+      },
+      "query_end": {
+        "calls": 1.0,
+        "inclusive_us": 28.843700000000002,
+        "exclusive_us": 0.8959566666666667
+      },
+      "query_patch": {
+        "calls": 1.0,
+        "inclusive_us": 5.70059,
+        "exclusive_us": 4.800503333333333
+      },
+      "heap_flush": {
+        "calls": 1.0,
+        "inclusive_us": 17.03631,
+        "exclusive_us": 10.993606666666667
+      },
+      "base_load_note": {
+        "calls": 113.19,
+        "inclusive_us": 52.47645333333333,
+        "exclusive_us": 28.37801
+      },
+      "n_lock_wait": {
+        "calls": 1280.0566666666666,
+        "inclusive_us": 95.54261666666667,
+        "exclusive_us": 95.54261666666667
+      },
+      "n_contains": {
+        "calls": 381.6766666666667,
+        "inclusive_us": 41.91579,
+        "exclusive_us": 28.103783333333332
+      },
+      "n_victim_probe": {
+        "calls": 113.19,
+        "inclusive_us": 33.7806,
+        "exclusive_us": 19.725573333333333
+      },
+      "n_install": {
+        "calls": 113.19,
+        "inclusive_us": 46.53448333333333,
+        "exclusive_us": 42.95513666666667
+      },
+      "n_payload_copy": {
+        "calls": 410.73333333333335,
+        "inclusive_us": 89.46021,
+        "exclusive_us": 52.436699999999995
+      },
+      "prefetch_snapshot": {
+        "calls": 113.19,
+        "inclusive_us": 11.754273333333332,
+        "exclusive_us": 11.754273333333332
+      },
+      "prefetch_register": {
+        "calls": 8.276666666666667,
+        "inclusive_us": 9.605643333333333,
+        "exclusive_us": 9.178773333333332
+      },
+      "prefetch_evict": {
+        "calls": 5.126666666666667,
+        "inclusive_us": 12.449729999999999,
+        "exclusive_us": 4.085896666666667
+      },
+      "private_mutation_wait": {
+        "calls": 13.18,
+        "inclusive_us": 1.6029533333333335,
+        "exclusive_us": 1.6029533333333335
+      },
+      "metadata_lock_wait": {
+        "calls": 915.7866666666666,
+        "inclusive_us": 217.09342,
+        "exclusive_us": 217.09342
+      },
+      "stash_lock_wait": {
+        "calls": 373.94,
+        "inclusive_us": 28.13028,
+        "exclusive_us": 28.13028
+      },
+      "seed_lock_wait": {
+        "calls": 12.536666666666667,
+        "inclusive_us": 1.3118566666666667,
+        "exclusive_us": 1.3118566666666667
+      },
+      "record_unregister": {
+        "calls": 13.403333333333334,
+        "inclusive_us": 8.131516666666666,
+        "exclusive_us": 8.131516666666666
+      },
+      "io_submit": {
+        "calls": 31.22,
+        "inclusive_us": 276.69962666666663,
+        "exclusive_us": 276.69962666666663
+      },
+      "io_wait": {
+        "calls": 31.22,
+        "inclusive_us": 3353.2246066666667,
+        "exclusive_us": 3353.2246066666667
+      },
+      "seed_already_local": {
+        "calls": 2.5833333333333335,
+        "inclusive_us": 0.05133,
+        "exclusive_us": 0.05133
+      }
+    },
+    "rss_kib": {
+      "after_load": 3942088,
+      "after_ncache": 4168832,
+      "after_static_dcache": 4168832,
+      "after_dyn_init": 4202672,
+      "after_search": 4368784
+    },
+    "extra_rss_mib": 416.6953125
+  }
+]

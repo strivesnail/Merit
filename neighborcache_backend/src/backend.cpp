@@ -269,6 +269,7 @@ class NeighborCacheAdapter {
     void selected(Query *q, uint32_t id) {
         q->scratch.neighborcache_expand_count++;
         if (!q->scratch.neighborcache_dcache_maintenance_enabled || index._neighborcache_coread_pack) return;
+        if (!neighborcache_sample_node_heat()) return;
         const auto decision = index._neighborcache_mcache.plan_expand_update(id,
             index._neighborcache_dcache_net_gate_enabled && q->scratch.neighborcache_dcache_probe,
             index._neighborcache_dcache_net_gate_enabled && !q->scratch.neighborcache_dcache_lookup_enabled);

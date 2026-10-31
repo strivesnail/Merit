@@ -18,6 +18,17 @@ target_link_libraries(neighborcache_backend PRIVATE OpenMP::OpenMP_CXX aio pthre
 
 include(CTest)
 if(BUILD_TESTING)
+    # Exercise the same private-page implementation used by all four adapters.
+    foreach(case IN ITEMS prefetch_zero_tail prefetch_record_directory prefetch_private_records heat_sample)
+        add_executable(nc_${case} ${REF}/tests/${case}.cpp)
+        target_include_directories(nc_${case} PRIVATE ${REF}/include)
+        target_compile_options(nc_${case} PRIVATE -UNDEBUG)
+        target_link_libraries(nc_${case} PRIVATE pthread OpenMP::OpenMP_CXX)
+        add_test(NAME ${case} COMMAND nc_${case})
+        set_tests_properties(${case} PROPERTIES TIMEOUT 60)
+    endforeach()
+endif()
+if(BUILD_TESTING)
     add_executable(nc_prefetch_expand_groups tests/prefetch_expand_groups.cpp)
     target_include_directories(nc_prefetch_expand_groups PRIVATE include)
     target_compile_options(nc_prefetch_expand_groups PRIVATE -UNDEBUG)

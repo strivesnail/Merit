@@ -8,6 +8,12 @@
 #include <mutex>
 #include <shared_mutex>
 
+// Keep lock and I/O diagnostics enabled for analysis. Compile with
+// -DNEIGHBORCACHE_ENABLE_PROFILING=0 for a run without detailed timing.
+#ifndef NEIGHBORCACHE_ENABLE_PROFILING
+#define NEIGHBORCACHE_ENABLE_PROFILING 1
+#endif
+
 namespace diskann
 {
 
@@ -38,9 +44,14 @@ inline std::array<NeighborCacheLockMetric, static_cast<size_t>(NeighborCacheLock
 
 inline bool neighborcache_lock_should_sample(NeighborCacheLockKind kind)
 {
+#if NEIGHBORCACHE_ENABLE_PROFILING
     thread_local std::array<uint32_t, static_cast<size_t>(NeighborCacheLockKind::Count)> counters{};
     const size_t idx = static_cast<size_t>(kind);
     return (++counters[idx] & 1023u) == 0;
+#else
+    (void)kind;
+    return false;
+#endif
 }
 
 inline uint64_t neighborcache_lock_now_ns()

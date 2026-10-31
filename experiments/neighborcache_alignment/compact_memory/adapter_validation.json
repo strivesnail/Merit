@@ -1,0 +1,162 @@
+[
+  {
+    "engine": "starling",
+    "trim_zero_tail": false,
+    "queries": 5000,
+    "full_record_verification": true,
+    "counters": {
+      "N": 179,
+      "prefetch": 1288,
+      "D_attempts": 495124,
+      "D_hits": 926,
+      "D_reads": 936,
+      "base_miss": 494329,
+      "seeds": 40,
+      "M": 2048,
+      "opens": 40,
+      "appends": 13,
+      "replaces": 4,
+      "writes": 48
+    }
+  },
+  {
+    "engine": "starling",
+    "trim_zero_tail": true,
+    "queries": 5000,
+    "full_record_verification": true,
+    "counters": {
+      "N": 151,
+      "prefetch": 1580,
+      "D_attempts": 494838,
+      "D_hits": 985,
+      "D_reads": 949,
+      "base_miss": 494091,
+      "seeds": 31,
+      "M": 2048,
+      "opens": 31,
+      "appends": 16,
+      "replaces": 5,
+      "writes": 41
+    }
+  },
+  {
+    "engine": "margo",
+    "trim_zero_tail": false,
+    "queries": 5000,
+    "full_record_verification": true,
+    "counters": {
+      "N": 183,
+      "prefetch": 1359,
+      "D_attempts": 489650,
+      "D_hits": 952,
+      "D_reads": 946,
+      "base_miss": 488921,
+      "seeds": 42,
+      "M": 2048,
+      "opens": 42,
+      "appends": 13,
+      "replaces": 2,
+      "writes": 50
+    }
+  },
+  {
+    "engine": "margo",
+    "trim_zero_tail": true,
+    "queries": 5000,
+    "full_record_verification": true,
+    "counters": {
+      "N": 174,
+      "prefetch": 485,
+      "D_attempts": 489981,
+      "D_hits": 365,
+      "D_reads": 326,
+      "base_miss": 489866,
+      "seeds": 18,
+      "M": 2048,
+      "opens": 18,
+      "appends": 16,
+      "replaces": 3,
+      "writes": 22
+    }
+  },
+  {
+    "engine": "pipeann",
+    "trim_zero_tail": false,
+    "queries": 5000,
+    "full_record_verification": true,
+    "counters": {
+      "N": 12736,
+      "prefetch": 22396,
+      "D_attempts": 696532,
+      "D_hits": 31108,
+      "D_reads": 50160,
+      "base_miss": 665975,
+      "seeds": 512,
+      "M": 2048,
+      "opens": 512,
+      "appends": 10,
+      "replaces": 1,
+      "writes": 986
+    }
+  },
+  {
+    "engine": "pipeann",
+    "trim_zero_tail": true,
+    "queries": 5000,
+    "full_record_verification": true,
+    "counters": {
+      "N": 12723,
+      "prefetch": 23437,
+      "D_attempts": 695359,
+      "D_hits": 30530,
+      "D_reads": 49646,
+      "base_miss": 666681,
+      "seeds": 512,
+      "M": 2048,
+      "opens": 512,
+      "appends": 2,
+      "replaces": 0,
+      "writes": 1030
+    }
+  },
+  {
+    "engine": "aisaq",
+    "trim_zero_tail": false,
+    "queries": 5000,
+    "full_record_verification": true,
+    "counters": {
+      "N": 29714,
+      "prefetch": 20199,
+      "D_attempts": 334274,
+      "D_hits": 44588,
+      "D_reads": 83128,
+      "base_miss": 290559,
+      "seeds": 512,
+      "M": 2048,
+      "opens": 512,
+      "appends": 0,
+      "replaces": 0,
+      "writes": 1257
+    }
+  },
+  {
+    "engine": "aisaq",
+    "trim_zero_tail": true,
+    "queries": 5000,
+    "full_record_verification": true,
+    "counters": {
+      "N": 28697,
+      "prefetch": 19535,
+      "D_attempts": 336028,
+      "D_hits": 44308,
+      "D_reads": 82726,
+      "base_miss": 292642,
+      "seeds": 512,
+      "M": 2048,
+      "opens": 512,
+      "appends": 0,
+      "replaces": 3,
+      "writes": 1194
+    }
+  }
+]

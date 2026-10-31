@@ -1045,6 +1045,25 @@ uint32_t NeighborCacheMemoryPool<T>::peek_lru_victim(uint32_t incoming_node_id, 
 }
 
 template <typename T>
+uint32_t NeighborCacheMemoryPool<T>::inspect_admission(uint32_t node_id, bool &present) const
+{
+    const Shard &shard = _shards[shard_index(node_id)];
+    const auto inspect = [&]() {
+        present = shard.id_to_slot.find(node_id) != shard.id_to_slot.end();
+        if (present || _size.load(std::memory_order_relaxed) < _capacity)
+            return INVALID_NODE;
+        return lru_victim_unlocked(shard, nullptr);
+    };
+    if (_clock_enabled && !_seed_hold_limit)
+    {
+        std::shared_lock<NeighborCacheNcacheMutex> lock(shard.mu);
+        return inspect();
+    }
+    std::lock_guard<NeighborCacheNcacheMutex> lock(shard.mu);
+    return inspect();
+}
+
+template <typename T>
 bool NeighborCacheMemoryPool<T>::copy_payload(uint32_t node_id, std::vector<T> &coords, std::vector<uint32_t> &nbrs) const
 {
     const Shard &shard = _shards[shard_index(node_id)];
@@ -1073,6 +1092,35 @@ bool NeighborCacheMemoryPool<T>::copy_payload(uint32_t node_id, std::vector<T> &
     const uint32_t nnbrs = nh[0];
     nbrs.assign(nh + 1, nh + 1 + nnbrs);
     return true;
+}
+
+template <typename T>
+bool NeighborCacheMemoryPool<T>::copy_record(uint32_t node_id, char *dst, size_t capacity, size_t coord_bytes) const
+{
+    if (dst == nullptr || coord_bytes > static_cast<size_t>(_aligned_dim) * sizeof(T) ||
+        coord_bytes > capacity || capacity - coord_bytes < sizeof(uint32_t))
+        return false;
+    const Shard &shard = _shards[shard_index(node_id)];
+    const auto copy = [&]() {
+        const auto it = shard.id_to_slot.find(node_id);
+        if (it == shard.id_to_slot.end())
+            return false;
+        const uint32_t slot = it->second;
+        const uint32_t *nh = _nhood_buf + static_cast<uint64_t>(slot) * (_max_degree + 1);
+        const size_t count = nh[0];
+        if (count > _max_degree || (count + 1) * sizeof(uint32_t) > capacity - coord_bytes)
+            return false;
+        memcpy(dst, _coords_buf + static_cast<uint64_t>(slot) * _aligned_dim, coord_bytes);
+        memcpy(dst + coord_bytes, nh, (count + 1) * sizeof(uint32_t));
+        return true;
+    };
+    if (_clock_enabled)
+    {
+        std::shared_lock<NeighborCacheNcacheMutex> lock(shard.mu);
+        return copy();
+    }
+    std::lock_guard<NeighborCacheNcacheMutex> lock(shard.mu);
+    return copy();
 }
 
 template <typename T>

@@ -45,9 +45,9 @@ struct QueryStats
     unsigned n_neighborcache_mem_evictions = 0; // runtime evictions from NEIGHBORCACHE memory pool
     unsigned n_neighborcache_dyn_hits = 0;      // nodes served from runtime-flushed d-cache pages
     // Beam-time classification (one increment per expanded beam neighbor):
-    // n-cache → n_cache_hits; same-query seed-page members → n_neighborcache_prefetch_hits;
+    // n-cache → n_cache_hits; resident prefetch records → n_neighborcache_prefetch_hits;
     // d-cache directory (seed page not yet in query prefetch buffer) → n_neighborcache_dcache_seed_hits.
-    unsigned n_neighborcache_prefetch_hits = 0;     // hit in query-local neighborcache_dcache_member_packed_loc
+    unsigned n_neighborcache_prefetch_hits = 0;     // direct seed-prefetch hit, excluding query-local D-page reuse
     unsigned n_neighborcache_dcache_seed_hits = 0;  // d-cache directory hit (triggers seed-page serve)
     // Actual dynamic directory probes for demand beam nodes, once per node request.
     // Excludes skipped lookup paths and internal maintenance/speculative queries.

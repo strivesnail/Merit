@@ -1068,7 +1068,7 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
     void neighborcache_seed_page_enqueue(NeighborCachePendingFlush pf);
     void neighborcache_seed_page_flush_evicted(NeighborCacheSeedPage &page);
     void neighborcache_seed_page_open(uint32_t seed_id);
-    void neighborcache_seed_page_note(uint32_t node_id);
+    void neighborcache_seed_page_note(uint32_t node_id, uint32_t parent_id, const char *node_disk_buf);
     bool neighborcache_seed_page_lookup(uint32_t node_id, std::vector<T> &coords, std::vector<uint32_t> &nbrs);
     // Assembled seed pages live in the shared prefetch. No second page LRU.
     // A write locks only this seed; readers of the prefetch take no lock.
@@ -1076,7 +1076,12 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
     bool neighborcache_seed_prefetch_publish(uint32_t seed_id, const std::vector<uint32_t> &ids,
                                      const std::vector<std::vector<T>> &coords,
                                      const std::vector<std::vector<uint32_t>> &nbrs);
-    void neighborcache_seed_prefetch_note(uint32_t node_id);
+    bool neighborcache_seed_prefetch_publish_page(uint32_t seed_id, const std::vector<uint32_t> &ids,
+                                                const char *page);
+    bool neighborcache_copy_resident_record(uint32_t node_id, char *dst, size_t capacity) const;
+    void neighborcache_seed_prefetch_note(uint32_t node_id, uint32_t parent_id, const char *node_disk_buf);
+    bool neighborcache_seed_prefetch_admit_existing(uint32_t seed_id, uint32_t page_idx,
+                                                   const std::vector<uint32_t> &ids, const char *page);
     bool neighborcache_seed_prefetch_lookup(uint32_t node_id, std::vector<T> &coords, std::vector<uint32_t> &nbrs);
     // Payload is resident on a seed page. Does not touch the page LRU or the hit counter.
     bool neighborcache_seed_page_contains(uint32_t node_id);

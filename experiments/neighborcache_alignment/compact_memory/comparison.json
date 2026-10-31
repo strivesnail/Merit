@@ -1,0 +1,144 @@
+{
+  "selected": "trim",
+  "retained_original_seed_admission": true,
+  "logical_prefetch_page_capacity_unchanged": true,
+  "prefetch_mib_per_thread_logical_max": 10,
+  "query_threads": 20,
+  "workload": "SIFT100M 10K uniform + 10K Zipf shuffled (20K total)",
+  "k": 10,
+  "l": 128,
+  "beamwidth": 4,
+  "ncache_nodes": 42474,
+  "mcache_entries": 131072,
+  "dcache_pages": 65536,
+  "dcache_on_ssd_mib": 256,
+  "canon_accelerator_slots": 1048576,
+  "canon_accelerator_mib": 8,
+  "common_pq_memory_excluded": true,
+  "memory_measurement": "(process RSS after_search - RSS after_load)/1024 MiB; includes allocator/runtime effects and all additional cache structures",
+  "runs_per_variant": 2,
+  "file_caches_cleared_each_run": true,
+  "cold_dynamic_n_p_d": true,
+  "independent_io_preconditioning_bytes": 7729176576,
+  "preconditioning_excluded_from_qps": true,
+  "probe_enabled": true,
+  "prefetch_hit_denominator": "all node accesses",
+  "all_result_ids_and_distances_bit_identical_to_bfs": true,
+  "memory_saved_mib": 60.375,
+  "memory_change_pct": -14.517719771188109,
+  "qps_change_pct": -0.5961737331954597,
+  "prefetch_hit_change_percentage_points": 0.00386943661002892,
+  "before": {
+    "mode": "control",
+    "runs": 2,
+    "qps_runs": [
+      3876.98,
+      3859.02
+    ],
+    "mean_qps": 3868.0,
+    "disk_reads_per_query": 117.80952500000001,
+    "mean_latency_us": 4987.014999999999,
+    "mean_io_us": 3769.32,
+    "extra_rss_mib": 415.87109375,
+    "n_hit_pct": 13.894734126711151,
+    "prefetch_hit_pct": 5.013465639402903
+  },
+  "after": {
+    "mode": "trim",
+    "runs": 2,
+    "qps_runs": [
+      3798.74,
+      3891.14
+    ],
+    "mean_qps": 3844.9399999999996,
+    "disk_reads_per_query": 117.64185,
+    "mean_latency_us": 4995.82,
+    "mean_io_us": 3770.38,
+    "extra_rss_mib": 355.49609375,
+    "n_hit_pct": 14.004970076356882,
+    "prefetch_hit_pct": 5.017335076012932
+  },
+  "other_variants": [
+    {
+      "mode": "control",
+      "runs": 2,
+      "qps_runs": [
+        3876.98,
+        3859.02
+      ],
+      "mean_qps": 3868.0,
+      "disk_reads_per_query": 117.80952500000001,
+      "mean_latency_us": 4987.014999999999,
+      "mean_io_us": 3769.32,
+      "extra_rss_mib": 415.87109375,
+      "n_hit_pct": 13.894734126711151,
+      "prefetch_hit_pct": 5.013465639402903
+    },
+    {
+      "mode": "compact8",
+      "runs": 2,
+      "qps_runs": [
+        3861.36,
+        3912.6
+      ],
+      "mean_qps": 3886.98,
+      "disk_reads_per_query": 117.57894999999999,
+      "mean_latency_us": 4970.755,
+      "mean_io_us": 3765.3100000000004,
+      "extra_rss_mib": 412.3515625,
+      "n_hit_pct": 13.926687074361972,
+      "prefetch_hit_pct": 5.1363245511453535
+    },
+    {
+      "mode": "heap4k",
+      "runs": 2,
+      "qps_runs": [
+        3854.99,
+        3862.08
+      ],
+      "mean_qps": 3858.535,
+      "disk_reads_per_query": 117.8327,
+      "mean_latency_us": 4975.415,
+      "mean_io_us": 3772.3599999999997,
+      "extra_rss_mib": 411.193359375,
+      "n_hit_pct": 13.89017679025934,
+      "prefetch_hit_pct": 5.000464332393204
+    },
+    {
+      "mode": "trim",
+      "runs": 2,
+      "qps_runs": [
+        3798.74,
+        3891.14
+      ],
+      "mean_qps": 3844.9399999999996,
+      "disk_reads_per_query": 117.64185,
+      "mean_latency_us": 4995.82,
+      "mean_io_us": 3770.38,
+      "extra_rss_mib": 355.49609375,
+      "n_hit_pct": 14.004970076356882,
+      "prefetch_hit_pct": 5.017335076012932
+    }
+  ],
+  "tests": {
+    "prefetch_zero_tail": "passed",
+    "canonical_directory": "passed",
+    "prefetch_record_directory": "passed",
+    "prefetch_private_records": "passed",
+    "ncache_record_copy": "passed",
+    "ncache_admission_state": "passed",
+    "ncache_snapshot": "passed",
+    "prefetch_async_writeback_shared": "passed",
+    "prefetch_async_writeback_private": "passed"
+  },
+  "sanitizers": {
+    "zero_tail_roundtrip": "ASan+UBSan passed",
+    "random_directory_reference": "ASan+UBSan passed",
+    "workspace_header_roundtrip": "ASan+UBSan passed"
+  },
+  "limitations": "Validated on this cold 20K-query workload, 20 query workers, two runs each. QPS differences at this scale are not evidence of a stable speedup.",
+  "adopted_in_workspace": true,
+  "configuration_file": "/mnt/nvme2/nc_zero_tail_20261031/selected_configuration.json",
+  "tested_binary": "/mnt/nvme2/nc_zero_tail_20261031/search_disk_index",
+  "workspace_standard_build_binary_replaced": false
+}

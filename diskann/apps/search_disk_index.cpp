@@ -628,14 +628,21 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
         std::vector<int64_t> d_pages_snapshot(trace_timeline ? query_num : 0, -1);
         const uint64_t initial_d_pages = trace_timeline ? _pFlashIndex->neighborcache_dynamic_page_count() : 0;
         const auto timeline_start = std::chrono::steady_clock::now();
+        const char *query_schedule = std::getenv("NEIGHBORCACHE_QUERY_SCHEDULE");
+        const bool fixed_query_workers = query_schedule != nullptr && std::strcmp(query_schedule, "static") == 0;
+        omp_set_schedule(fixed_query_workers ? omp_sched_static : omp_sched_dynamic, 1);
+        std::vector<int> query_workers(dump_query_stats_path.empty() ? 0 : query_num);
+        diskann::cout << "Query scheduling: " << (fixed_query_workers ? "static,1" : "dynamic,1") << std::endl;
         auto s = std::chrono::high_resolution_clock::now();
 
-#pragma omp parallel for schedule(dynamic, 1)
+#pragma omp parallel for schedule(runtime)
         for (int64_t i = 0; i < (int64_t)query_num; i++)
         {
 #ifndef _WINDOWS
             neighborcache_pin_this_query_thread();
 #endif
+            if (!query_workers.empty())
+                query_workers[i] = omp_get_thread_num();
             if (!filtered_search)
             {
                 _pFlashIndex->cached_beam_search(query + (i * query_aligned_dim), recall_at, L,
@@ -974,7 +981,7 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
                         "n_neighborcache_dyn_flushes,n_neighborcache_dyn_pages,n_neighborcache_dyn_disk_reads,"
                         "n_neighborcache_base_pages_avoided,n_neighborcache_dcache_probe,"
                         "n_neighborcache_mcache_hits,n_neighborcache_mcache_misses,n_cmps,"
-                        "n_neighborcache_dcache_demand_probes,n_neighborcache_dcache_demand_hits\n";
+                        "n_neighborcache_dcache_demand_probes,n_neighborcache_dcache_demand_hits,query_worker\n";
                 for (size_t qi = 0; qi < query_num; qi++)
                 {
                     const auto &s = stats[qi];
@@ -988,7 +995,8 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
                          << s.n_neighborcache_dyn_disk_reads << ',' << s.n_neighborcache_base_pages_avoided << ','
                          << s.n_neighborcache_dcache_probe << ',' << s.n_neighborcache_mcache_hits << ','
                          << s.n_neighborcache_mcache_misses << ',' << s.n_cmps << ','
-                         << s.n_neighborcache_dcache_demand_probes << ',' << s.n_neighborcache_dcache_demand_hits << '\n';
+                         << s.n_neighborcache_dcache_demand_probes << ',' << s.n_neighborcache_dcache_demand_hits << ','
+                         << query_workers[qi] << '\n';
                 }
                 qout.close();
                 diskann::cout << "      per-query stats written to " << dump_query_stats_path << std::endl;

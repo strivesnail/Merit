@@ -1,0 +1,17 @@
+{
+  "backup": "/mnt/nvme2/nc_release_20261031/installed_backup",
+  "installed": [
+    {
+      "path": "neighborcache_backend/build/libneighborcache_backend.so",
+      "sha256": "f808b9d8f4463e579d192c392765590ebeadde7684426d95f7fd6ec6ab46a542"
+    },
+    {
+      "path": "diskann/build/apps/search_disk_index",
+      "sha256": "cb2d1c87d26249b90bc9e54ef8bc8e0082b6e1019c5f74c5eac50fd5f119e09d"
+    },
+    {
+      "path": "diskann/build/src/libdiskann.a",
+      "sha256": "31ad18acf61b0f21c45a21049c1c9c0e67862bc8d0c3382ceac4ea73b8da8b71"
+    }
+  ]
+}

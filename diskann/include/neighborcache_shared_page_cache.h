@@ -133,6 +133,24 @@ class NeighborCacheSharedPageCache
     }
 
     bool thread_private() const { return bool(_private); }
+    void register_private_records(uint32_t key, const uint32_t *ids, size_t count)
+    {
+        if (_private) _private->register_records(key, ids, count);
+    }
+    bool private_record_location(uint32_t id, uint32_t &key, uint32_t &slot, bool seed_only = false,
+                                 bool current_version = true) const
+    {
+        return _private && _private->record_location(id, key, slot, seed_only, current_version);
+    }
+    bool private_seed_snapshot(uint32_t seed, uint32_t &key, std::vector<uint32_t> &ids, char *dst,
+                               uint32_t missing_record=UINT32_MAX)
+    {
+        return _private && _private->seed_snapshot(seed, key, ids, dst, missing_record);
+    }
+    bool copy_private_record(uint32_t id, size_t record_bytes, char *dst, bool current_version = false)
+    {
+        return _private && _private->copy_record(id, record_bytes, dst, current_version);
+    }
     void configure_private_dynamic(uint32_t base, uint64_t pages)
     {
         if (_private) _private->configure_dynamic(base, pages);
