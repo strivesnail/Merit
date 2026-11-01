@@ -37,7 +37,13 @@ public:
         idx._neighborcache_shared_cache_dyn=true;
         char prefix[]="/tmp/nc_read_pin_XXXXXX";
         int temporary=mkstemp(prefix);assert(temporary>=0);close(temporary);unlink(prefix);
+        setenv("NEIGHBORCACHE_DCACHE_QUERY_PATCH","1",1);
+        setenv("NEIGHBORCACHE_DCACHE_REPACK_ON_READ","1",1);
         idx.enable_neighborcache_dynamic_3cache(true,prefix);
+        unsetenv("NEIGHBORCACHE_DCACHE_QUERY_PATCH");
+        unsetenv("NEIGHBORCACHE_DCACHE_REPACK_ON_READ");
+        assert(!idx._neighborcache_dcache_query_patch && !idx._neighborcache_repack_on_read);
+        assert(!idx._neighborcache_patch_started);
         unlink((std::string(prefix)+"_neighborcache_dc.dyn.data").c_str());
         NeighborCacheSharedPageCache::ReadSection section(idx._neighborcache_shared_cache);
         auto record=[](uint32_t id,std::initializer_list<uint32_t> neighbors) {
@@ -54,6 +60,17 @@ public:
         assert(first.present);
         idx.neighborcache_dyn_note_touch(first,&lifecycle);
         idx.neighborcache_dyn_note_base_load(2,1,b.data(),&lifecycle);
+        Index::NeighborCachePendingFlush preflight;
+        NeighborCacheMetadataCache::Snapshot preflight_snapshot;
+        assert(idx._neighborcache_mcache.snapshot(1,preflight_snapshot));
+        assert(idx.neighborcache_dyn_build_pending_flush(1,preflight_snapshot,preflight));
+        assert(preflight.member_ids.size()==2 && preflight.member_ids[0]==1 && preflight.member_ids[1]==2);
+        const char *id_only=std::getenv("NEIGHBORCACHE_PREFETCH_ID_ONLY_PREFLIGHT");
+        if(id_only && std::strcmp(id_only,"0")!=0) {
+            assert(preflight.member_coords.empty() && preflight.member_nbrs.empty());
+        } else {
+            assert(preflight.member_coords.size()==2 && preflight.member_nbrs.size()==2);
+        }
         idx.neighborcache_dyn_flush_dirty_heap(&lifecycle);
         idx.neighborcache_dyn_maybe_refresh_pair();
         assert(idx._neighborcache_seed_page_opens==1);

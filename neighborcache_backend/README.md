@@ -332,6 +332,21 @@ Native NeighborCache and all four adapters now share the following changes:
   only through asynchronous prefetch-eviction writeback. Failed publication
   releases its pair, keeps an unpublished candidate eligible for retry, and
   restores the proposed deletion seed to its actual live state.
+- Seed-prefetch mode disables the legacy query-patch and read-repack producers
+  during initialization, even if their environment switches are set. Their
+  direct-D commit destinations were already disabled; collecting candidates or
+  starting a patch worker for them still wasted work. Normal path-parent
+  supplementation into the worker's prefetch page and asynchronous dirty-page
+  eviction writeback remain active. Other cache modes retain the old switches.
+- Two maintenance comparisons remain opt-in (both default to `0`):
+  `NEIGHBORCACHE_PREFETCH_ID_ONLY_PREFLIGHT=1` omits temporary resident payload
+  copies before immediate seed-prefetch publication, while preserving the
+  member availability test and D fallback. It excludes deferred, pinned,
+  full-page-waiting and payload-buffered candidates. The final page builder
+  still copies complete records. `NEIGHBORCACHE_PREFETCH_LEAN_CHECKS=1` uses
+  the already-owned admission record for parent-page supplementation and skips
+  N-residency checks used only for published-seed insertion eligibility.
+  Neither changes the search algorithm or the configured cache capacities.
 - `NEIGHBORCACHE_CANON_SLOTS=0` retains automatic sizing. A power of two from
   1,024 to 8,388,608 selects an explicit D-location accelerator capacity.
   Saturation falls back to the complete sharded directory. Tombstone reuse now

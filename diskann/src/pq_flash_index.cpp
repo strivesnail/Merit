@@ -5143,8 +5143,13 @@ void PQFlashIndex<T, LabelT>::enable_neighborcache_dynamic_3cache(bool enable, c
         _neighborcache_early_hop_hist[h].store(0, std::memory_order_relaxed);
         _neighborcache_late_hop_hist[h].store(0, std::memory_order_relaxed);
     }
-    _neighborcache_dcache_query_patch = neighborcache_env_u64("NEIGHBORCACHE_DCACHE_QUERY_PATCH", 1) != 0;
-    _neighborcache_repack_on_read = neighborcache_env_u64("NEIGHBORCACHE_DCACHE_REPACK_ON_READ", 0) != 0;
+    // These legacy producers end in direct D commits, which are forbidden in
+    // seed-prefetch mode. Disable the producers too, not just the final write.
+    // Normal path-parent P supplementation is a separate admission callback.
+    _neighborcache_dcache_query_patch = !_neighborcache_seed_prefetch &&
+        neighborcache_env_u64("NEIGHBORCACHE_DCACHE_QUERY_PATCH", 1) != 0;
+    _neighborcache_repack_on_read = !_neighborcache_seed_prefetch &&
+        neighborcache_env_u64("NEIGHBORCACHE_DCACHE_REPACK_ON_READ", 0) != 0;
     _neighborcache_dcache_query_patch_async = neighborcache_env_u64("NEIGHBORCACHE_DCACHE_QUERY_PATCH_ASYNC", 1) != 0;
     _neighborcache_dcache_query_patch_max = static_cast<uint32_t>(
         std::max<uint64_t>(1, std::min<uint64_t>(64, neighborcache_env_u64("NEIGHBORCACHE_DCACHE_QUERY_PATCH_MAX", 4))));
@@ -7363,6 +7368,11 @@ bool PQFlashIndex<T, LabelT>::neighborcache_dyn_build_pending_flush(uint32_t see
     const uint64_t nps = (_nnodes_per_sector > 0) ? _nnodes_per_sector : 1;
     const std::vector<uint32_t> now =
         neighborcache_dyn_now_page_ids(seed_id, snap, _neighborcache_deferred_ncache_page_write);
+    static const bool id_only_preflight =
+        neighborcache_env_u64("NEIGHBORCACHE_PREFETCH_ID_ONLY_PREFLIGHT", 0) != 0;
+    const bool ids_only = id_only_preflight && _neighborcache_seed_prefetch &&
+        !_neighborcache_deferred_ncache_page_write && !_neighborcache_seed_pin_neighbors &&
+        !_neighborcache_pending_require_full_page && _neighborcache_pending_buffer_cap_bytes == 0;
     std::vector<T> coords;
     std::vector<uint32_t> nbrs;
     for (uint32_t mid : now)
@@ -7370,6 +7380,24 @@ bool PQFlashIndex<T, LabelT>::neighborcache_dyn_build_pending_flush(uint32_t see
         if (_neighborcache_deferred_ncache_page_write)
         {
             pf.member_ids.push_back(mid);
+            continue;
+        }
+        if (ids_only)
+        {
+            // This pending object is retired immediately after P publication;
+            // only the real page builder needs coordinates and adjacency. Keep
+            // the same availability check, including the legacy D fallback,
+            // without allocating/copying resident payloads into a throwaway PF.
+            bool resident = _neighborcache_mem_pool != nullptr && _neighborcache_mem_pool->contains(mid);
+            if (!resident)
+            {
+                std::lock_guard<std::mutex> lock(_neighborcache_stash_mu);
+                resident = _neighborcache_payload_stash.find(mid) != _neighborcache_payload_stash.end();
+            }
+            if (resident || neighborcache_dyn_copy_member_payload(mid, coords, nbrs))
+                pf.member_ids.push_back(mid);
+            else if (mid == seed_id)
+                return false;
             continue;
         }
         if (!neighborcache_dyn_copy_member_payload(mid, coords, nbrs))
@@ -9468,6 +9496,7 @@ template <typename T, typename LabelT>
 uint32_t PQFlashIndex<T, LabelT>::neighborcache_dyn_admit_node(uint32_t node_id, const char *node_disk_buf, QueryStats *stats,
                                                       SSDQueryScratch<T> *query_scratch, uint32_t search_hop)
 {
+    static const bool lean_checks = neighborcache_env_u64("NEIGHBORCACHE_PREFETCH_LEAN_CHECKS", 0) != 0;
     if (_neighborcache_mem_pool == nullptr || !_neighborcache_mem_pool->active() ||
         !(_neighborcache_mem_runtime_admit || _neighborcache_dyn_enabled))
         return NeighborCacheMemoryPool<T>::INVALID_NODE;
@@ -9526,12 +9555,12 @@ uint32_t PQFlashIndex<T, LabelT>::neighborcache_dyn_admit_node(uint32_t node_id,
         evicted = _neighborcache_mem_pool->try_admit(node_id, node_disk_buf, _disk_bytes_per_point, _max_node_len,
                                              search_hop, admitted_after_rejection);
     }
-    // Membership can change after admission. Validate at each maintenance use;
-    // an earlier successful insertion does not reserve the node in N cache.
+    // Membership can change after admission. Operations that depend on N
+    // residency must revalidate it; parent-P append can use the owned input.
     if (_neighborcache_seed_pin_neighbors && _neighborcache_mem_pool->contains(node_id))
         neighborcache_dyn_pin_admitted_neighbor(node_id);
     if (!_neighborcache_freeze_maintenance && (_neighborcache_seed_page_lru || _neighborcache_seed_prefetch) &&
-        _neighborcache_mem_pool->contains(node_id))
+        ((lean_checks && _neighborcache_seed_prefetch) || _neighborcache_mem_pool->contains(node_id)))
     {
         const auto parent = query_scratch != nullptr ? query_scratch->parent_of(node_id) : std::nullopt;
         neighborcache_seed_page_note(node_id, parent.value_or(std::numeric_limits<uint32_t>::max()), node_disk_buf);
@@ -9540,11 +9569,15 @@ uint32_t PQFlashIndex<T, LabelT>::neighborcache_dyn_admit_node(uint32_t node_id,
         stats->n_neighborcache_mem_evictions++;
     // Co-read packing does not read the m-cache heap. Skip the second N-cache
     // lookup that only existed to mark that heap dirty.
-    if (dynamic_maintenance && !_neighborcache_coread_pack && _neighborcache_mcache.size() != 0 &&
-        _neighborcache_mem_pool->contains(node_id) && query_scratch != nullptr)
+    if (dynamic_maintenance && !_neighborcache_coread_pack && _neighborcache_mcache.size() != 0 && query_scratch != nullptr)
     {
         const uint32_t slot_id = _neighborcache_mcache.slot_of(node_id);
-        if (slot_id != NeighborCacheMetadataCache::kInvalid)
+        // N residency affects only NonSeed insertion eligibility. Published
+        // seeds stay in the Min heap regardless of N residency.
+        if (slot_id != NeighborCacheMetadataCache::kInvalid &&
+            (!lean_checks || !_neighborcache_seed_prefetch ||
+             neighborcache_dyn_state_unlocked(slot_id) == NeighborCacheNodeState::NonSeed) &&
+            _neighborcache_mem_pool->contains(node_id))
             query_scratch->mark_neighborcache_heap_dirty(slot_id);
     }
     return evicted;
