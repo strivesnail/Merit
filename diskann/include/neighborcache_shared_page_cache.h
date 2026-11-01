@@ -143,9 +143,9 @@ class NeighborCacheSharedPageCache
         return _private && _private->record_location(id, key, slot, seed_only, current_version);
     }
     bool private_seed_snapshot(uint32_t seed, uint32_t &key, std::vector<uint32_t> &ids, char *dst,
-                               uint32_t missing_record=UINT32_MAX)
+                               uint32_t missing_record=UINT32_MAX, size_t append_capacity=0)
     {
-        return _private && _private->seed_snapshot(seed, key, ids, dst, missing_record);
+        return _private && _private->seed_snapshot(seed, key, ids, dst, missing_record, append_capacity);
     }
     bool copy_private_record(uint32_t id, size_t record_bytes, char *dst, bool current_version = false)
     {

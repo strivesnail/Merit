@@ -19,6 +19,162 @@ class NeighborCacheAdapter {
         }
     }
 public:
+    static void run_private_read_pins() {
+        setenv("NEIGHBORCACHE_DCACHE_CAP","32",1);
+        setenv("NEIGHBORCACHE_DCACHE_SPACE_CAP_PAGES","32",1);
+        setenv("NEIGHBORCACHE_MCACHE_CAP","128",1);
+        setenv("NEIGHBORCACHE_DCACHE_SECOND_PAGE","0",1);
+        std::shared_ptr<AlignedFileReader> reader;
+        Index idx(reader,Metric::L2);
+        idx._num_points=100;idx._max_nthreads=1;
+        idx._data_dim=idx._aligned_dim=idx._disk_bytes_per_point=128;
+        idx._max_degree=64;idx._max_node_len=388;idx._nnodes_per_sector=10;
+        idx._neighborcache_mem_pool=std::make_unique<NeighborCacheMemoryPool<uint8_t>>();
+        idx._neighborcache_mem_pool->init(32,128,64,100);
+        idx._neighborcache_mem_pool->commit_initial_load({},{});
+        idx._query_sector_cache_enabled=true;
+        assert(idx._neighborcache_shared_cache.init(4,1));
+        idx._neighborcache_shared_cache_dyn=true;
+        char prefix[]="/tmp/nc_read_pin_XXXXXX";
+        int temporary=mkstemp(prefix);assert(temporary>=0);close(temporary);unlink(prefix);
+        idx.enable_neighborcache_dynamic_3cache(true,prefix);
+        unlink((std::string(prefix)+"_neighborcache_dc.dyn.data").c_str());
+        NeighborCacheSharedPageCache::ReadSection section(idx._neighborcache_shared_cache);
+        auto record=[](uint32_t id,std::initializer_list<uint32_t> neighbors) {
+            std::array<char,388> r{};std::fill(r.begin(),r.begin()+128,char(id));
+            uint32_t n=neighbors.size();memcpy(r.data()+128,&n,4);
+            size_t at=132;for(uint32_t v:neighbors){memcpy(r.data()+at,&v,4);at+=4;}
+            return r;
+        };
+        auto a=record(1,{2,3}),b=record(2,{}),c=record(3,{});
+        for(auto *r:{&a,&b})idx._neighborcache_mem_pool->try_admit(uint8_t((*r)[0]),r->data(),128,388,0,false);
+        SSDQueryScratch<uint8_t> lifecycle(128,4096);
+        lifecycle.neighborcache_dcache_maintenance_enabled=true;
+        const auto first=idx._neighborcache_mcache.on_expand(1,idx._neighborcache_score_unit);
+        assert(first.present);
+        idx.neighborcache_dyn_note_touch(first,&lifecycle);
+        idx.neighborcache_dyn_note_base_load(2,1,b.data(),&lifecycle);
+        idx.neighborcache_dyn_flush_dirty_heap(&lifecycle);
+        idx.neighborcache_dyn_maybe_refresh_pair();
+        assert(idx._neighborcache_seed_page_opens==1);
+        assert(idx.neighborcache_dyn_state_unlocked(first.slot_id)==Index::NeighborCacheNodeState::Seed);
+        assert(idx.neighborcache_dyn_heap_kind_unlocked(first.slot_id)==Index::NeighborCacheHeapKind::Min);
+        assert(idx._neighborcache_ready_pairs.empty() && idx._neighborcache_pending_pair_count==0);
+        assert(idx._neighborcache_reserved_free_pages==0);
+        assert(!idx.neighborcache_pending_member_contains(1) && !idx.neighborcache_pending_member_contains(2));
+        // Further heat must retain Seed eligibility and cannot create another
+        // insertion or leave a pair waiting for the asynchronous SSD writer.
+        idx.neighborcache_dyn_note_touch(idx._neighborcache_mcache.on_expand(1,idx._neighborcache_score_unit),&lifecycle);
+        idx.neighborcache_dyn_flush_dirty_heap(&lifecycle);
+        idx.neighborcache_dyn_maybe_refresh_pair();
+        assert(idx._neighborcache_seed_page_opens==1 && idx._neighborcache_ready_pairs.empty());
+        assert(!idx.neighborcache_dyn_enqueue_ready_pair(first.slot_id,Index::NeighborCacheCommitSource::Evict));
+        assert(idx.neighborcache_dyn_state_unlocked(first.slot_id)==Index::NeighborCacheNodeState::Seed);
+        idx.neighborcache_seed_prefetch_finish_candidate(99,first.slot_id);
+        assert(idx.neighborcache_dyn_state_unlocked(first.slot_id)==Index::NeighborCacheNodeState::Seed);
+        // Failed publication releases the pair and restores both candidates.
+        // Raising the D cap then allows the same non-seed candidate to retry.
+        auto retry_record=record(50,{2});
+        idx._neighborcache_mem_pool->try_admit(50,retry_record.data(),128,388,0,false);
+        auto retry=idx._neighborcache_mcache.on_expand(50,idx._neighborcache_score_unit);
+        for(unsigned i=0;i<16;++i)retry=idx._neighborcache_mcache.on_expand(50,idx._neighborcache_score_unit);
+        idx.neighborcache_dyn_note_touch(retry,&lifecycle);
+        idx.neighborcache_dyn_note_base_load(2,50,b.data(),&lifecycle);
+        idx.neighborcache_dyn_flush_dirty_heap(&lifecycle);
+        idx._neighborcache_dyn_page_cap=1;
+        idx.neighborcache_dyn_maybe_refresh_pair();
+        assert(idx._neighborcache_seed_page_opens==1);
+        assert(idx.neighborcache_dyn_state_unlocked(retry.slot_id)==Index::NeighborCacheNodeState::NonSeed);
+        assert(idx.neighborcache_dyn_state_unlocked(first.slot_id)==Index::NeighborCacheNodeState::Seed);
+        assert(idx._neighborcache_ready_pairs.empty() && idx._neighborcache_pending_pair_count==0);
+        assert(idx._neighborcache_deletion_to_pending.empty() && idx._neighborcache_deletion_pair_count==0);
+        assert(!idx.neighborcache_pending_member_contains(50));
+        idx._neighborcache_dyn_page_cap=32;
+        idx.neighborcache_dyn_maybe_refresh_pair();
+        assert(idx._neighborcache_seed_page_opens==2);
+        assert(idx.neighborcache_dyn_state_unlocked(retry.slot_id)==Index::NeighborCacheNodeState::Seed);
+        assert(idx._neighborcache_ready_pairs.empty() && idx._neighborcache_pending_pair_count==0);
+        std::cout<<"seed publication: Seed state, no duplicate selection, immediate cleanup and failed-publication retry passed\n";
+        uint32_t sector=0,slot=0;
+        assert(idx._neighborcache_shared_cache.private_record_location(1,sector,slot,true,false));
+        const uint32_t page=sector-Index::NEIGHBORCACHE_DYN_SECTOR_BASE;
+        alignas(4096) std::array<char,bytes> owned{};
+        assert(idx._neighborcache_shared_cache.get_range(sector,1,owned.data()));
+        const auto original_page=owned; // seed slot includes its on-page tail metadata
+        SSDQueryScratch<uint8_t> scratch(128,4096);
+        scratch.neighborcache_dyn_pinned_sectors={sector,sector};
+        idx._neighborcache_dyn_page_readers[page]=3; // two query tickets + one writer
+        idx._neighborcache_prefetch_writeback[page]=1;
+        scratch.neighborcache_dcache_loc_cache[2]=123;
+        scratch.neighborcache_dcache_member_packed_loc[2]=456;
+        scratch.neighborcache_prefetched_page_gen[page]=2;
+        auto finish=[&](uint32_t id,uint16_t record_slot) {
+            Index::NeighborCacheReadPending p{};p.id=id;p.sec_buf=owned.data();
+            p.loc.sector=sector;p.loc.slot=record_slot;p.loc.nsectors=1;
+            p.io_base_sector=sector;p.dynamic_page_pinned=true;
+            std::vector<std::pair<uint32_t,char *>> ready;uint64_t used=0;
+            idx.finalize_neighborcache_pending_nodes({p},{id},&scratch,owned.data(),used,ready,nullptr);
+            assert(ready.size()==1);
+            assert(memcmp(idx.offset_to_node(ready.front().second,id),
+                          id==1?a.data():b.data(),id==1?140:132)==0);
+        };
+        finish(2,1);
+        assert(idx._neighborcache_dyn_page_readers[page]==2);
+        assert(scratch.neighborcache_dyn_pinned_sectors.size()==1);
+        assert(scratch.neighborcache_dcache_loc_cache.empty());
+        assert(scratch.neighborcache_dcache_member_packed_loc.empty());
+        assert(scratch.neighborcache_prefetched_page_gen.empty());
+        idx.neighborcache_seed_prefetch_note(3,1,c.data());
+        assert(idx._neighborcache_seed_page_appends==0); // another ticket still reading
+        finish(1,0);
+        assert(scratch.neighborcache_dyn_pinned_sectors.empty());
+        assert(idx._neighborcache_dyn_page_readers[page]==1); // writer is untouched
+        idx.neighborcache_seed_prefetch_note(3,1,c.data());
+        assert(idx._neighborcache_seed_page_appends==0);
+        idx._neighborcache_prefetch_writeback[page].fetch_sub(1);
+        idx.neighborcache_dyn_release_page_pin(sector);
+        idx.neighborcache_seed_prefetch_note(3,1,c.data());
+        assert(idx._neighborcache_seed_page_appends==1); // no query-end wait
+        std::array<char,388> copied{};
+        assert(idx._neighborcache_shared_cache.copy_private_record(3,388,copied.data()));
+        assert(copied==c);
+        auto patch_hit=[&](uint32_t id,uint32_t parent) {
+            auto r=record(id,{2,3});
+            std::array<uint8_t,128> coords{};
+            memcpy(coords.data(),r.data(),coords.size());
+            uint32_t neighbors[]={2,3};
+            idx.neighborcache_seed_prefetch_note_ncache_hit(id,parent,coords.data(),neighbors,2);
+            return r;
+        };
+        const auto before_append=idx._neighborcache_seed_page_appends.load();
+        patch_hit(4,99); // absent parent: no page creation and no append
+        assert(idx._neighborcache_seed_page_appends==before_append);
+        const auto fourth=patch_hit(4,1);
+        assert(idx._neighborcache_seed_page_appends==before_append+1);
+        assert(idx._neighborcache_shared_cache.copy_private_record(4,388,copied.data()));
+        assert(copied==fourth);
+        patch_hit(4,1); // existing member: no duplicate
+        assert(idx._neighborcache_seed_page_appends==before_append+1);
+        for(uint32_t id=5;id<=10;++id)patch_hit(id,1);
+        alignas(4096) std::array<char,bytes> full_page{},after_full{};
+        assert(idx._neighborcache_shared_cache.get_range(sector,1,full_page.data()));
+        const auto full_appends=idx._neighborcache_seed_page_appends.load();
+        patch_hit(11,1); // full page: preserve every original member
+        assert(idx._neighborcache_seed_page_appends==full_appends);
+        assert(idx._neighborcache_shared_cache.get_range(sector,1,after_full.data()));
+        assert(full_page==after_full);
+        assert(!idx._neighborcache_shared_cache.private_record_location(11,sector,slot));
+        std::cout<<"N-hit append: absent parent, owned payload, duplicate and full-page preservation passed\n";
+        {
+            std::unique_lock<std::shared_mutex> lock(idx._neighborcache_dyn_mu);
+            idx.neighborcache_dyn_invalidate_seed_page(1);
+            assert(idx.neighborcache_dyn_alloc_page_unlocked()==page);
+        }
+        alignas(4096) std::array<char,bytes> replacement;replacement.fill('Z');
+        assert(pwrite(idx._neighborcache_dyn_write_fd,replacement.data(),bytes,page*bytes)==ssize_t(bytes));
+        assert(owned==original_page);
+        std::cout<<"private read pins: batch completion, independent tickets, writer lifetime, neighbor append and slot reuse passed\n";
+    }
     static void run() {
         std::shared_ptr<AlignedFileReader> reader;
         Index idx(reader, Metric::L2);
@@ -175,6 +331,7 @@ public:
         for(unsigned p=0;p<128;++p){assert(idx._neighborcache_prefetch_writeback[p]==0);assert(idx._neighborcache_dyn_page_readers[p]==0);}
     }
     static void run_private() {
+        run_private_read_pins();
         std::shared_ptr<AlignedFileReader> reader;
         Index idx(reader, Metric::L2);
         char path[] = "/tmp/nc_async_writeback_XXXXXX";

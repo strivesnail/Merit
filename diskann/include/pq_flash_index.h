@@ -338,6 +338,11 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
                                       std::vector<std::pair<uint32_t, char *>> &frontier_nhoods,
                                       QueryStats *stats = nullptr);
 
+    // Private single-page records have owned query buffers after finalization.
+    // Drop physical-location hints before releasing this batch's read pins.
+    void neighborcache_release_private_read_pins(SSDQueryScratch<T> *query_scratch,
+                                                const std::vector<NeighborCacheReadPending> &completed);
+
     // index info for multi-node sectors
     // nhood of node `i` is in sector: [i / nnodes_per_sector]
     // offset in sector: [(i % nnodes_per_sector) * max_node_len]
@@ -1068,6 +1073,7 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
     void neighborcache_seed_page_enqueue(NeighborCachePendingFlush pf);
     void neighborcache_seed_page_flush_evicted(NeighborCacheSeedPage &page);
     void neighborcache_seed_page_open(uint32_t seed_id);
+    void neighborcache_seed_prefetch_finish_candidate(uint32_t seed_id, uint32_t insertion_slot);
     void neighborcache_seed_page_note(uint32_t node_id, uint32_t parent_id, const char *node_disk_buf);
     bool neighborcache_seed_page_lookup(uint32_t node_id, std::vector<T> &coords, std::vector<uint32_t> &nbrs);
     // Assembled seed pages live in the shared prefetch. No second page LRU.
@@ -1080,6 +1086,8 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
                                                 const char *page);
     bool neighborcache_copy_resident_record(uint32_t node_id, char *dst, size_t capacity) const;
     void neighborcache_seed_prefetch_note(uint32_t node_id, uint32_t parent_id, const char *node_disk_buf);
+    void neighborcache_seed_prefetch_note_ncache_hit(uint32_t node_id, uint32_t parent_id,
+                                                    const T *coords, const uint32_t *nbrs, size_t degree);
     bool neighborcache_seed_prefetch_admit_existing(uint32_t seed_id, uint32_t page_idx,
                                                    const std::vector<uint32_t> &ids, const char *page);
     bool neighborcache_seed_prefetch_lookup(uint32_t node_id, std::vector<T> &coords, std::vector<uint32_t> &nbrs);

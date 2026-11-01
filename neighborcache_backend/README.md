@@ -29,6 +29,13 @@ outputs across engines, or between cached and uncached asynchronous searches.
   snapshot to the background writer. Legacy direct-to-D seed commits are
   disabled in this mode. Metadata locks and enqueue work remain on the query
   path; this is not an all-asynchronous claim.
+- With private prefetch and single-page seeds, each completed demand-read
+  batch releases its own physical D-page pins after record finalization.
+  Returned bytes remain in owned query buffers. Raw query-local sector/slot
+  hints are discarded before release; later lookups use private records or
+  resolve a fresh D location. Other outstanding read tickets and background
+  writeback retain their own pins. Shared and multi-page paths retain their
+  existing query-lifetime protection.
 - D demand lookup attempts/hits and physical D reads are separate diagnostics.
   Query-local locations and pages can avoid a fresh routing lookup, so D reads
   must not be used as the denominator of the lookup hit rate.
@@ -298,7 +305,7 @@ static QPS/recall comparisons remain under
 `experiments/neighborcache_alignment/thread_private/`; their numbers do not
 measure this subsequent online/reusable-slot implementation.
 
-## Compact private records and sampled heat (2026-10-31)
+## Compact private records and node heat accounting (2026-10-31)
 
 Native NeighborCache and all four adapters now share the following changes:
 
@@ -313,11 +320,18 @@ Native NeighborCache and all four adapters now share the following changes:
 - Seed packing copies resident N/stash records directly into the final page.
   N hits retain an owned snapshot copied under the N shard lock, so later slot
   reuse cannot change an acquired record.
-- Every acquired full record has a 1-in-10 chance to update node heat, sampled
-  before M-cache decision/locking. Native search and adapter `selected` use
-  `neighborcache_heat_sample.h`. PQ-only candidates do not sample node heat.
-  `NEIGHBORCACHE_HEAT_SAMPLE_SEED` gives reproducible per-worker RNG streams;
-  concurrent scheduling and shared cache state can still vary between runs.
+- Every acquired full record passes the node-heat gate (100%) before the
+  M-cache update decision/locking. Native search and adapter `selected` share
+  `neighborcache_heat_sample.h`; the gate no longer uses an RNG or skips first
+  registration. PQ-only candidates do not update node heat. Existing explicit
+  maintenance suspension and adaptive-update controls still apply.
+  `NEIGHBORCACHE_HEAT_SAMPLE_SEED` no longer affects this gate.
+- Successful dynamic prefetch publication completes seed insertion immediately:
+  M state becomes `Seed`, the candidate moves out of the insertion heap, and
+  pending-pair/member bookkeeping is released. SSD persistence still happens
+  only through asynchronous prefetch-eviction writeback. Failed publication
+  releases its pair, keeps an unpublished candidate eligible for retry, and
+  restores the proposed deletion seed to its actual live state.
 - `NEIGHBORCACHE_CANON_SLOTS=0` retains automatic sizing. A power of two from
   1,024 to 8,388,608 selects an explicit D-location accelerator capacity.
   Saturation falls back to the complete sharded directory. Tombstone reuse now

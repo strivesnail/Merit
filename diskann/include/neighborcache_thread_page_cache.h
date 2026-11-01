@@ -308,13 +308,18 @@ class NeighborCacheThreadPageCache {
         });
     }
     bool seed_snapshot(uint32_t seed, uint32_t &key, std::vector<uint32_t> &ids, char *dst,
-                       uint32_t missing_record=none) {
+                       uint32_t missing_record=none, size_t append_capacity=0) {
 
         uint32_t slot=0;
         if(!record_location(seed,key,slot,true,false)) return false;
         auto *l=local(false);
         const uint32_t i=find(*l,key);
         const auto &s=l->slots[i];
+        // Append-only N-hit maintenance must not copy full pages or change LRU
+        // recency when no insertion is possible.
+        if(append_capacity && (s.members.size()>=append_capacity ||
+           (missing_record!=none && std::find(s.members.begin(),s.members.end(),missing_record)!=s.members.end())))
+            return false;
         // Preserve the old recency update even when no page update is needed,
         // but avoid copying/allocating a snapshot for an existing member.
         touch(*l,i);
