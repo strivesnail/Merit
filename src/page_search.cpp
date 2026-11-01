@@ -41,6 +41,7 @@ namespace diskann {
       const T *query1, const _u64 k_search, const _u32 mem_L, const _u64 l_search, _u64 *indices,
       float *distances, const _u64 beam_width, const _u32 io_limit,
       const bool use_reorder_data, const float use_ratio, QueryStats *stats) {
+    typename PageNeighborCache<T>::QueryGuard nc_query(page_nc_.get());
     ThreadData<T> data = this->thread_data.pop();
     while (data.scratch.sector_scratch == nullptr) {
       this->thread_data.wait_for_push_notify();
@@ -132,18 +133,33 @@ namespace diskann {
 
     tsl::robin_map<unsigned, unsigned> first_io;
     tsl::robin_set<unsigned> page_skipped;
+    std::vector<std::pair<unsigned,unsigned>> nc_read_sources;
+
     auto compute_extact_dists_and_push = [&](const char* node_buf, const unsigned id,
                                              const unsigned io_at) -> float {
       T *node_fp_coords_copy = data_buf;
       memcpy(node_fp_coords_copy, node_buf, disk_bytes_per_point);
       float cur_expanded_dist = dist_cmp->compare(query, node_fp_coords_copy,
                                             (unsigned) aligned_dim);
+      // One visit per full-record distance evaluation, including page companions
+      // and repeated evaluations. PQ candidate scoring is intentionally excluded.
+      this->note_full_vector_visit(id);
+      if (page_nc_) {
+        unsigned source = UINT32_MAX;
+        for (auto it = nc_read_sources.rbegin(); it != nc_read_sources.rend(); ++it)
+          if (it->first == id) { source = it->second; break; }
+        // Notify before adjacency filtering can mutate this record's neighbor list.
+        page_nc_->observe_node(id, node_buf, source);
+      }
       full_retset.push_back(Neighbor(id, cur_expanded_dist, true));
       first_io.insert({id, io_at});
       return cur_expanded_dist;
     };
 
+    const bool nc_expand_pages = page_nc_ && page_nc_->expands_prefetch_page();
+    tsl::robin_set<unsigned> nc_expanded_nodes;
     auto compute_and_push_nbrs = [&](const char *node_buf, unsigned& nk, unsigned parent) {
+      if (nc_expand_pages && !nc_expanded_nodes.insert(parent).second) return;
       unsigned *node_nbrs = OFFSET_TO_NODE_NHOOD(node_buf);
       unsigned nnbrs = *(node_nbrs++);
       unsigned nbors_cand_size = 0;
@@ -164,9 +180,9 @@ namespace diskann {
           if (nbor_dist >= retset[cur_list_size - 1].distance &&
               (cur_list_size == l_search))
             continue;
-          if (page_nc_ != nullptr)
-            page_nc_->observe_edge(parent, static_cast<unsigned>(nbor_id));
+
           Neighbor nn(nbor_id, nbor_dist, true);
+          nn.nc_parent = parent;
           // Return position in sorted list where nn inserted
           auto     r = InsertIntoPool(retset.data(), cur_list_size, nn);
           if (cur_list_size < l_search) ++cur_list_size;
@@ -239,9 +255,12 @@ namespace diskann {
       // distribute cache and disk-read nodes
       while (marker < cur_list_size && frontier.size() < beam_width &&
              num_seen < beam_width) {
+        if (nc_expand_pages && nc_expanded_nodes.find(retset[marker].id) != nc_expanded_nodes.end())
+          retset[marker].flag = false;
         const unsigned pid = id2page_[retset[marker].id];
         if (page_visited.find(pid) == page_visited.end() && retset[marker].flag) {
           num_seen++;
+          if (page_nc_ && page_nc_->needs_parent_metadata()) nc_read_sources.emplace_back(retset[marker].id, retset[marker].nc_parent);
           auto iter = nhood_cache.find(retset[marker].id);
           if (iter != nhood_cache.end()) {
             cached_nhoods.push_back(
@@ -251,20 +270,20 @@ namespace diskann {
             }
           } else if (page_nc_ != nullptr) {
             typename PageNeighborCache<T>::DiskNode dn;
-            const auto probed = page_nc_->probe(retset[marker].id, nc_buf.data(), &dn);
-            if (probed == PageNeighborCache<T>::Probe::Hit) {
+            const auto probed = page_nc_->probe(retset[marker].id, nc_buf.data(), &dn, retset[marker].nc_parent);
+            if (probed == PageNeighborCache<T>::Probe::Hit || probed == PageNeighborCache<T>::Probe::Prefetch) {
               nc_hits.emplace_back(retset[marker].id, nc_buf);
+              if (probed == PageNeighborCache<T>::Probe::Prefetch)
+                page_nc_->append_prefetch_members(retset[marker].id, nc_hits);
             } else if (probed == PageNeighborCache<T>::Probe::Disk) {
               ddisk.push_back(dn);
             } else {
               frontier.push_back(retset[marker].id);
               page_visited.insert(pid);
-              this->note_page_visit(retset[marker].id);
             }
           } else {
             frontier.push_back(retset[marker].id);
             page_visited.insert(pid);
-            this->note_page_visit(retset[marker].id);
           }
           retset[marker].flag = false;
         } else if (retset[marker].flag && stats != nullptr &&
@@ -306,6 +325,7 @@ namespace diskann {
           }
           num_ios++;
         }
+        if (page_nc_) page_nc_->base_reads(frontier_read_reqs.size());
         n_ops = reader->submit_reqs(frontier_read_reqs, ctx);
         if (this->count_visited_nodes) {
 #pragma omp critical
@@ -367,6 +387,7 @@ namespace diskann {
         page_nc_->finish_disk_nodes(nc_hits);
 
       for (auto &hit : nc_hits) {
+        if (nc_expand_pages && nc_expanded_nodes.find(hit.first) != nc_expanded_nodes.end()) continue;
         compute_extact_dists_and_push(hit.second.data(), hit.first, ios_last_round);
         compute_and_push_nbrs(hit.second.data(), nk, hit.first);
       }
@@ -389,8 +410,7 @@ namespace diskann {
           if (id == frontier_nhood.first) {
             char *node_buf = sector_buf + j * max_node_len;
             compute_extact_dists_and_push(node_buf, id, num_ios);
-            if (page_nc_ != nullptr)
-              page_nc_->observe_node(id, node_buf);
+
             compute_and_push_nbrs(node_buf, nk, id);
           }
         }
@@ -412,7 +432,8 @@ namespace diskann {
     // copy k_search values
     _u64 t = 0;
     for (_u64 i = 0; i < full_retset.size() && t < k_search; i++) {
-      if(i > 0 && full_retset[i].id == full_retset[i-1].id){
+      // Equal-distance records can interleave repeated IDs (A, B, A).
+      if (std::find(indices, indices + t, full_retset[i].id) != indices + t) {
         continue;
       }
       indices[t] = full_retset[i].id;
@@ -456,6 +477,7 @@ namespace diskann {
       float *distances, const _u64 beam_width, const _u32 io_limit,
       const bool use_reorder_data, const float use_ratio, QueryStats *stats, PageSearchPersistData<T>* persist_data) {
 
+    typename PageNeighborCache<T>::QueryGuard nc_query(page_nc_.get());
     if (persist_data == nullptr) {
       std::cerr << "this function needs persistent data" << std::endl;
       exit(1);
@@ -494,16 +516,31 @@ namespace diskann {
                        dists_out);
     };
 
+    std::vector<std::pair<unsigned,unsigned>> nc_read_sources;
+
     auto compute_extact_dists_and_push = [&](const char* node_buf, const unsigned id) -> float {
       T *node_fp_coords_copy = data_buf;
       memcpy(node_fp_coords_copy, node_buf, disk_bytes_per_point);
       float cur_expanded_dist = dist_cmp->compare(query, node_fp_coords_copy,
                                             (unsigned) aligned_dim);
+      // One visit per full-record distance evaluation, including page companions
+      // and repeated evaluations. PQ candidate scoring is intentionally excluded.
+      this->note_full_vector_visit(id);
+      if (page_nc_) {
+        unsigned source = UINT32_MAX;
+        for (auto it = nc_read_sources.rbegin(); it != nc_read_sources.rend(); ++it)
+          if (it->first == id) { source = it->second; break; }
+        // Notify before adjacency filtering can mutate this record's neighbor list.
+        page_nc_->observe_node(id, node_buf, source);
+      }
       full_retset.push_back(Neighbor(id, cur_expanded_dist, true));
       return cur_expanded_dist;
     };
 
+    const bool nc_expand_pages = page_nc_ && page_nc_->expands_prefetch_page();
+    tsl::robin_set<unsigned> nc_expanded_nodes;
     auto compute_and_push_nbrs = [&](const char *node_buf, unsigned& nk, unsigned parent) {
+      if (nc_expand_pages && !nc_expanded_nodes.insert(parent).second) return;
       unsigned *node_nbrs = OFFSET_TO_NODE_NHOOD(node_buf);
       unsigned nnbrs = *(node_nbrs++);
       unsigned nbors_cand_size = 0;
@@ -526,9 +563,9 @@ namespace diskann {
             kicked.insert(Neighbor(nbor_id, nbor_dist, true));
             continue;
           }
-          if (page_nc_ != nullptr)
-            page_nc_->observe_edge(parent, static_cast<unsigned>(nbor_id));
+
           Neighbor nn(nbor_id, nbor_dist, true);
+          nn.nc_parent = parent;
           // Return position in sorted list where nn inserted
           auto     r = InsertIntoPool(retset.data(), cur_list_size, nn, kicked, l_search);
           if (cur_list_size < l_search) ++cur_list_size;
@@ -579,9 +616,12 @@ namespace diskann {
       // distribute cache and disk-read nodes
       while (marker < cur_list_size && frontier.size() < beam_width &&
              num_seen < beam_width) {
+        if (nc_expand_pages && nc_expanded_nodes.find(retset[marker].id) != nc_expanded_nodes.end())
+          retset[marker].flag = false;
         const unsigned pid = id2page_[retset[marker].id];
         if (page_visited.find(pid) == page_visited.end() && retset[marker].flag) {
           num_seen++;
+          if (page_nc_ && page_nc_->needs_parent_metadata()) nc_read_sources.emplace_back(retset[marker].id, retset[marker].nc_parent);
           auto iter = nhood_cache.find(retset[marker].id);
           if (iter != nhood_cache.end()) {
             cached_nhoods.push_back(
@@ -591,20 +631,20 @@ namespace diskann {
             }
           } else if (page_nc_ != nullptr) {
             typename PageNeighborCache<T>::DiskNode dn;
-            const auto probed = page_nc_->probe(retset[marker].id, nc_buf.data(), &dn);
-            if (probed == PageNeighborCache<T>::Probe::Hit) {
+            const auto probed = page_nc_->probe(retset[marker].id, nc_buf.data(), &dn, retset[marker].nc_parent);
+            if (probed == PageNeighborCache<T>::Probe::Hit || probed == PageNeighborCache<T>::Probe::Prefetch) {
               nc_hits.emplace_back(retset[marker].id, nc_buf);
+              if (probed == PageNeighborCache<T>::Probe::Prefetch)
+                page_nc_->append_prefetch_members(retset[marker].id, nc_hits);
             } else if (probed == PageNeighborCache<T>::Probe::Disk) {
               ddisk.push_back(dn);
             } else {
               frontier.push_back(retset[marker].id);
               page_visited.insert(pid);
-              this->note_page_visit(retset[marker].id);
             }
           } else {
             frontier.push_back(retset[marker].id);
             page_visited.insert(pid);
-            this->note_page_visit(retset[marker].id);
           }
           retset[marker].flag = false;
         }
@@ -640,6 +680,7 @@ namespace diskann {
           }
           num_ios++;
         }
+        if (page_nc_) page_nc_->base_reads(frontier_read_reqs.size());
         n_ops = reader->submit_reqs(frontier_read_reqs, ctx);
         if (this->count_visited_nodes) {
 #pragma omp critical
@@ -701,6 +742,7 @@ namespace diskann {
         page_nc_->finish_disk_nodes(nc_hits);
 
       for (auto &hit : nc_hits) {
+        if (nc_expand_pages && nc_expanded_nodes.find(hit.first) != nc_expanded_nodes.end()) continue;
         compute_extact_dists_and_push(hit.second.data(), hit.first);
         compute_and_push_nbrs(hit.second.data(), nk, hit.first);
       }
@@ -723,8 +765,7 @@ namespace diskann {
           if (id == frontier_nhood.first) {
             char *node_buf = sector_buf + j * max_node_len;
             compute_extact_dists_and_push(node_buf, id);
-            if (page_nc_ != nullptr)
-              page_nc_->observe_node(id, node_buf);
+
             compute_and_push_nbrs(node_buf, nk, id);
           }
         }
@@ -746,7 +787,8 @@ namespace diskann {
     // copy k_search values
     _u64 t = 0;
     for (_u64 i = 0; i < full_retset.size() && t < k_search; i++) {
-      if(i > 0 && full_retset[i].id == full_retset[i-1].id){
+      // Equal-distance records can interleave repeated IDs (A, B, A).
+      if (std::find(indices, indices + t, full_retset[i].id) != indices + t) {
         std::cout << "has replica" << std::endl;
         continue;
       }
@@ -777,6 +819,7 @@ namespace diskann {
       const T *query1, const _u64 k_search, const _u32 mem_L, const _u64 l_search, _u64 *indices,
       float *distances, const _u64 beam_width, const _u32 io_limit,
       const bool use_reorder_data, const float use_ratio, QueryStats *stats) {
+    typename PageNeighborCache<T>::QueryGuard nc_query(page_nc_.get());
     ThreadData<T> data = this->thread_data.pop();
     while (data.scratch.sector_scratch == nullptr) {
       this->thread_data.wait_for_push_notify();
@@ -870,6 +913,8 @@ namespace diskann {
                        dists_out);
     };
 
+    std::vector<std::pair<unsigned,unsigned>> nc_read_sources;
+
     auto compute_extact_dists_and_push = [&](const char* node_buf, const unsigned id) -> float {
       float *node_fp_coords_copy = (float*) data_buf;
       uint8_t* node_sq_data = (uint8_t*)node_buf;
@@ -886,11 +931,24 @@ namespace diskann {
       }
       float cur_expanded_dist = dist_cmp_float->compare(query, node_fp_coords_copy,
                                             (unsigned) aligned_dim);
+      // One visit per full-record distance evaluation, including page companions
+      // and repeated evaluations. PQ candidate scoring is intentionally excluded.
+      this->note_full_vector_visit(id);
+      if (page_nc_) {
+        unsigned source = UINT32_MAX;
+        for (auto it = nc_read_sources.rbegin(); it != nc_read_sources.rend(); ++it)
+          if (it->first == id) { source = it->second; break; }
+        // Notify before adjacency filtering can mutate this record's neighbor list.
+        page_nc_->observe_node(id, node_buf, source);
+      }
       full_retset.push_back(Neighbor(id, cur_expanded_dist, true));
       return cur_expanded_dist;
     };
 
+    const bool nc_expand_pages = page_nc_ && page_nc_->expands_prefetch_page();
+    tsl::robin_set<unsigned> nc_expanded_nodes;
     auto compute_and_push_nbrs = [&](const char *node_buf, unsigned& nk, unsigned parent) {
+      if (nc_expand_pages && !nc_expanded_nodes.insert(parent).second) return;
       unsigned *node_nbrs = OFFSET_TO_NODE_NHOOD(node_buf);
       unsigned nnbrs = *(node_nbrs++);
       unsigned nbors_cand_size = 0;
@@ -911,9 +969,9 @@ namespace diskann {
           if (nbor_dist >= retset[cur_list_size - 1].distance &&
               (cur_list_size == l_search))
             continue;
-          if (page_nc_ != nullptr)
-            page_nc_->observe_edge(parent, static_cast<unsigned>(nbor_id));
+
           Neighbor nn(nbor_id, nbor_dist, true);
+          nn.nc_parent = parent;
           // Return position in sorted list where nn inserted
           auto     r = InsertIntoPool(retset.data(), cur_list_size, nn);
           if (cur_list_size < l_search) ++cur_list_size;
@@ -986,9 +1044,12 @@ namespace diskann {
       // distribute cache and disk-read nodes
       while (marker < cur_list_size && frontier.size() < beam_width &&
              num_seen < beam_width) {
+        if (nc_expand_pages && nc_expanded_nodes.find(retset[marker].id) != nc_expanded_nodes.end())
+          retset[marker].flag = false;
         const unsigned pid = id2page_[retset[marker].id];
         if (page_visited.find(pid) == page_visited.end() && retset[marker].flag) {
           num_seen++;
+          if (page_nc_ && page_nc_->needs_parent_metadata()) nc_read_sources.emplace_back(retset[marker].id, retset[marker].nc_parent);
           auto iter = nhood_cache.find(retset[marker].id);
           if (iter != nhood_cache.end()) {
             cached_nhoods.push_back(
@@ -998,20 +1059,20 @@ namespace diskann {
             }
           } else if (page_nc_ != nullptr) {
             typename PageNeighborCache<T>::DiskNode dn;
-            const auto probed = page_nc_->probe(retset[marker].id, nc_buf.data(), &dn);
-            if (probed == PageNeighborCache<T>::Probe::Hit) {
+            const auto probed = page_nc_->probe(retset[marker].id, nc_buf.data(), &dn, retset[marker].nc_parent);
+            if (probed == PageNeighborCache<T>::Probe::Hit || probed == PageNeighborCache<T>::Probe::Prefetch) {
               nc_hits.emplace_back(retset[marker].id, nc_buf);
+              if (probed == PageNeighborCache<T>::Probe::Prefetch)
+                page_nc_->append_prefetch_members(retset[marker].id, nc_hits);
             } else if (probed == PageNeighborCache<T>::Probe::Disk) {
               ddisk.push_back(dn);
             } else {
               frontier.push_back(retset[marker].id);
               page_visited.insert(pid);
-              this->note_page_visit(retset[marker].id);
             }
           } else {
             frontier.push_back(retset[marker].id);
             page_visited.insert(pid);
-            this->note_page_visit(retset[marker].id);
           }
           retset[marker].flag = false;
         }
@@ -1047,6 +1108,7 @@ namespace diskann {
           }
           num_ios++;
         }
+        if (page_nc_) page_nc_->base_reads(frontier_read_reqs.size());
         n_ops = reader->submit_reqs(frontier_read_reqs, ctx);
         if (this->count_visited_nodes) {
 #pragma omp critical
@@ -1108,6 +1170,7 @@ namespace diskann {
         page_nc_->finish_disk_nodes(nc_hits);
 
       for (auto &hit : nc_hits) {
+        if (nc_expand_pages && nc_expanded_nodes.find(hit.first) != nc_expanded_nodes.end()) continue;
         compute_extact_dists_and_push(hit.second.data(), hit.first);
         compute_and_push_nbrs(hit.second.data(), nk, hit.first);
       }
@@ -1130,8 +1193,7 @@ namespace diskann {
           if (id == frontier_nhood.first) {
             char *node_buf = sector_buf + j * max_node_len;
             compute_extact_dists_and_push(node_buf, id);
-            if (page_nc_ != nullptr)
-              page_nc_->observe_node(id, node_buf);
+
             compute_and_push_nbrs(node_buf, nk, id);
           }
         }
@@ -1153,7 +1215,8 @@ namespace diskann {
     // copy k_search values
     _u64 t = 0;
     for (_u64 i = 0; i < full_retset.size() && t < k_search; i++) {
-      if(i > 0 && full_retset[i].id == full_retset[i-1].id){
+      // Equal-distance records can interleave repeated IDs (A, B, A).
+      if (std::find(indices, indices + t, full_retset[i].id) != indices + t) {
         continue;
       }
       indices[t] = full_retset[i].id;

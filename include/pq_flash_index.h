@@ -287,8 +287,17 @@ namespace diskann {
     void init_page_neighbor_cache()
     {
       auto cache = std::make_unique<PageNeighborCache<T>>();
-      if (!cache->init(max_node_len, disk_bytes_per_point, max_degree, disk_index_file + ".nc.dyn"))
+      if (!cache->init(max_node_len, disk_bytes_per_point, max_degree, disk_index_file + ".nc.dyn", num_points, nnodes_per_sector, medoids, num_medoids))
         return;
+      if (neighborcache::env("NEIGHBORCACHE_VERIFY", 0))
+        cache->set_verifier([this](uint32_t id, const char *raw) {
+          const uint32_t page = id2page_.at(id);
+          const auto &members = gp_layout_.at(page);
+          auto slot = std::find(members.begin(), members.end(), id);
+          if (slot == members.end()) throw std::runtime_error("Missing node in original page layout");
+          neighborcache::verify_file_record(disk_index_file, (uint64_t(page) + 1) * 4096 +
+            (slot - members.begin()) * max_node_len, max_node_len, id, raw);
+        });
       page_nc_ = std::move(cache);
     }
 
@@ -303,7 +312,7 @@ namespace diskann {
     // idx = node_id, the key represents the neighbor id, value is its count
     std::vector<std::unordered_map<_u32, _u32>> nbrs_freq_counter_;
 
-    void note_page_visit(uint32_t id)
+    void note_full_vector_visit(uint32_t id)
     {
       if (page_visit_counts_ == nullptr || id >= num_points)
         return;

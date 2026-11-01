@@ -12,6 +12,7 @@ namespace diskann {
 
   struct Neighbor {
     unsigned id;
+    uint32_t nc_parent = UINT32_MAX;
     float    distance;
     bool     flag;
     unsigned rev_id = 0; // where is this neighbor comes from

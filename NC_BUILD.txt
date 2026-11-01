@@ -1,0 +1,23 @@
+Starling with the current Merit cache
+
+Cache source provenance and SHA-256 values: NC_INTEGRATION.json.
+The source capsule is a versioned snapshot of the actual Merit backend, not a rewritten cache.
+
+Build the original Starling targets using the repository instructions.
+For a search-only checkout without the graph_partition submodule, configure
+Starling with -DBUILD_GRAPH_PARTITION=OFF (the default remains ON).
+With CMake 4, this older host also needs -DCMAKE_POLICY_VERSION_MINIMUM=3.5.
+Build the shared cache from this checkout:
+  cmake -S nc_reference/neighborcache_backend -B nc_reference/neighborcache_backend/build -DCMAKE_BUILD_TYPE=Release
+  cmake --build nc_reference/neighborcache_backend/build -j3
+  ctest --test-dir nc_reference/neighborcache_backend/build --output-on-failure
+  export NEIGHBORCACHE_BACKEND_LIBRARY="$PWD/nc_reference/neighborcache_backend/build/libneighborcache_backend.so"
+
+Set NEIGHBORCACHE_THREADS to the actual query worker count.
+N=0 disables the adapter; N>0 starts N/M/prefetch/D cold unless an explicit prefill is configured.
+NEIGHBORCACHE_PREFETCH_THREAD_PRIVATE=1 enables a persistent LRU per worker; the total page budget is divided among workers.
+NEIGHBORCACHE_FREEZE_MAINTENANCE=0 enables dynamic updates.
+NEIGHBORCACHE_EXPAND_PREFETCH_PAGE=1 expands acquired seed-page records in dynamic one-page mode and frozen one-/two-page mode. In private mode IDs and bytes come from the same worker-local snapshot. Original Starling page companions may differ; compare recall explicitly.
+NEIGHBORCACHE_DCACHE_UNBOUNDED=1 removes the SSD storage quota and reserves metadata addresses for the dataset; this can consume substantial RAM.
+Keep D and the original index on the same SSD for same-device I/O comparisons.
+All options are documented in nc_reference/neighborcache_backend/README.md.

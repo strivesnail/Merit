@@ -318,6 +318,14 @@ int search_disk_index(
       diskann::cout << std::setw(16) << recall << std::endl;
     } else
       diskann::cout << std::endl;
+    if (const char* qs_prefix = std::getenv("STARLING_QSTATS")) {
+      std::ofstream qout(std::string(qs_prefix) + "_" + std::to_string(L) + ".csv");
+      qout << "query_id,total_us,n_ios,n_cache_hits,n_page_skip,n_exact,n_hops,reads_top1,reads_topk\n";
+      for (size_t i = 0; i < query_num; i++)
+        qout << i << ',' << stats[i].total_us << ',' << stats[i].n_ios << ',' << stats[i].n_cache_hits << ','
+             << stats[i].n_page_skip << ',' << stats[i].n_exact << ',' << stats[i].n_hops << ','
+             << stats[i].reads_top1 << ',' << stats[i].reads_topk << '\n';
+    }
     delete[] stats;
   }
 

@@ -86,7 +86,7 @@ namespace diskann {
       const uint64_t n = num_points;
       out.write(reinterpret_cast<const char *>(&n), sizeof(n));
       out.write(reinterpret_cast<const char *>(counts.data()), counts.size() * sizeof(uint32_t));
-      diskann::cout << "Page visit profile wrote " << page_visit_profile_path_ << " n=" << n << std::endl;
+      diskann::cout << "Full-vector visit profile wrote " << page_visit_profile_path_ << " n=" << n << std::endl;
     }
     if (load_flag) {
       this->destroy_thread_data();
@@ -620,6 +620,15 @@ namespace diskann {
       seed_set.insert(item.id);
     }
     const uint32_t slots = page_nc_->slots_per_page();
+    // 1 keeps the meeting layout (one page per seed). 0 stores every non-seed neighbor.
+    uint32_t max_pages_per_seed = 1;
+    if (const char *mp = std::getenv("NEIGHBORCACHE_DCACHE_MAX_PAGES_PER_SEED")) {
+      if (mp[0] != '\0')
+        max_pages_per_seed = static_cast<uint32_t>(std::strtoul(mp, nullptr, 10));
+    }
+    diskann::cout << "PageNeighborCache pages_per_seed="
+                  << (max_pages_per_seed == 0 ? std::string("all") : std::to_string(max_pages_per_seed))
+                  << std::endl;
     const bool lp = [] {
       const char *env = std::getenv("NEIGHBORCACHE_LP");
       return env != nullptr && env[0] != '\0' && env[0] != '0';
@@ -664,10 +673,16 @@ namespace diskann {
           item.nbrs.push_back(nbr);
         }
         std::sort(item.nbrs.begin(), item.nbrs.end(), by_count);
-        if (slots > 1 && item.nbrs.size() + 1 > slots)
-          item.nbrs.resize(slots - 1);
-        else if (slots <= 1)
+        if (slots <= 1)
           item.nbrs.clear();
+        else if (max_pages_per_seed == 1 && item.nbrs.size() + 1 > slots)
+          item.nbrs.resize(slots - 1);
+        else if (max_pages_per_seed > 1) {
+          const size_t room = static_cast<size_t>(slots - 1) +
+                              static_cast<size_t>(max_pages_per_seed - 1) * static_cast<size_t>(slots);
+          if (item.nbrs.size() > room)
+            item.nbrs.resize(room);
+        }
         if (lp && item.nbrs.empty())
           continue;
         items.push_back(std::move(item));
@@ -739,17 +754,24 @@ namespace diskann {
         nindex[need[i]] = i;
       for (const Item &item : items) {
         std::vector<std::vector<uint32_t>> pages;
-        std::vector<uint32_t> page;
-        page.push_back(item.seed);
         size_t idx = 0;
-        while (page.size() < slots && idx < item.nbrs.size()) {
-          auto it = nindex.find(item.nbrs[idx]);
-          if (it != nindex.end() && !nrecs[it.value()].empty())
-            page.push_back(item.nbrs[idx]);
-          ++idx;
+        uint32_t made = 0;
+        while (idx < item.nbrs.size() && (max_pages_per_seed == 0 || made < max_pages_per_seed)) {
+          std::vector<uint32_t> page;
+          if (made == 0)
+            page.push_back(item.seed);
+          while (page.size() < slots && idx < item.nbrs.size()) {
+            const uint32_t nbr = item.nbrs[idx];
+            ++idx;
+            auto it = nindex.find(nbr);
+            if (it != nindex.end() && !nrecs[it.value()].empty())
+              page.push_back(nbr);
+          }
+          const bool keep = made == 0 ? page.size() > 1 : !page.empty();
+          if (keep)
+            pages.push_back(std::move(page));
+          ++made;
         }
-        if (page.size() > 1)
-          pages.push_back(page);
         for (const std::vector<uint32_t> &ids_page : pages) {
           std::vector<uint32_t> ids;
           std::vector<const char *> bufs;
@@ -765,7 +787,7 @@ namespace diskann {
             ids.push_back(id);
             bufs.push_back(nrecs[it.value()].data());
           }
-          if (ids.size() >= 2 && page_nc_->commit_prefill_page(ids, bufs))
+          if (!ids.empty() && page_nc_->commit_prefill_page(ids, bufs))
             ++committed;
         }
       }
@@ -777,6 +799,7 @@ namespace diskann {
 
   template<typename T>
   void PQFlashIndex<T>::preload_page_neighbor_cache_bfs() {
+    if (page_nc_ != nullptr) return; // The shared online backend starts cold.
     if (page_nc_ != nullptr && page_nc_->enabled() && page_nc_->prefill_enabled()) {
       const char *rank = std::getenv("NEIGHBORCACHE_VISIT_RANK");
       if (rank == nullptr || rank[0] == '\0') {
@@ -1423,7 +1446,7 @@ namespace diskann {
         this->page_visit_counts_.reset(new std::atomic<uint32_t>[this->num_points]);
         for (uint64_t i = 0; i < this->num_points; ++i)
           this->page_visit_counts_[i].store(0, std::memory_order_relaxed);
-        diskann::cout << "Page visit profile armed n=" << this->num_points << " path=" << env << std::endl;
+        diskann::cout << "Full-vector visit profile armed n=" << this->num_points << " path=" << env << std::endl;
       }
     }
     this->init_page_neighbor_cache();

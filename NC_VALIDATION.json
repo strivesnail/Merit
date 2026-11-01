@@ -1,0 +1,26 @@
+{
+  "merit_source_commit": "08700c51835ca9699d71f586574d8742aed9667f",
+  "backend_ctests_passed": 27,
+  "backend_ctests_failed": 0,
+  "host_build": "Release search_disk_index",
+  "integration": {
+    "dataset": "SIFT10M",
+    "queries": 5000,
+    "threads": 20,
+    "L": 128,
+    "W": 4,
+    "mode": "dynamic cold-start; one-page seed; private prefetch; expansion enabled",
+    "N_nodes": 1024,
+    "P_pages_total": 20,
+    "D_capacity_pages": 512,
+    "record_verification": "Every N/P/D returned record and every extra expanded member compared byte-for-byte to original index record; exit 0",
+    "prefetch_hits": 17574,
+    "additional_members_verified": 97237,
+    "demand_D_reads": 29294,
+    "async_writebacks": 1459,
+    "write_failures": 0,
+    "binary_sha256": "ca6ba313ad618b302ae14e4912961fafd9a95a6dcc290877e1fee3b83f72dcff",
+    "backend_sha256": "c31d0534d357146f41d8774bc663f03062dfda04116777c740b17ff9076db6e9"
+  },
+  "limits": "Verification adds original-index reads and is not a performance measurement; ANN recall equivalence requires the separate SIFT100M L sweep."
+}

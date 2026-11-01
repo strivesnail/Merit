@@ -19,7 +19,10 @@ project(diskann)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-add_subdirectory(graph_partition)
+option(BUILD_GRAPH_PARTITION "Build the optional offline graph partitioner" ON)
+if(BUILD_GRAPH_PARTITION)
+    add_subdirectory(graph_partition)
+endif()
 
 if(MSVC)
 	cmake_minimum_required(VERSION 3.15)
