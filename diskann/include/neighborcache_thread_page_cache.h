@@ -351,6 +351,25 @@ class NeighborCacheThreadPageCache {
         if(found) return true;
         l->misses.fetch_add(1,std::memory_order_relaxed); return false;
     }
+    // Copy membership and payload from this worker's same immutable record
+    // snapshot. A newer D layout in another worker does not change this copy.
+    bool record_page_snapshot(uint32_t id, size_t record_bytes, uint32_t &record_slot,
+                              std::vector<uint32_t> &ids, char *dst) {
+        auto *l=local(false); if(!l || !record_bytes || !dst) return false;
+        const bool found=l->records.newest_first(id,[&](RecordLocation loc) {
+            const auto &s=l->slots[loc.page_slot];
+            if(s.key==none || loc.record_slot>=s.members.size() || s.members[loc.record_slot]!=id ||
+               s.members.size()>defaults::SECTOR_LEN/record_bytes) return false;
+            record_slot=loc.record_slot;
+            ids=s.members;
+            s.bytes.copy_to(dst);
+            touch(*l,loc.page_slot);
+            l->hits.fetch_add(1,std::memory_order_relaxed);
+            return true;
+        });
+        if(!found) l->misses.fetch_add(1,std::memory_order_relaxed);
+        return found;
+    }
     void enter() {
         auto &l=*local(true);
         if(l.depth++==0 && reset_)

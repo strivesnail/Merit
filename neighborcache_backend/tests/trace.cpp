@@ -21,7 +21,7 @@ int main(int argc,char **argv){
  setenv("NEIGHBORCACHE_DCACHE_COMMIT_INLINE","1",1);
  std::string path=(std::filesystem::temp_directory_path() / ("nc_trace_"+std::to_string(getpid())+"_"+std::to_string(bytes)+"_"+std::to_string(count))).string();
  Client c;NCConfig cfg{NC_BACKEND_ABI,count,2048,bytes,128,32,4096/bytes,128,4,4,path.c_str()};c.init(cfg);
- std::atomic<unsigned> checked{0};
+ std::atomic<unsigned> checked{0},extras_checked{0};
  auto work=[&](unsigned t){
   for(unsigned q=0;q<100;++q){Client::QueryGuard guard(c);
    for(unsigned k=0;k<96;++k){
@@ -30,6 +30,13 @@ int main(int argc,char **argv){
     NCRead read;int kind=c.resolve(id,got.data(),read);
     if(kind==3){auto n=pread(read.fd,read.buffer,read.bytes,read.offset);if(!c.complete(read,n,got.data()))kind=0;}
     if(kind){if(want!=got){std::cerr<<"bad record id="<<id<<" kind="<<kind<<"\n";std::abort();}++checked;}
+    std::vector<std::pair<uint32_t,std::vector<char>>> extras;
+    c.append_prefetch_members(id,extras);
+    if(kind!=2) assert(extras.empty());
+    for(const auto &extra:extras) {
+     assert(extra.first!=id && extra.second==record(extra.first,bytes,count));
+     ++extras_checked;
+    }
     c.expand(id,want.data(),0,k ? (id+2047)%2048 : UINT32_MAX);
    }
   }
@@ -37,4 +44,5 @@ int main(int argc,char **argv){
  std::vector<std::thread> threads;for(unsigned t=0;t<4;++t)threads.emplace_back(work,t);for(auto&t:threads)t.join();
  auto s=c.stats();c.print();assert(checked>0);assert(s.n_hits>0);assert(s.m_entries>0);assert(s.seeds<=s.capacity);assert(s.opens>0);assert(s.d_reads>0);assert(s.prefetch_hits>0);assert(s.writes>0);
  std::cout<<"PASS checked="<<checked<<" bytes="<<bytes<<" count="<<count<<"\n";
+ if(c.expands_prefetch_page()) assert(extras_checked>0);
 }

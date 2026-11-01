@@ -151,6 +151,11 @@ class NeighborCacheSharedPageCache
     {
         return _private && _private->copy_record(id, record_bytes, dst, current_version);
     }
+    bool private_record_page_snapshot(uint32_t id, size_t record_bytes, uint32_t &slot,
+                                      std::vector<uint32_t> &ids, char *dst)
+    {
+        return _private && _private->record_page_snapshot(id, record_bytes, slot, ids, dst);
+    }
     void configure_private_dynamic(uint32_t base, uint64_t pages)
     {
         if (_private) _private->configure_dynamic(base, pages);

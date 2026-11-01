@@ -189,9 +189,15 @@ recall; a QPS increase alone is not evidence of transparent cache acceleration.
 ### Experimental prefetch-page expansion
 
 Rebuilt Starling/MARGO hosts can opt into `NEIGHBORCACHE_EXPAND_PREFETCH_PAGE=1`.
-This requires explicit frozen static mode. One-page prefills use
+One-page expansion supports dynamic cold-start caches as well as static prefills.
+In private mode, target bytes and extra member IDs are copied together from the
+calling worker's resident page, including valid immutable records whose backing
+D layout has since changed in another worker. No global directory is used to
+interpret that private snapshot, and expansion issues no extra disk read.
+One-page prefills use
 `NEIGHBORCACHE_DCACHE_SECOND_PAGE=0` and `NEIGHBORCACHE_DCACHE_MAX_PAGES=1`.
-Grouped `NCHOT2P` prefills use `NEIGHBORCACHE_DCACHE_SECOND_PAGE=1` and
+Grouped `NCHOT2P` prefills still require frozen static mode,
+`NEIGHBORCACHE_DCACHE_SECOND_PAGE=1` and
 `NEIGHBORCACHE_DCACHE_MAX_PAGES=2`; both the host client and backend must be rebuilt.
 On a prefetch hit, the adapter copies the target's resident 4 KiB page and any
 resident companion page from the same immutable seed group. A companion that

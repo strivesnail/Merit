@@ -105,6 +105,10 @@ int main() {
             std::array<char,diskann::defaults::SECTOR_LEN> copy{};
             assert(!snapshots.get_range(1000,1,copy.data()));
             assert(snapshots.copy_record(700,128,copy.data()) && copy[0]==42);
+            uint32_t snapshot_slot=UINT32_MAX;
+            std::vector<uint32_t> snapshot_ids;
+            assert(snapshots.record_page_snapshot(700,128,snapshot_slot,snapshot_ids,copy.data()));
+            assert(snapshot_slot==0 && snapshot_ids==std::vector<uint32_t>{700} && copy[0]==42);
             std::vector<uint32_t> local_members;
             assert(snapshots.seed_snapshot(700,key,local_members,copy.data()));
             assert(key==1000 && local_members==std::vector<uint32_t>{700});
@@ -144,6 +148,12 @@ int main() {
         assert(replicas.copy_record(800,record.size(),record.data()) && record[0]==42);
         assert(replicas.copy_record(810+id,record.size(),record.data()) && record[0]==char(id+1));
         assert(!replicas.copy_record(810+(1-id),record.size(),record.data()));
+        uint32_t slot=UINT32_MAX;
+        std::vector<uint32_t> members;
+        std::array<char,diskann::defaults::SECTOR_LEN> snapshot{};
+        assert(replicas.record_page_snapshot(810+id,128,slot,members,snapshot.data()));
+        assert(slot==1 && members==std::vector<uint32_t>(ids,ids+2));
+        assert(snapshot[128]==char(id+1));
         replicas.exit();
     };
     std::thread e(replica_worker,0),f(replica_worker,1);

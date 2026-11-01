@@ -91,9 +91,9 @@ class NeighborCacheAdapter {
         load_hot_prefill();
         index.enable_neighborcache_dynamic_3cache(true, c.path);
         expand_prefetch_page = neighborcache_env_u64("NEIGHBORCACHE_EXPAND_PREFETCH_PAGE", 0) != 0;
-        if (expand_prefetch_page && (!index._neighborcache_static_no_mcache ||
-            (index._neighborcache_dcache_second_page && neighborcache_env_u64("NEIGHBORCACHE_DCACHE_MAX_PAGES", 5) != 2)))
-            throw std::runtime_error("Prefetch expansion requires frozen one- or two-page D groups");
+        if (expand_prefetch_page && index._neighborcache_dcache_second_page &&
+            (!index._neighborcache_static_no_mcache || neighborcache_env_u64("NEIGHBORCACHE_DCACHE_MAX_PAGES", 5) != 2))
+            throw std::runtime_error("Multi-page prefetch expansion requires frozen two-page D groups");
         // Publish immutable offline page groups before any query can start.
         // The existing span IO path fetches a group in one contiguous request.
         for (const auto &[base, span] : prefill_spans) {
@@ -327,6 +327,28 @@ class NeighborCacheAdapter {
         }
     }
     bool expanded_prefetch_lookup(Query *q, uint32_t id, char *raw) {
+        if (index._neighborcache_shared_cache.thread_private() && !index._neighborcache_dcache_second_page) {
+            // The global D directory may describe another worker's newer
+            // layout. Both IDs and bytes must come from our own resident page.
+            std::array<char,4096> page;
+            std::vector<uint32_t> members;
+            uint32_t slot=0;
+            if (!index._neighborcache_shared_cache.private_record_page_snapshot(
+                    id,config.record_bytes,slot,members,page.data())) return false;
+            decode(page.data()+size_t(slot)*config.record_bytes,raw);
+            q->snapshot_target=id;
+            for (size_t i=0;i<members.size();++i) {
+                const uint32_t member=members[i];
+                if (member==id || member>=config.points ||
+                    std::find(q->snapshot_ids.begin(),q->snapshot_ids.end(),member)!=q->snapshot_ids.end()) continue;
+                q->snapshot_ids.push_back(member);
+                const size_t offset=q->snapshot_records.size();
+                q->snapshot_records.resize(offset+config.record_bytes);
+                decode(page.data()+i*config.record_bytes,q->snapshot_records.data()+offset);
+            }
+            index._neighborcache_seed_page_hits.fetch_add(1,std::memory_order_relaxed);
+            return true;
+        }
         Index::NeighborCacheDiskLoc loc;
         if (!index.neighborcache_resolve_disk_cache_loc(id,nullptr,loc) || !index.neighborcache_dyn_is_sector(loc.sector)) return false;
         NeighborCacheTimedSharedMutexGuard lock(index._neighborcache_dyn_mu, NeighborCacheLockKind::DynamicShared, false);
@@ -390,14 +412,7 @@ class NeighborCacheAdapter {
                 if (reads.empty()) {
                     if (finish(q, *t, raw)) {
                         kind = 2; ++ph;
-                        if (expand_prefetch_page && !t->pending.empty()) {
-                            const auto &p=t->pending.front();
-                            // Dynamic node_ptr can be a single-record spill, not a page.
-                            // Reacquire the immutable full page; eviction means no extras.
-                            std::array<char,4096> page;
-                            if (index._neighborcache_shared_cache.get_range(p.loc.sector,1,page.data()))
-                                capture_prefetch_page(q,id,p.loc,page.data());
-                        }
+                        if (expand_prefetch_page) expanded_prefetch_lookup(q,id,raw);
                     }
                 } else {
                     if (reads.size() != 1) throw std::runtime_error("Unexpected multiple reads for a single cache lookup");
