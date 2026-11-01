@@ -4483,8 +4483,10 @@ static uint64_t neighborcache_canon_hash(uint32_t node_id)
 
 template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::neighborcache_canon_reset()
 {
+    const uint64_t seed_slots = _neighborcache_dyn_page_cap == std::numeric_limits<uint64_t>::max()
+                                    ? _num_points : _neighborcache_dyn_page_cap;
     uint64_t upper = std::max<uint64_t>(
-        1024, _neighborcache_dyn_page_cap * std::max<uint32_t>(_neighborcache_dyn_members_per_page, 1) * 2);
+        1024, seed_slots * std::max<uint32_t>(_neighborcache_dyn_members_per_page, 1) * 2);
     uint64_t slots = 1ull << 23;
     while (slots > 1024 && (slots >> 1) >= upper)
         slots >>= 1;
@@ -5023,14 +5025,20 @@ void PQFlashIndex<T, LabelT>::enable_neighborcache_dynamic_3cache(bool enable, c
     // A profile-selected seed fraction is not a fraction of original index pages.
     // Keep the old default, with an explicit budget override for such experiments.
     const uint64_t dcache_space_cap = neighborcache_env_u64("NEIGHBORCACHE_DCACHE_SPACE_CAP_PAGES", default_space_cap);
-    _neighborcache_dyn_page_cap = std::min(neighborcache_env_u64("NEIGHBORCACHE_DCACHE_CAP", dcache_space_cap), dcache_space_cap);
+    const bool unbounded_dcache = neighborcache_env_u64("NEIGHBORCACHE_DCACHE_UNBOUNDED", 0) != 0;
+    _neighborcache_dyn_page_cap = unbounded_dcache ? std::numeric_limits<uint64_t>::max() :
+        std::min(neighborcache_env_u64("NEIGHBORCACHE_DCACHE_CAP", dcache_space_cap), dcache_space_cap);
+    // The unlimited mode has no storage quota. Reserve directory addresses for
+    // the natural maximum of one seed per indexed node, without preallocating
+    // the SSD payload. Actual dirty evictions extend the file via pwrite.
+    const uint64_t seed_address_slots = unbounded_dcache ? _num_points : _neighborcache_dyn_page_cap;
     const uint64_t requested_mcache_cap =
-        neighborcache_env_u64("NEIGHBORCACHE_MCACHE_CAP", _neighborcache_dyn_page_cap > 0 ? _neighborcache_dyn_page_cap * 2ULL : 65536ULL);
+        neighborcache_env_u64("NEIGHBORCACHE_MCACHE_CAP", seed_address_slots > 0 ? seed_address_slots * 2ULL : 65536ULL);
     // Explicitly static runs have no M heat table or seed replacement heap.
     _neighborcache_static_no_mcache = neighborcache_env_u64("NEIGHBORCACHE_FREEZE_MAINTENANCE", 2) == 1;
     _neighborcache_freeze_maintenance = _neighborcache_static_no_mcache;
     const uint64_t mcache_cap = _neighborcache_static_no_mcache ? 0 :
-        std::max<uint64_t>(requested_mcache_cap, _neighborcache_dyn_page_cap * 2ULL);
+        std::max<uint64_t>(requested_mcache_cap, seed_address_slots * 2ULL);
     const uint8_t sig_t = static_cast<uint8_t>(neighborcache_env_u64("NEIGHBORCACHE_SEED_T", NeighborCacheMetadataCache::kDefaultSigT));
     if (_neighborcache_static_no_mcache)
         _neighborcache_mcache.clear();
@@ -5360,7 +5368,7 @@ void PQFlashIndex<T, LabelT>::enable_neighborcache_dynamic_3cache(bool enable, c
         _neighborcache_dyn_free.clear();
         _neighborcache_dyn_committed_pages = 0;
         _neighborcache_dyn_next_page = 0;
-        _neighborcache_dyn_physical_cap = _neighborcache_dyn_page_cap * page_multiplier + std::max<uint64_t>(_max_nthreads, 1) + 1;
+        _neighborcache_dyn_physical_cap = seed_address_slots * page_multiplier + std::max<uint64_t>(_max_nthreads, 1) + 1;
         if (_neighborcache_dyn_physical_cap >
             static_cast<uint64_t>(std::numeric_limits<size_t>::max()) / _neighborcache_dyn_members_per_page)
             throw ANNException("Dynamic d-cache member directory is too large.", -1, __FUNCSIG__, __FILE__,
@@ -5407,7 +5415,7 @@ void PQFlashIndex<T, LabelT>::enable_neighborcache_dynamic_3cache(bool enable, c
             _neighborcache_dyn_reclaim.clear();
         }
     }
-    const uint64_t dyn_file_bytes = _neighborcache_dyn_physical_cap * defaults::SECTOR_LEN;
+    const uint64_t dyn_file_bytes = unbounded_dcache ? 0 : _neighborcache_dyn_physical_cap * defaults::SECTOR_LEN;
 #ifndef _WINDOWS
     _neighborcache_dyn_write_fd =
         ::open(_neighborcache_dyn_path.c_str(), O_CREAT | O_TRUNC | O_RDWR | O_DIRECT | O_LARGEFILE, 0644);
@@ -5418,9 +5426,12 @@ void PQFlashIndex<T, LabelT>::enable_neighborcache_dynamic_3cache(bool enable, c
                                  std::ios::binary | std::ios::in | std::ios::out | std::ios::trunc);
     if (!_neighborcache_dyn_write_stream.is_open())
         throw ANNException("Failed to create dynamic disk-cache file.", -1, __FUNCSIG__, __FILE__, __LINE__);
-    _neighborcache_dyn_write_stream.seekp(static_cast<std::streamoff>(dyn_file_bytes - 1));
-    const char zero = 0;
-    _neighborcache_dyn_write_stream.write(&zero, 1);
+    if (dyn_file_bytes > 0)
+    {
+        _neighborcache_dyn_write_stream.seekp(static_cast<std::streamoff>(dyn_file_bytes - 1));
+        const char zero = 0;
+        _neighborcache_dyn_write_stream.write(&zero, 1);
+    }
     _neighborcache_dyn_write_stream.flush();
     if (!_neighborcache_dyn_write_stream.good())
         throw ANNException("Failed to preallocate dynamic disk-cache file.", -1, __FUNCSIG__, __FILE__, __LINE__);
@@ -5507,8 +5518,10 @@ void PQFlashIndex<T, LabelT>::enable_neighborcache_dynamic_3cache(bool enable, c
     }
     diskann::cout << "NEIGHBORCACHE dynamic 3-cache: m-cache cap=" << mcache_cap << " (2x seed cap) "
                   << "edge_storage=vector(unbounded) T=" << (int)sig_t
-                  << " heap+delay-write nps=" << nps << " d-cache pages<=" << _neighborcache_dyn_page_cap
-                  << " (space cap=" << dcache_space_cap << ", base pages=" << base_pages << ")"
+                  << " heap+delay-write nps=" << nps
+                  << (unbounded_dcache ? " d-cache budget=unbounded" : " d-cache pages<=")
+                  << (unbounded_dcache ? std::string() : std::to_string(_neighborcache_dyn_page_cap))
+                  << " (directory seed addresses=" << seed_address_slots << ", base pages=" << base_pages << ")"
                   << " file=" << _neighborcache_dyn_path << " physical_pages=" << _neighborcache_dyn_physical_cap
                   << " score=float32 unit=1..16/100x1k-query"
                   << " heap_shards=" << _neighborcache_heap_shard_count

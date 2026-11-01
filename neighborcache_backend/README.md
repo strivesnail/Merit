@@ -96,6 +96,16 @@ Set both `NEIGHBORCACHE_DCACHE_CAP` and
 `NEIGHBORCACHE_DCACHE_SPACE_CAP_PAGES` to the requested visited-seed count to
 avoid the default space limit based on original index pages. With no explicit
 space override, the original default limit is unchanged. Set
+`NEIGHBORCACHE_DCACHE_UNBOUNDED=1` for online experiments without a D storage
+quota; this overrides both page-budget variables. The D file starts empty and
+grows only as dirty pages are written asynchronously. Directory addresses are
+reserved for at most one seed per indexed node (plus in-flight pages), and the
+M capacity follows the existing two-slots-per-seed rule. Those reservations can
+consume substantial RAM on large indexes; this flag is not a RAM-saving mode.
+Keep the D result prefix on the same SSD as the base index for same-device I/O
+comparisons, and measure actual allocated file blocks after the run.
+
+Set
 `NEIGHBORCACHE_FREEZE_MAINTENANCE=0` to continue online maintenance after prefill;
 `=1` selects fixed-D measurement: no M heat table, seed replacement heap, or
 parent relation table is built. The read-only D location index and member bitset

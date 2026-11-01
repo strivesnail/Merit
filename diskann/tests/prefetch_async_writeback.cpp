@@ -3,6 +3,7 @@
 #include <chrono>
 #include <future>
 #include <iostream>
+#include <sys/stat.h>
 #include <unistd.h>
 
 namespace diskann {
@@ -19,6 +20,61 @@ class NeighborCacheAdapter {
         }
     }
 public:
+    static void run_storage_budget(bool unlimited) {
+        setenv("NEIGHBORCACHE_DCACHE_CAP","1",1);
+        setenv("NEIGHBORCACHE_DCACHE_SPACE_CAP_PAGES","1",1);
+        setenv("NEIGHBORCACHE_DCACHE_UNBOUNDED",unlimited ? "1" : "0",1);
+        setenv("NEIGHBORCACHE_MCACHE_CAP","128",1);
+        setenv("NEIGHBORCACHE_DCACHE_SECOND_PAGE","0",1);
+        std::shared_ptr<AlignedFileReader> reader;
+        Index idx(reader,Metric::L2);
+        idx._num_points=128;idx._max_nthreads=1;
+        idx._data_dim=idx._aligned_dim=idx._disk_bytes_per_point=128;
+        idx._max_degree=64;idx._max_node_len=388;idx._nnodes_per_sector=10;
+        idx._neighborcache_mem_pool=std::make_unique<NeighborCacheMemoryPool<uint8_t>>();
+        idx._neighborcache_mem_pool->init(32,128,64,128);
+        idx._neighborcache_mem_pool->commit_initial_load({},{});
+        idx._query_sector_cache_enabled=true;
+        assert(idx._neighborcache_shared_cache.init(2,1));
+        idx._neighborcache_shared_cache_dyn=true;
+        char prefix[]="/tmp/nc_storage_budget_XXXXXX";
+        int temporary=mkstemp(prefix);assert(temporary>=0);close(temporary);unlink(prefix);
+        idx.enable_neighborcache_dynamic_3cache(true,prefix);
+        struct stat st{};
+        assert(fstat(idx._neighborcache_dyn_write_fd,&st)==0);
+        if(unlimited) {
+            assert(idx._neighborcache_dyn_page_cap==std::numeric_limits<uint64_t>::max());
+            assert(idx._neighborcache_dyn_physical_cap==130);
+            assert(st.st_size==0 && st.st_blocks==0);
+        } else {
+            assert(idx._neighborcache_dyn_page_cap==1);
+            assert(st.st_size==3*bytes);
+        }
+        std::unique_ptr<NeighborCacheSharedPageCache::ReadSection> section;
+        if(idx._neighborcache_shared_cache.thread_private())
+            section=std::make_unique<NeighborCacheSharedPageCache::ReadSection>(idx._neighborcache_shared_cache);
+        alignas(4096) std::array<char,bytes> page{},copied{};
+        for(uint32_t seed=1;seed<=8;++seed) {
+            page.fill(0);std::fill(page.begin(),page.begin()+128,char(seed));
+            const bool published=idx.neighborcache_seed_prefetch_publish_page(seed,{seed},page.data());
+            assert(published==(unlimited || seed==1));
+        }
+        assert(idx._neighborcache_dyn_committed_pages==(unlimited ? 8 : 1));
+        idx.stop_neighborcache_dyn_writer();
+        if(unlimited) {
+            assert(idx._neighborcache_dyn_writer_completed>=1);
+            assert(idx._neighborcache_dyn_writer_failed==0);
+            assert(idx.neighborcache_dyn_disk_readable(Index::NEIGHBORCACHE_DYN_SECTOR_BASE));
+            assert(pread(idx._neighborcache_dyn_write_fd,copied.data(),bytes,0)==ssize_t(bytes));
+            for(unsigned i=0;i<128;++i)assert(copied[i]==1);
+            assert(fstat(idx._neighborcache_dyn_write_fd,&st)==0 && st.st_size>0);
+            assert(st.st_size<=8*bytes); // Written pages only; no dataset-sized sparse file.
+        }
+        idx.enable_neighborcache_dynamic_3cache(false);
+        unlink((std::string(prefix)+"_neighborcache_dc.dyn.data").c_str());
+        unsetenv("NEIGHBORCACHE_DCACHE_UNBOUNDED");
+        std::cout<<(unlimited ? "unlimited" : "bounded")<<" D storage budget passed\n";
+    }
     static void run_private_read_pins() {
         setenv("NEIGHBORCACHE_DCACHE_CAP","32",1);
         setenv("NEIGHBORCACHE_DCACHE_SPACE_CAP_PAGES","32",1);
@@ -456,4 +512,4 @@ public:
     }
 };
 }
-int main(){if(std::getenv("NEIGHBORCACHE_PREFETCH_THREAD_PRIVATE"))diskann::NeighborCacheAdapter::run_private();else diskann::NeighborCacheAdapter::run();std::cout<<"prefetch async writeback tests passed\n";}
+int main(){diskann::NeighborCacheAdapter::run_storage_budget(false);diskann::NeighborCacheAdapter::run_storage_budget(true);if(std::getenv("NEIGHBORCACHE_PREFETCH_THREAD_PRIVATE"))diskann::NeighborCacheAdapter::run_private();else diskann::NeighborCacheAdapter::run();std::cout<<"prefetch async writeback tests passed\n";}
