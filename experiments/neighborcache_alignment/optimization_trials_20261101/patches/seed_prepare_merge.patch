@@ -1,0 +1,248 @@
+diff --git a/diskann/include/pq_flash_index.h b/diskann/include/pq_flash_index.h
+--- a/diskann/include/pq_flash_index.h
++++ b/diskann/include/pq_flash_index.h
+@@ -4,6 +4,7 @@
+ #pragma once
+ #include "common_includes.h"
+ #include <atomic>
++#include <array>
+ #include <condition_variable>
+ #include <cstdint>
+ #include <cstdlib>
+@@ -466,6 +467,13 @@
+         std::vector<uint32_t> member_ids;
+         std::vector<std::vector<T>> member_coords;
+         std::vector<std::vector<uint32_t>> member_nbrs;
++    };
++
++    // Refresh-local owned records: never another cache or pending write buffer.
++    struct NeighborCacheSeedRecords
++    {
++        std::array<char, defaults::SECTOR_LEN> bytes{};
++        std::vector<uint32_t> ids;
+     };
+
+     struct NeighborCacheReadyPair
+@@ -1008,7 +1016,8 @@
+                _neighborcache_dyn_page_member_count[page_idx] != 0;
+     }
+     std::vector<uint32_t> neighborcache_dyn_now_page_ids(uint32_t seed_id, const NeighborCacheMetadataCache::Snapshot &snap,
+-                                                 bool ncache_only = false) const;
++                                                 bool ncache_only = false,
++                                                 NeighborCacheSeedRecords *records = nullptr) const;
+     bool neighborcache_dyn_hotter_mismatch(const uint32_t *page_members, size_t page_member_count,
+                                    const std::vector<uint32_t> &now_ids) const;
+     void neighborcache_dyn_invalidate_seed_page(uint32_t seed_id);
+@@ -1057,7 +1066,7 @@
+     bool neighborcache_dyn_disk_is_full() const;
+     bool neighborcache_dcache_updates_frozen() const;
+     bool neighborcache_dyn_build_pending_flush(uint32_t seed_id, const NeighborCacheMetadataCache::Snapshot &snap,
+-                                       NeighborCachePendingFlush &pf) const;
++                                       NeighborCachePendingFlush &pf, NeighborCacheSeedRecords *records = nullptr) const;
+     bool neighborcache_dyn_refresh_pending_members(uint32_t insertion_slot);
+     void neighborcache_dyn_maybe_refresh_pair();
+     void neighborcache_dyn_pin_seed_neighbors(uint32_t seed_id, uint32_t insertion_slot);
+@@ -1073,7 +1082,7 @@
+     void neighborcache_seed_page_unlink(uint32_t seed_id, const std::vector<uint32_t> &nbrs);
+     void neighborcache_seed_page_enqueue(NeighborCachePendingFlush pf);
+     void neighborcache_seed_page_flush_evicted(NeighborCacheSeedPage &page);
+-    void neighborcache_seed_page_open(uint32_t seed_id);
++    void neighborcache_seed_page_open(uint32_t seed_id, const NeighborCacheSeedRecords *records = nullptr);
+     void neighborcache_seed_prefetch_finish_candidate(uint32_t seed_id, uint32_t insertion_slot);
+     void neighborcache_seed_page_note(uint32_t node_id, uint32_t parent_id, const char *node_disk_buf);
+     bool neighborcache_seed_page_lookup(uint32_t node_id, std::vector<T> &coords, std::vector<uint32_t> &nbrs);
+diff --git a/diskann/src/pq_flash_index.cpp b/diskann/src/pq_flash_index.cpp
+--- a/diskann/src/pq_flash_index.cpp
++++ b/diskann/src/pq_flash_index.cpp
+@@ -6550,7 +6550,7 @@
+ template <typename T, typename LabelT>
+ std::vector<uint32_t> PQFlashIndex<T, LabelT>::neighborcache_dyn_now_page_ids(uint32_t seed_id,
+                                                                      const NeighborCacheMetadataCache::Snapshot &snap,
+-                                                                     bool ncache_only) const
++                                                                     bool ncache_only, NeighborCacheSeedRecords *records) const
+ {
+     const uint64_t nps = (_nnodes_per_sector > 0) ? _nnodes_per_sector : 1;
+     std::vector<uint32_t> now;
+@@ -6562,7 +6562,15 @@
+         if (!used.insert(id).second)
+             return;
+         bool has_payload = false;
+-        if (ncache_only)
++        if (records != nullptr && _max_node_len > 0 &&
++            records->ids.size() < records->bytes.size() / _max_node_len &&
++            neighborcache_copy_resident_record(id, records->bytes.data() + records->ids.size() * _max_node_len,
++                                               _max_node_len))
++        {
++            records->ids.push_back(id);
++            has_payload = true;
++        }
++        else if (ncache_only)
+         {
+             has_payload = _neighborcache_mem_pool != nullptr && _neighborcache_mem_pool->active() &&
+                           _neighborcache_mem_pool->contains(id);
+@@ -7380,14 +7388,14 @@
+ template <typename T, typename LabelT>
+ bool PQFlashIndex<T, LabelT>::neighborcache_dyn_build_pending_flush(uint32_t seed_id,
+                                                            const NeighborCacheMetadataCache::Snapshot &snap,
+-                                                           NeighborCachePendingFlush &pf) const
++                                                           NeighborCachePendingFlush &pf, NeighborCacheSeedRecords *records) const
+ {
+     pf = NeighborCachePendingFlush{};
+     pf.seed_id = seed_id;
+     pf.snap = snap;
+     const uint64_t nps = (_nnodes_per_sector > 0) ? _nnodes_per_sector : 1;
+     const std::vector<uint32_t> now =
+-        neighborcache_dyn_now_page_ids(seed_id, snap, _neighborcache_deferred_ncache_page_write);
++        neighborcache_dyn_now_page_ids(seed_id, snap, _neighborcache_deferred_ncache_page_write, records);
+     static const bool id_only_preflight =
+         neighborcache_env_u64("NEIGHBORCACHE_PREFETCH_ID_ONLY_PREFLIGHT", 0) != 0;
+     const bool ids_only = id_only_preflight && _neighborcache_seed_prefetch &&
+@@ -7397,12 +7405,18 @@
+     std::vector<uint32_t> nbrs;
+     for (uint32_t mid : now)
+     {
++        if (records != nullptr &&
++            std::find(records->ids.begin(), records->ids.end(), mid) != records->ids.end())
++        {
++            pf.member_ids.push_back(mid);
++            continue; // This full record is already owned by this refresh.
++        }
+         if (_neighborcache_deferred_ncache_page_write)
+         {
+             pf.member_ids.push_back(mid);
+             continue;
+         }
+-        if (ids_only)
++        if (ids_only || records != nullptr)
+         {
+             // This pending object is retired immediately after P publication;
+             // only the real page builder needs coordinates and adjacency. Keep
+@@ -8091,7 +8105,8 @@
+     return true;
+ }
+
+-template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::neighborcache_seed_page_open(uint32_t seed_id)
++template <typename T, typename LabelT>
++void PQFlashIndex<T, LabelT>::neighborcache_seed_page_open(uint32_t seed_id, const NeighborCacheSeedRecords *records)
+ {
+     if (_neighborcache_seed_prefetch)
+     {
+@@ -8108,8 +8123,20 @@
+         // Construct the final page directly from lock-protected resident
+         // records. No per-neighbor coordinate/adjacency vectors or second pack.
+         alignas(64) std::array<char, defaults::SECTOR_LEN> page{};
++        auto copy_record = [&](uint32_t id, char *dst) {
++            if (records != nullptr)
++            {
++                const auto it = std::find(records->ids.begin(), records->ids.end(), id);
++                if (it != records->ids.end())
++                {
++                    memcpy(dst, records->bytes.data() + (it - records->ids.begin()) * _max_node_len, _max_node_len);
++                    return true;
++                }
++            }
++            return neighborcache_copy_resident_record(id, dst, _max_node_len);
++        };
+         if (_max_node_len == 0 || _max_node_len > page.size() ||
+-            !neighborcache_copy_resident_record(seed_id, page.data(), _max_node_len))
++            !copy_record(seed_id, page.data()))
+         {
+             _neighborcache_seed_page_open_miss.fetch_add(1, std::memory_order_relaxed);
+             return;
+@@ -8128,7 +8155,7 @@
+             if (nbr == std::numeric_limits<uint32_t>::max() || std::find(ids.begin(), ids.end(), nbr) != ids.end())
+                 continue;
+             char *dst = page.data() + ids.size() * _max_node_len;
+-            if (neighborcache_copy_resident_record(nbr, dst, _max_node_len))
++            if (copy_record(nbr, dst))
+                 ids.push_back(nbr);
+         }
+         write_neighborcache_dc_seed_tail(page.data(), _max_node_len, _disk_bytes_per_point, degree, 1);
+@@ -8527,8 +8554,23 @@
+     NeighborCacheMetadataCache::Snapshot snap;
+     if (!_neighborcache_mcache.snapshot(cand_ins, snap))
+         return;
++    // Acquire complete resident records during candidate qualification and
++    // reuse them for publication. Other modes keep their delayed payloads.
++    static const bool merge_prepare = neighborcache_env_u64("NEIGHBORCACHE_PREFETCH_MERGE_PREPARE", 1) != 0;
++    NeighborCacheSeedRecords owned_records;
++    NeighborCacheSeedRecords *records = nullptr;
++    if (merge_prepare && _neighborcache_seed_prefetch && _neighborcache_shared_cache.thread_private() &&
++        !neighborcache_tracks_pending_members() && !_neighborcache_dcache_second_page &&
++        _max_node_len > 0 && _max_node_len <= owned_records.bytes.size() &&
++        neighborcache_copy_resident_record(cand_ins, owned_records.bytes.data(), _max_node_len))
++    {
++        owned_records.ids.reserve(std::min(static_cast<size_t>(_nnodes_per_sector),
++                                           owned_records.bytes.size() / _max_node_len));
++        owned_records.ids.push_back(cand_ins);
++        records = &owned_records;
++    }
+     NeighborCachePendingFlush pf;
+-    if (!neighborcache_dyn_build_pending_flush(cand_ins, snap, pf))
++    if (!neighborcache_dyn_build_pending_flush(cand_ins, snap, pf, records))
+     {
+         NeighborCacheHeapShard &shard = _neighborcache_heap_shards[cand_ins_shard];
+         NeighborCacheTimedMutexGuard hlock(shard.mu, NeighborCacheLockKind::Heap);
+@@ -8614,7 +8656,7 @@
+             neighborcache_dyn_pin_seed_neighbors(cand_ins, cand_ins_slot);
+     }
+     if (_neighborcache_seed_page_lru || _neighborcache_seed_prefetch)
+-        neighborcache_seed_page_open(cand_ins);
++        neighborcache_seed_page_open(cand_ins, records);
+     if (_neighborcache_seed_prefetch)
+         neighborcache_seed_prefetch_finish_candidate(cand_ins, cand_ins_slot);
+ }
+diff --git a/diskann/tests/prefetch_async_writeback.cpp b/diskann/tests/prefetch_async_writeback.cpp
+--- a/diskann/tests/prefetch_async_writeback.cpp
++++ b/diskann/tests/prefetch_async_writeback.cpp
+@@ -167,6 +167,30 @@
+         assert(idx.neighborcache_dyn_state_unlocked(retry.slot_id)==Index::NeighborCacheNodeState::Seed);
+         assert(idx._neighborcache_ready_pairs.empty() && idx._neighborcache_pending_pair_count==0);
+         std::cout<<"seed publication: Seed state, no duplicate selection, immediate cleanup and failed-publication retry passed\n";
++        // Candidate qualification acquires complete records once. N eviction
++        // between qualification and publication cannot invalidate those bytes.
++        auto merged_seed=record(70,{71}),merged_child=record(71,{});
++        idx._neighborcache_mem_pool->try_admit(70,merged_seed.data(),128,388,0,false);
++        idx._neighborcache_mem_pool->try_admit(71,merged_child.data(),128,388,0,false);
++        Index::NeighborCacheSeedRecords merged_records;
++        assert(idx.neighborcache_copy_resident_record(70,merged_records.bytes.data(),388));
++        merged_records.ids.push_back(70);
++        NeighborCacheMetadataCache::Snapshot merged_snapshot;
++        merged_snapshot.significant.emplace_back(71,1.0f);
++        Index::NeighborCachePendingFlush merged_preflight;
++        assert(idx.neighborcache_dyn_build_pending_flush(70,merged_snapshot,merged_preflight,&merged_records));
++        assert((merged_records.ids==std::vector<uint32_t>{70,71}));
++        assert(merged_preflight.member_ids==merged_records.ids);
++        assert(merged_preflight.member_coords.empty() && merged_preflight.member_nbrs.empty());
++        assert(memcmp(merged_records.bytes.data()+388,merged_child.data(),388)==0);
++        assert(idx._neighborcache_mem_pool->erase(70) && idx._neighborcache_mem_pool->erase(71));
++        idx.neighborcache_seed_page_open(70,&merged_records);
++        std::array<char,388> merged_copy{};
++        assert(idx._neighborcache_shared_cache.copy_private_record(70,388,merged_copy.data()));
++        assert(memcmp(merged_copy.data(),merged_seed.data(),136)==0);
++        assert(idx._neighborcache_shared_cache.copy_private_record(71,388,merged_copy.data()));
++        assert(merged_copy==merged_child);
++        std::cout<<"merged seed preparation: owned bytes survive N eviction and preserve complete records passed\n";
+         uint32_t sector=0,slot=0;
+         assert(idx._neighborcache_shared_cache.private_record_location(1,sector,slot,true,false));
+         const uint32_t page=sector-Index::NEIGHBORCACHE_DYN_SECTOR_BASE;
+diff --git a/neighborcache_backend/README.md b/neighborcache_backend/README.md
+--- a/neighborcache_backend/README.md
++++ b/neighborcache_backend/README.md
+@@ -344,6 +344,16 @@
+   Candidate reservations, M/heap state transitions and the final publication
+   checks remain active. Deferred, pinned, full-page-waiting and payload-buffered
+   modes retain their member dependency index and bucket bookkeeping.
++- Immediate private seed-prefetch preparation reuses complete resident records
++  acquired during candidate qualification when assembling the final page.
++  The refresh-local snapshot holds at most one page of record bytes; it is not
++  another persistent cache. W/fetched-member eligibility, D fallback for
++  uncaptured qualification members, graph packing order, publication checks
++  and asynchronous eviction writeback are retained. Owned records remain valid
++  if their N slots are reused before publication. Set
++  `NEIGHBORCACHE_PREFETCH_MERGE_PREPARE=0` to use the previous separate path.
++  Shared prefetch, delayed/buffered/pinned modes and multi-page mode retain the
++  previous preparation path.
+ - Two maintenance comparisons remain opt-in (both default to `0`):
+   `NEIGHBORCACHE_PREFETCH_ID_ONLY_PREFLIGHT=1` omits temporary resident payload
+   copies before immediate seed-prefetch publication, while preserving the

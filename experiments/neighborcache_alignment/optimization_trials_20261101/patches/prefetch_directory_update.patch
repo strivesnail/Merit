@@ -1,0 +1,121 @@
+diff --git a/diskann/include/pq_flash_index.h b/diskann/include/pq_flash_index.h
+index f1008f8..d2e4926 100644
+--- a/diskann/include/pq_flash_index.h
++++ b/diskann/include/pq_flash_index.h
+@@ -742,6 +742,7 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
+     const NeighborCacheDynLocShard &neighborcache_dyn_loc_shard(uint32_t node_id) const;
+     void neighborcache_dyn_loc_clear_unlocked();
+     void neighborcache_dyn_loc_add_unlocked(uint32_t node_id, const NeighborCacheDiskLoc &loc);
++    void neighborcache_dyn_loc_refresh_unlocked(uint32_t node_id, const NeighborCacheDiskLoc &loc);
+     void neighborcache_dyn_loc_erase_sector_unlocked(uint32_t node_id, uint32_t sector);
+     // One atomic word per slot: tag in the low 32 bits, page/slot in the high bits.
+     // Query threads load it directly. 1 = live loc, 0 = not in the D-cache, -1 = use the locked map.
+diff --git a/diskann/src/pq_flash_index.cpp b/diskann/src/pq_flash_index.cpp
+index c0dd2c6..adfb70f 100644
+--- a/diskann/src/pq_flash_index.cpp
++++ b/diskann/src/pq_flash_index.cpp
+@@ -4455,6 +4455,23 @@ void PQFlashIndex<T, LabelT>::neighborcache_dyn_loc_add_unlocked(uint32_t node_i
+     neighborcache_canon_publish(node_id, loc);
+ }
+
++template <typename T, typename LabelT>
++void PQFlashIndex<T, LabelT>::neighborcache_dyn_loc_refresh_unlocked(uint32_t node_id, const NeighborCacheDiskLoc &loc)
++{
++    const NeighborCacheDiskLoc replacement = loc;
++    NeighborCacheDynLocShard &shard = neighborcache_dyn_loc_shard(node_id);
++    NeighborCacheTimedSharedMutexGuard lock(shard.mu, NeighborCacheLockKind::DynamicUnique, true);
++    auto &locations = shard.locations[node_id];
++    // Match erase-sector + add ordering without deleting the hash key or
++    // temporarily clearing its canonical route. A republished page must still
++    // become the first route, even when this member's slot did not change.
++    locations.erase(std::remove_if(locations.begin(), locations.end(),
++                                  [&](const NeighborCacheDiskLoc &old) { return old.sector == replacement.sector; }),
++                    locations.end());
++    locations.insert(locations.begin(), replacement);
++    neighborcache_canon_publish(node_id, replacement);
++}
++
+ template <typename T, typename LabelT>
+ void PQFlashIndex<T, LabelT>::neighborcache_dyn_loc_erase_sector_unlocked(uint32_t node_id, uint32_t sector)
+ {
+@@ -7843,7 +7860,11 @@ bool PQFlashIndex<T, LabelT>::neighborcache_seed_prefetch_admit_existing(
+     }
+     const size_t old_count = _neighborcache_dyn_page_member_count[page_idx];
+     for (size_t i = 0; i < old_count; ++i)
+-        neighborcache_dyn_loc_erase_sector_unlocked(_neighborcache_dyn_page_members[begin + i], sector);
++    {
++        const uint32_t old_id = _neighborcache_dyn_page_members[begin + i];
++        if (std::find(ids.begin(), ids.end(), old_id) == ids.end())
++            neighborcache_dyn_loc_erase_sector_unlocked(old_id, sector);
++    }
+     std::copy(ids.begin(), ids.end(), _neighborcache_dyn_page_members.begin() + begin);
+     _neighborcache_dyn_page_member_count[page_idx] = static_cast<uint16_t>(ids.size());
+     for (size_t i = 0; i < ids.size(); ++i)
+@@ -7852,7 +7873,7 @@ bool PQFlashIndex<T, LabelT>::neighborcache_seed_prefetch_admit_existing(
+         loc.sector = sector;
+         loc.slot = static_cast<uint16_t>(i);
+         loc.nsectors = 1;
+-        neighborcache_dyn_loc_add_unlocked(ids[i], loc);
++        neighborcache_dyn_loc_refresh_unlocked(ids[i], loc);
+     }
+     neighborcache_dyn_bump_page_gen(page_idx);
+     _neighborcache_shared_cache.register_private_records(sector, ids.data(), ids.size());
+diff --git a/diskann/tests/prefetch_async_writeback.cpp b/diskann/tests/prefetch_async_writeback.cpp
+index b62fac4..53e962b 100644
+--- a/diskann/tests/prefetch_async_writeback.cpp
++++ b/diskann/tests/prefetch_async_writeback.cpp
+@@ -207,6 +207,37 @@ public:
+         idx.neighborcache_dyn_release_page_pin(sector);
+         idx.neighborcache_seed_prefetch_note(3,1,c.data());
+         assert(idx._neighborcache_seed_page_appends==1); // no query-end wait
++        // Seed 50 also contains node 2. Republish must move this page's route
++        // ahead of the other seed while preserving that fallback location.
++        {
++            auto &directory=idx.neighborcache_dyn_loc_shard(2);
++            std::shared_lock<std::shared_mutex> lock(directory.mu);
++            const auto &locations=directory.locations.at(2);
++            assert(locations.size()==2 && locations.front().sector==sector);
++            assert(locations.front().slot==1);
++        }
++        Index::NeighborCacheDiskLoc other_route;
++        other_route.sector=sector+100;other_route.slot=2;other_route.nsectors=1;
++        idx.neighborcache_dyn_loc_add_unlocked(98,other_route);
++        Index::NeighborCacheDiskLoc refreshed=other_route;
++        refreshed.sector=sector;refreshed.slot=4;
++        idx.neighborcache_dyn_loc_refresh_unlocked(98,refreshed);
++        refreshed.slot=5;
++        idx.neighborcache_dyn_loc_refresh_unlocked(98,refreshed);
++        {
++            auto &directory=idx.neighborcache_dyn_loc_shard(98);
++            std::shared_lock<std::shared_mutex> lock(directory.mu);
++            const auto &locations=directory.locations.at(98);
++            assert(locations.size()==2 && locations.front().sector==sector && locations.front().slot==5);
++            assert(locations[1].sector==other_route.sector);
++        }
++        Index::NeighborCacheDiskLoc canonical;
++        assert(idx.neighborcache_canon_lookup(98,canonical)==1);
++        assert(canonical.sector==sector && canonical.slot==5);
++        idx.neighborcache_dyn_loc_erase_sector_unlocked(98,sector);
++        assert(idx.neighborcache_canon_lookup(98,canonical)==1 && canonical.sector==other_route.sector);
++        idx.neighborcache_dyn_loc_erase_sector_unlocked(98,other_route.sector);
++        std::cout<<"prefetch directory refresh: newest-page priority, slot replacement and fallback preservation passed\n";
+         std::array<char,388> copied{};
+         assert(idx._neighborcache_shared_cache.copy_private_record(3,388,copied.data()));
+         assert(copied==c);
+diff --git a/neighborcache_backend/README.md b/neighborcache_backend/README.md
+index 5709abd..3401aa9 100644
+--- a/neighborcache_backend/README.md
++++ b/neighborcache_backend/README.md
+@@ -344,6 +344,12 @@ Native NeighborCache and all four adapters now share the following changes:
+   Candidate reservations, M/heap state transitions and the final publication
+   checks remain active. Deferred, pinned, full-page-waiting and payload-buffered
+   modes retain their member dependency index and bucket bookkeeping.
++- Republishing a private prefetch page refreshes each retained node's D
++  location under one directory-shard lock. Only members absent from the new
++  page are unlinked. Retained nodes keep their map/vector storage and publish
++  their canonical route once, preserving the previous newest-page priority
++  and fallback routes. Payload publication, page-generation checks, private
++  record registration and asynchronous writeback are unchanged.
+ - Two maintenance comparisons remain opt-in (both default to `0`):
+   `NEIGHBORCACHE_PREFETCH_ID_ONLY_PREFLIGHT=1` omits temporary resident payload
+   copies before immediate seed-prefetch publication, while preserving the

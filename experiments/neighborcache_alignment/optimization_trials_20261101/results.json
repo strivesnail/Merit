@@ -1,0 +1,208 @@
+{
+  "baseline_commit": "ac3256d30a0e8d9795f9a7a93b88c2a7c24c9c40",
+  "decision": "Neither candidate is enabled in production; source and installed backend retained at baseline",
+  "seed_prepare_merge": [
+    {
+      "tag": "before_1",
+      "mode": "before",
+      "qps": 3224.5,
+      "N_hit_percent": 27.452070026985613,
+      "P_hit_all_access_percent": 27.615346541366637,
+      "disk_reads_per_query": 63.80591,
+      "mean_latency_us": 2969.39056,
+      "mean_io_us": 1848.72922,
+      "recall_at_10": 94.94,
+      "ids_and_distances_bit_identical": true,
+      "all_caches_initially_empty": true,
+      "file_cache_clear_verified": true,
+      "query_and_background_affinity_verified": true
+    },
+    {
+      "tag": "after_1",
+      "mode": "after",
+      "qps": 3219.87,
+      "N_hit_percent": 27.440719797133287,
+      "P_hit_all_access_percent": 27.663513825041022,
+      "disk_reads_per_query": 63.75176,
+      "mean_latency_us": 2968.09726,
+      "mean_io_us": 1843.51644,
+      "recall_at_10": 94.94,
+      "ids_and_distances_bit_identical": true,
+      "all_caches_initially_empty": true,
+      "file_cache_clear_verified": true,
+      "query_and_background_affinity_verified": true
+    },
+    {
+      "tag": "after_2",
+      "mode": "after",
+      "qps": 3223.25,
+      "N_hit_percent": 27.415632670219548,
+      "P_hit_all_access_percent": 27.767584719905617,
+      "disk_reads_per_query": 63.62192,
+      "mean_latency_us": 2957.35834,
+      "mean_io_us": 1842.52006,
+      "recall_at_10": 94.94,
+      "ids_and_distances_bit_identical": true,
+      "all_caches_initially_empty": true,
+      "file_cache_clear_verified": true,
+      "query_and_background_affinity_verified": true
+    },
+    {
+      "tag": "before_2",
+      "mode": "before",
+      "qps": 3234.88,
+      "N_hit_percent": 27.43728896302022,
+      "P_hit_all_access_percent": 27.706094137748668,
+      "disk_reads_per_query": 63.68205,
+      "mean_latency_us": 2963.83298,
+      "mean_io_us": 1845.72054,
+      "recall_at_10": 94.94,
+      "ids_and_distances_bit_identical": true,
+      "all_caches_initially_empty": true,
+      "file_cache_clear_verified": true,
+      "query_and_background_affinity_verified": true
+    }
+  ],
+  "prefetch_directory_update": [
+    {
+      "tag": "before_1",
+      "mode": "before",
+      "qps": 3224.7,
+      "N_hit_percent": 27.421436610932563,
+      "P_hit_all_access_percent": 27.749698276446576,
+      "disk_reads_per_query": 63.64051,
+      "mean_latency_us": 2964.31566,
+      "mean_io_us": 1849.98886,
+      "recall_at_10": 94.94,
+      "ids_and_distances_bit_identical": true,
+      "all_caches_initially_empty": true,
+      "file_cache_clear_verified": true,
+      "query_and_background_affinity_verified": true
+    },
+    {
+      "tag": "after_1",
+      "mode": "after",
+      "qps": 3218.62,
+      "N_hit_percent": 27.447378056222284,
+      "P_hit_all_access_percent": 27.643111888586034,
+      "disk_reads_per_query": 63.77179,
+      "mean_latency_us": 2969.5679,
+      "mean_io_us": 1846.24773,
+      "recall_at_10": 94.94,
+      "ids_and_distances_bit_identical": true,
+      "all_caches_initially_empty": true,
+      "file_cache_clear_verified": true,
+      "query_and_background_affinity_verified": true
+    },
+    {
+      "tag": "after_2",
+      "mode": "after",
+      "qps": 2765.18,
+      "N_hit_percent": 27.344771707145085,
+      "P_hit_all_access_percent": 28.03324383331299,
+      "disk_reads_per_query": 63.30401,
+      "mean_latency_us": 3478.56506,
+      "mean_io_us": 2349.38592,
+      "recall_at_10": 94.94,
+      "ids_and_distances_bit_identical": true,
+      "all_caches_initially_empty": true,
+      "file_cache_clear_verified": true,
+      "query_and_background_affinity_verified": true
+    },
+    {
+      "tag": "before_2",
+      "mode": "before",
+      "qps": 2472.77,
+      "N_hit_percent": 27.209850426481157,
+      "P_hit_all_access_percent": 29.081953541353077,
+      "disk_reads_per_query": 61.85715,
+      "mean_latency_us": 3926.39447,
+      "mean_io_us": 2792.68445,
+      "recall_at_10": 94.94,
+      "ids_and_distances_bit_identical": true,
+      "all_caches_initially_empty": true,
+      "file_cache_clear_verified": true,
+      "query_and_background_affinity_verified": true
+    },
+    {
+      "tag": "before_repeat",
+      "mode": "before",
+      "qps": 3218.46,
+      "N_hit_percent": 27.419775436312598,
+      "P_hit_all_access_percent": 27.730693082733275,
+      "disk_reads_per_query": 63.66544,
+      "mean_latency_us": 2976.04348,
+      "mean_io_us": 1869.74139,
+      "recall_at_10": 94.94,
+      "ids_and_distances_bit_identical": true,
+      "all_caches_initially_empty": true,
+      "file_cache_clear_verified": true,
+      "query_and_background_affinity_verified": true
+    },
+    {
+      "tag": "after_repeat",
+      "mode": "after",
+      "qps": 3212.62,
+      "N_hit_percent": 27.42998657499695,
+      "P_hit_all_access_percent": 27.717525731255847,
+      "disk_reads_per_query": 63.67673,
+      "mean_latency_us": 2965.71357,
+      "mean_io_us": 1847.10144,
+      "recall_at_10": 94.94,
+      "ids_and_distances_bit_identical": true,
+      "all_caches_initially_empty": true,
+      "file_cache_clear_verified": true,
+      "query_and_background_affinity_verified": true
+    }
+  ],
+  "io_drift": {
+    "samples": [
+      {
+        "tag": "before_1",
+        "qps": 3224.7,
+        "search_io_us": 1849.98886,
+        "remaining_query_us": 1114.3268000000003,
+        "device_read_await_us": 56.764782647693565,
+        "device_read_pages": 6445458.0,
+        "device_write_MiB": 2802.91796875
+      },
+      {
+        "tag": "after_1",
+        "qps": 3218.62,
+        "search_io_us": 1846.24773,
+        "remaining_query_us": 1123.32017,
+        "device_read_await_us": 56.83422425717179,
+        "device_read_pages": 6459402.0,
+        "device_write_MiB": 2801.5859375
+      },
+      {
+        "tag": "after_2",
+        "qps": 2765.18,
+        "search_io_us": 2349.38592,
+        "remaining_query_us": 1129.1791399999997,
+        "device_read_await_us": 66.46838177263193,
+        "device_read_pages": 6408880.0,
+        "device_write_MiB": 2817.0859375
+      },
+      {
+        "tag": "before_2",
+        "qps": 2472.77,
+        "search_io_us": 2792.68445,
+        "remaining_query_us": 1133.71002,
+        "device_read_await_us": 77.31739936582963,
+        "device_read_pages": 6248629.0,
+        "device_write_MiB": 2825.53515625
+      }
+    ],
+    "conclusion": "Device read completion latency drift affects both binaries; do not attribute the four-run mean difference to the directory patch",
+    "limits": "Device counters include all NVMe1 traffic, sampled once per second; firmware-level cause not established",
+    "other_benchmark_processes_observed": false,
+    "post_run_SSD_temperature_C": 36.85
+  },
+  "validation": {
+    "common_backend_tests": 25,
+    "native_variants_passed": true,
+    "recall_at_10": 94.94,
+    "all_returned_ids_and_distances_identical": true
+  }
+}
