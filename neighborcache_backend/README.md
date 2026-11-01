@@ -344,6 +344,15 @@ Native NeighborCache and all four adapters now share the following changes:
   Candidate reservations, M/heap state transitions and the final publication
   checks remain active. Deferred, pinned, full-page-waiting and payload-buffered
   modes retain their member dependency index and bucket bookkeeping.
+- M-cache edge-list descriptors are allocated as slots first become live,
+  growing under the existing metadata-shard lock. Logical M capacity, slot IDs,
+  node heat, edge heat, replacement policy and stored edges are unchanged.
+  Descriptor growth is capped at the configured shard capacity; clear/init
+  releases old descriptors. `NEIGHBORCACHE_MCACHE_EAGER_EDGE_SLOTS=1` retains
+  eager descriptor allocation for comparison. The default is lazy allocation.
+  `NEIGHBORCACHE mcache_storage` reports logical capacity, live records and exact
+  allocated descriptor bytes (excluding the edge payloads and other M fields).
+  Savings depend on occupancy and approach zero when all M slots are used.
 - Two maintenance comparisons remain opt-in (both default to `0`):
   `NEIGHBORCACHE_PREFETCH_ID_ONLY_PREFLIGHT=1` omits temporary resident payload
   copies before immediate seed-prefetch publication, while preserving the

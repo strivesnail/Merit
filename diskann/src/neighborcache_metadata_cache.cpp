@@ -40,7 +40,7 @@ void NeighborCacheMetadataCache::clear()
         shard.node_to_slot.clear();
         shard.scores.clear();
         shard.slot_to_node.reset();
-        shard.edges_by_slot.clear();
+        std::vector<std::vector<Edge>>().swap(shard.edges_by_slot);
         shard.evictable.clear();
         shard.next_unused_slot = 0;
         shard.nonseed_prev.clear();
@@ -102,6 +102,8 @@ void NeighborCacheMetadataCache::init(uint64_t capacity, uint8_t sig_threshold, 
             _membership_words[index].store(0, std::memory_order_relaxed);
     }
     const uint64_t effective_capacity = std::min<uint64_t>(capacity, static_cast<uint64_t>(kInvalid));
+    const char *eager_edges = std::getenv("NEIGHBORCACHE_MCACHE_EAGER_EDGE_SLOTS");
+    const bool eager_edge_slots = eager_edges != nullptr && std::strcmp(eager_edges, "0") != 0;
     const uint32_t slot_stride =
         effective_capacity == 0 ? 0 : static_cast<uint32_t>((effective_capacity + kShardCount - 1) / kShardCount);
     const uint64_t base_capacity = effective_capacity / kShardCount;
@@ -123,7 +125,8 @@ void NeighborCacheMetadataCache::init(uint64_t capacity, uint8_t sig_threshold, 
         shard.slot_to_node.reset(new std::atomic<uint32_t>[static_cast<size_t>(shard.capacity)]);
         for (uint64_t slot = 0; slot < shard.capacity; ++slot)
             shard.slot_to_node[slot].store(kInvalid, std::memory_order_relaxed);
-        shard.edges_by_slot.resize(static_cast<size_t>(shard.capacity));
+        if (eager_edge_slots)
+            shard.edges_by_slot.resize(static_cast<size_t>(shard.capacity));
         shard.evictable.assign(static_cast<size_t>(shard.capacity), 0);
         shard.next_unused_slot = 0;
         shard.nonseed_prev.assign(static_cast<size_t>(shard.capacity), kInvalid);
@@ -164,6 +167,17 @@ uint64_t NeighborCacheMetadataCache::size() const
 uint64_t NeighborCacheMetadataCache::edge_count() const
 {
     return _total_edges.load(std::memory_order_relaxed);
+}
+
+uint64_t NeighborCacheMetadataCache::edge_descriptor_capacity_bytes() const
+{
+    uint64_t bytes = 0;
+    for (const auto &shard : _shards)
+    {
+        NeighborCacheTimedSharedMutexGuard lock(shard->mu, NeighborCacheLockKind::Metadata, false);
+        bytes += shard->edges_by_slot.capacity() * sizeof(std::vector<Edge>);
+    }
+    return bytes;
 }
 
 uint64_t NeighborCacheMetadataCache::evictable_size() const
@@ -281,7 +295,21 @@ NeighborCacheMetadataCache::TouchResult NeighborCacheMetadataCache::touch_or_ins
     {
         if (shard.next_unused_slot >= shard.capacity)
             return r;
-        local_slot = shard.next_unused_slot++;
+        local_slot = shard.next_unused_slot;
+        // All edge-container access is protected by this M shard's lock.
+        // Grow descriptors only as slots become live; preserve stable slot IDs
+        // and cap geometric growth at the configured logical capacity.
+        if (local_slot >= shard.edges_by_slot.size())
+        {
+            if (local_slot >= shard.edges_by_slot.capacity())
+            {
+                const size_t next = static_cast<size_t>(std::min<uint64_t>(
+                    shard.capacity, std::max<uint64_t>(64, shard.edges_by_slot.capacity() * 2ULL)));
+                shard.edges_by_slot.reserve(next);
+            }
+            shard.edges_by_slot.resize(static_cast<size_t>(local_slot) + 1);
+        }
+        ++shard.next_unused_slot;
     }
     if (local_slot == kInvalid)
         return r;

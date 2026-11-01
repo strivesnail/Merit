@@ -1,0 +1,29 @@
+{
+  "N_nodes": 366218,
+  "P_MiB_per_worker": 1.25,
+  "P_MiB_total": 12.5,
+  "nominal_N_plus_P_node_equivalent": 400000,
+  "M_entries": 4000000,
+  "D_pages": 2000000,
+  "threads": 10,
+  "queries": 100000,
+  "workload": "public 10K repeated ten times, shuffled",
+  "heat_probability": 1.0,
+  "query_CPUs": "0-9",
+  "background_CPUs": "20-23",
+  "passes_per_mode": 1,
+  "order": [
+    [
+      "eager",
+      "eager"
+    ],
+    [
+      "lazy",
+      "lazy"
+    ]
+  ],
+  "cold_N_M_P_D": true,
+  "file_cache_eviction_verified": true,
+  "observer_instrumentation": false,
+  "policy": "Same binary, only EAGER_EDGE_SLOTS differs; N/M/P/D logical capacities, heat, replacement, search and async writeback unchanged"
+}

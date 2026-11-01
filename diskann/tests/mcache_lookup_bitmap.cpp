@@ -91,9 +91,62 @@ void snapshot_sorting()
     cache.on_edge(1, 99, unit);
     assert(snap.significant == saved);
 }
+void lazy_edge_slots()
+{
+    diskann::NeighborCacheMetadataCache cache;
+    std::atomic<float> unit{1.0f};
+    setenv("NEIGHBORCACHE_MCACHE_EAGER_EDGE_SLOTS", "1", 1);
+    cache.init(128,2,4096);
+    const auto full_bytes=cache.edge_descriptor_capacity_bytes();
+    assert(full_bytes>0);
+    setenv("NEIGHBORCACHE_MCACHE_EAGER_EDGE_SLOTS", "0", 1);
+    cache.init(65536,2,1000000);
+    assert(cache.capacity()==65536 && cache.edge_descriptor_capacity_bytes()==0);
+    for(uint32_t id=0;id<1000;++id)assert(cache.on_expand(id,unit).present);
+    assert(cache.edge_descriptor_capacity_bytes()>0);
+    // Full occupancy retains capacity and eviction behavior, without allocating
+    // beyond the eager representation. Reinitialization releases descriptors.
+    cache.init(128,2,4096);
+    assert(cache.edge_descriptor_capacity_bytes()==0);
+    for(uint32_t id=0;id<128;++id)assert(cache.on_expand(id,unit).present);
+    assert(cache.size()==128 && cache.edge_descriptor_capacity_bytes()==full_bytes);
+    cache.on_real_io_edge(0,1);cache.on_real_io_edge(0,1);
+    diskann::NeighborCacheMetadataCache::Snapshot before;
+    assert(cache.snapshot(0,before) && !before.significant.empty());
+    assert(cache.on_expand(64,unit).present); // Make the parent the cold slot.
+    auto replaced=cache.on_expand(128,unit);
+    assert(replaced.present && replaced.evicted_id==0);
+    assert(cache.edge_descriptor_capacity_bytes()==full_bytes);
+    diskann::NeighborCacheMetadataCache::Snapshot fresh;
+    assert(cache.snapshot(128,fresh) && fresh.significant.empty());
+    cache.clear();assert(cache.edge_descriptor_capacity_bytes()==0);
+}
+void concurrent_edge_slot_growth()
+{
+    diskann::NeighborCacheMetadataCache cache;
+    cache.init(524288,2,1000000);
+    std::atomic<float> unit{1.0f};
+    assert(cache.on_expand(0,unit).present);
+    cache.on_real_io_edge(0,1);cache.on_real_io_edge(0,1);
+    diskann::NeighborCacheMetadataCache::Snapshot expected;
+    assert(cache.snapshot(0,expected) && !expected.significant.empty());
+    std::thread writer([&] {
+        // Force repeated descriptor growth in the same shard as the snapshot.
+        for(uint32_t i=1;i<=5000;++i)assert(cache.on_expand(64*i,unit).present);
+    });
+    for(unsigned i=0;i<20000;++i) {
+        diskann::NeighborCacheMetadataCache::Snapshot snap;
+        assert(cache.snapshot(0,snap));
+        assert(snap.slot_id==expected.slot_id && snap.score==expected.score);
+        assert(snap.significant==expected.significant);
+    }
+    writer.join();assert(cache.size()==5001 && cache.capacity()==524288);
+}
 int main()
 {
     setenv("NEIGHBORCACHE_MCACHE_ADAPTIVE_UPDATE", "0", 1);
+    lazy_edge_slots();
+    concurrent_edge_slot_growth();
     reference_membership(false);
     reference_membership(true);
     concurrent_bits();

@@ -69,6 +69,7 @@ class NeighborCacheMetadataCache
 
     uint64_t size() const;
     uint64_t edge_count() const;
+    uint64_t edge_descriptor_capacity_bytes() const;
     uint64_t evictable_size() const;
 
     uint8_t sig_threshold() const

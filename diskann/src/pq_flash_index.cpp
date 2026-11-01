@@ -6281,6 +6281,10 @@ template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::print_neigh
                   << " stash_payload_capacity_bytes=" << stash_payload_bytes
                   << " parent_fetched_entries=" << parent_entries
                   << " parent_fetched_capacity_bytes=" << parent_fetched_bytes << std::endl;
+    diskann::cout << "NEIGHBORCACHE mcache_storage: capacity=" << _neighborcache_mcache.capacity()
+                  << " live=" << _neighborcache_mcache.size()
+                  << " edge_descriptor_capacity_bytes=" << _neighborcache_mcache.edge_descriptor_capacity_bytes()
+                  << std::endl;
     diskann::cout << "NEIGHBORCACHE pending_buffer: payload_bytes=" << pending_buffer_payload_bytes << "/"
                   << _neighborcache_pending_buffer_cap_bytes
                   << " entries=" << stash_entries
