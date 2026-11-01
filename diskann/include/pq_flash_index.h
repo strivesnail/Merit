@@ -1047,6 +1047,7 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
     void neighborcache_dyn_set_state_unlocked(uint32_t node_id, uint32_t slot_id, NeighborCacheNodeState st);
     NeighborCachePendingMemberShard &neighborcache_pending_member_shard(uint32_t node_id);
     const NeighborCachePendingMemberShard &neighborcache_pending_member_shard(uint32_t node_id) const;
+    bool neighborcache_tracks_pending_members() const;
     std::vector<uint32_t> neighborcache_pending_member_slots(uint32_t node_id) const;
     bool neighborcache_pending_member_contains(uint32_t node_id) const;
     void neighborcache_pending_member_add(uint32_t node_id, uint32_t insertion_slot);

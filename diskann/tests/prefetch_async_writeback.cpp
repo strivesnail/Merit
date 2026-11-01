@@ -60,6 +60,29 @@ public:
         assert(first.present);
         idx.neighborcache_dyn_note_touch(first,&lifecycle);
         idx.neighborcache_dyn_note_base_load(2,1,b.data(),&lifecycle);
+        // Immediate P publication has no N-eviction dependency. Waiting modes
+        // still need their reverse index, including a full-page candidate.
+        assert(!idx.neighborcache_tracks_pending_members());
+        idx.neighborcache_pending_member_add(2,first.slot_id);
+        assert(idx.neighborcache_pending_member_slots(2).empty());
+        assert(!idx.neighborcache_pending_member_contains(2));
+        idx._neighborcache_pending_require_full_page=true;
+        assert(idx.neighborcache_tracks_pending_members());
+        idx.neighborcache_pending_member_add(2,first.slot_id);
+        assert(idx.neighborcache_pending_member_slots(2)==std::vector<uint32_t>{first.slot_id});
+        assert(idx.neighborcache_pending_member_contains(2));
+        idx.neighborcache_pending_member_remove(2,first.slot_id);
+        assert(!idx.neighborcache_pending_member_contains(2));
+        idx._neighborcache_pending_require_full_page=false;
+        idx._neighborcache_deferred_ncache_page_write=true;
+        assert(idx.neighborcache_tracks_pending_members());
+        idx._neighborcache_deferred_ncache_page_write=false;
+        idx._neighborcache_seed_pin_neighbors=true;
+        assert(idx.neighborcache_tracks_pending_members());
+        idx._neighborcache_seed_pin_neighbors=false;
+        idx._neighborcache_pending_buffer_cap_bytes=4096;
+        assert(idx.neighborcache_tracks_pending_members());
+        idx._neighborcache_pending_buffer_cap_bytes=0;
         Index::NeighborCachePendingFlush preflight;
         NeighborCacheMetadataCache::Snapshot preflight_snapshot;
         assert(idx._neighborcache_mcache.snapshot(1,preflight_snapshot));
@@ -71,6 +94,37 @@ public:
         } else {
             assert(preflight.member_coords.size()==2 && preflight.member_nbrs.size()==2);
         }
+        // Interleave another N admission while this pair is preparing its P
+        // page. Evicting a member must not enter the obsolete direct-D path
+        // and cancel the in-progress publication.
+        Index::NeighborCacheReadyPair preparing;
+        preparing.insertion_id=1;preparing.insertion_slot=first.slot_id;
+        preparing.snap=std::move(preflight);
+        idx._neighborcache_ready_pairs[first.slot_id]=std::move(preparing);
+        idx._neighborcache_pending_pair_count=1;idx._neighborcache_reserved_free_pages=1;
+        idx.neighborcache_dyn_set_state_unlocked(1,first.slot_id,Index::NeighborCacheNodeState::ReadyToInsertion);
+        idx.neighborcache_pending_member_add(2,first.slot_id);
+        idx._neighborcache_refresh_running=true;
+        idx.neighborcache_dyn_on_ncache_evict(2,nullptr);
+        assert(idx._neighborcache_ready_pairs.count(first.slot_id)==1);
+        assert(idx.neighborcache_dyn_state_unlocked(first.slot_id)==Index::NeighborCacheNodeState::ReadyToInsertion);
+        idx._neighborcache_refresh_running=false;
+        idx.neighborcache_dyn_clear_ready_pair_unlocked(first.slot_id);
+        assert(idx._neighborcache_pending_pair_count==0 && idx._neighborcache_reserved_free_pages==0);
+        // Legacy waiting mode keeps bucket and reverse-index cleanup even
+        // without a payload buffer; do not leave stale bucket entries behind.
+        idx._neighborcache_pending_require_full_page=true;
+        Index::NeighborCacheReadyPair waiting;
+        waiting.insertion_id=1;waiting.insertion_slot=first.slot_id;
+        waiting.snap.member_ids={1,2};
+        idx._neighborcache_ready_pairs[first.slot_id]=std::move(waiting);
+        idx._neighborcache_pending_pair_count=1;idx._neighborcache_reserved_free_pages=1;
+        idx._neighborcache_pending_buffer_buckets[0].insert(first.slot_id);
+        idx.neighborcache_pending_member_add(2,first.slot_id);
+        idx.neighborcache_dyn_clear_ready_pair_unlocked(first.slot_id);
+        assert(idx._neighborcache_pending_buffer_buckets[0].empty());
+        assert(!idx.neighborcache_pending_member_contains(2));
+        idx._neighborcache_pending_require_full_page=false;
         idx.neighborcache_dyn_flush_dirty_heap(&lifecycle);
         idx.neighborcache_dyn_maybe_refresh_pair();
         assert(idx._neighborcache_seed_page_opens==1);
@@ -78,6 +132,7 @@ public:
         assert(idx.neighborcache_dyn_heap_kind_unlocked(first.slot_id)==Index::NeighborCacheHeapKind::Min);
         assert(idx._neighborcache_ready_pairs.empty() && idx._neighborcache_pending_pair_count==0);
         assert(idx._neighborcache_reserved_free_pages==0);
+        for(const auto &bucket:idx._neighborcache_pending_buffer_buckets)assert(bucket.empty());
         assert(!idx.neighborcache_pending_member_contains(1) && !idx.neighborcache_pending_member_contains(2));
         // Further heat must retain Seed eligibility and cannot create another
         // insertion or leave a pair waiting for the asynchronous SSD writer.

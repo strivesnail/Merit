@@ -338,6 +338,12 @@ Native NeighborCache and all four adapters now share the following changes:
   starting a patch worker for them still wasted work. Normal path-parent
   supplementation into the worker's prefetch page and asynchronous dirty-page
   eviction writeback remain active. Other cache modes retain the old switches.
+- Immediate seed-prefetch publication does not register each candidate member
+  in the legacy pending-flush reverse index or its buffer buckets. N eviction
+  cannot use that obsolete dependency to cancel an in-progress P publication.
+  Candidate reservations, M/heap state transitions and the final publication
+  checks remain active. Deferred, pinned, full-page-waiting and payload-buffered
+  modes retain their member dependency index and bucket bookkeeping.
 - Two maintenance comparisons remain opt-in (both default to `0`):
   `NEIGHBORCACHE_PREFETCH_ID_ONLY_PREFLIGHT=1` omits temporary resident payload
   copies before immediate seed-prefetch publication, while preserving the

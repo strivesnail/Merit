@@ -7190,8 +7190,21 @@ PQFlashIndex<T, LabelT>::neighborcache_pending_member_shard(uint32_t node_id) co
 }
 
 template <typename T, typename LabelT>
+bool PQFlashIndex<T, LabelT>::neighborcache_tracks_pending_members() const
+{
+    // Immediate P publication owns its record snapshots and ends the pair
+    // before SSD writeback. N eviction cannot flush or cancel that publication.
+    // Retain the dependency index for modes that actually wait on members.
+    return !_neighborcache_seed_prefetch || _neighborcache_deferred_ncache_page_write ||
+           _neighborcache_seed_pin_neighbors || _neighborcache_pending_require_full_page ||
+           _neighborcache_pending_buffer_cap_bytes != 0;
+}
+
+template <typename T, typename LabelT>
 std::vector<uint32_t> PQFlashIndex<T, LabelT>::neighborcache_pending_member_slots(uint32_t node_id) const
 {
+    if (!neighborcache_tracks_pending_members())
+        return {};
     const NeighborCachePendingMemberShard &shard = neighborcache_pending_member_shard(node_id);
     NeighborCacheTimedSharedMutexGuard lock(shard.mu, NeighborCacheLockKind::Pair, false);
     const auto it = shard.slots.find(node_id);
@@ -7201,6 +7214,8 @@ std::vector<uint32_t> PQFlashIndex<T, LabelT>::neighborcache_pending_member_slot
 template <typename T, typename LabelT>
 bool PQFlashIndex<T, LabelT>::neighborcache_pending_member_contains(uint32_t node_id) const
 {
+    if (!neighborcache_tracks_pending_members())
+        return false;
     const NeighborCachePendingMemberShard &shard = neighborcache_pending_member_shard(node_id);
     NeighborCacheTimedSharedMutexGuard lock(shard.mu, NeighborCacheLockKind::Pair, false);
     return shard.slots.find(node_id) != shard.slots.end();
@@ -7209,6 +7224,8 @@ bool PQFlashIndex<T, LabelT>::neighborcache_pending_member_contains(uint32_t nod
 template <typename T, typename LabelT>
 void PQFlashIndex<T, LabelT>::neighborcache_pending_member_add(uint32_t node_id, uint32_t insertion_slot)
 {
+    if (!neighborcache_tracks_pending_members())
+        return;
     NeighborCachePendingMemberShard &shard = neighborcache_pending_member_shard(node_id);
     NeighborCacheTimedSharedMutexGuard lock(shard.mu, NeighborCacheLockKind::Pair, true);
     auto &slots = shard.slots[node_id];
@@ -7219,6 +7236,8 @@ void PQFlashIndex<T, LabelT>::neighborcache_pending_member_add(uint32_t node_id,
 template <typename T, typename LabelT>
 void PQFlashIndex<T, LabelT>::neighborcache_pending_member_remove(uint32_t node_id, uint32_t insertion_slot)
 {
+    if (!neighborcache_tracks_pending_members())
+        return;
     NeighborCachePendingMemberShard &shard = neighborcache_pending_member_shard(node_id);
     NeighborCacheTimedSharedMutexGuard lock(shard.mu, NeighborCacheLockKind::Pair, true);
     auto it = shard.slots.find(node_id);
@@ -7250,7 +7269,8 @@ void PQFlashIndex<T, LabelT>::neighborcache_dyn_clear_ready_pair_unlocked(uint32
         return;
 
     NeighborCacheReadyPair pair = std::move(pair_it->second);
-    if (pair.retained_members < _neighborcache_pending_buffer_buckets.size())
+    if ((_neighborcache_pending_buffer_cap_bytes > 0 || neighborcache_tracks_pending_members()) &&
+        pair.retained_members < _neighborcache_pending_buffer_buckets.size())
         _neighborcache_pending_buffer_buckets[pair.retained_members].erase(insertion_slot);
     _neighborcache_ready_pairs.erase(pair_it);
     _neighborcache_pending_pair_count.fetch_sub(1, std::memory_order_release);
@@ -8573,7 +8593,8 @@ template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::neighborcac
         }
         _neighborcache_ready_pairs[cand_ins_slot] = std::move(pair);
         const uint16_t retained_members = _neighborcache_ready_pairs[cand_ins_slot].retained_members;
-        if (retained_members < _neighborcache_pending_buffer_buckets.size())
+        if ((_neighborcache_pending_buffer_cap_bytes > 0 || neighborcache_tracks_pending_members()) &&
+            retained_members < _neighborcache_pending_buffer_buckets.size())
             _neighborcache_pending_buffer_buckets[retained_members].insert(cand_ins_slot);
         _neighborcache_pending_pair_count.fetch_add(1, std::memory_order_release);
         neighborcache_dyn_set_state_unlocked(cand_ins, cand_ins_slot, NeighborCacheNodeState::ReadyToInsertion);
