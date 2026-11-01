@@ -10,14 +10,14 @@
     "checkout": "/home/jianz/workload/code/baselines/starling",
     "base_commit": "68aec13e854219bb2baf39b94d56d2bbda689696",
     "patch": "experiments/neighborcache_alignment/starling_shared.patch",
-    "patch_sha256": "435fbfd0d3e1bc2718f6b4feb999e0079d480bb77ce1ce9fbc2e5cd4317f5c36",
-    "validation": "Updated parent-candidate metadata and acquired-record callbacks; patch applies to base commit."
+    "patch_sha256": "5d6b3215b002e5c9c0d548e6b3ed451370d8b1c2ca173d9077ca3e30d5a1c6b2",
+    "validation": "Complete current cache callbacks, full-vector visits (including page companions), actual-acquisition parents, opt-in prefetch page expansion and query-local duplicate suppression; apply to recorded base and install all three canonical headers."
   },
   "margo": {
     "checkout": "/home/jianz/workload/code/baselines/MARGO",
     "base_commit": "485a9c25facea68bb3b6c44eb280b95c14ee5076",
     "patch": "experiments/neighborcache_alignment/margo_shared.patch",
-    "patch_sha256": "435fbfd0d3e1bc2718f6b4feb999e0079d480bb77ce1ce9fbc2e5cd4317f5c36",
-    "validation": "Updated parent-candidate metadata and acquired-record callbacks; patch applies to base commit."
+    "patch_sha256": "5d6b3215b002e5c9c0d548e6b3ed451370d8b1c2ca173d9077ca3e30d5a1c6b2",
+    "validation": "Complete current cache callbacks, full-vector visits (including page companions), actual-acquisition parents, opt-in prefetch page expansion and query-local duplicate suppression; apply to recorded base and install all three canonical headers."
   }
 }

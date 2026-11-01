@@ -34,11 +34,12 @@ template<class T> class PageNeighborCache : public neighborcache::Client {
         return true;
     }
     struct DiskNode { uint32_t id = UINT32_MAX; NCRead read{}; };
-    enum class Probe { Miss, Hit, Disk };
+    enum class Probe { Miss, Hit, Prefetch, Disk };
     Probe probe(uint32_t id, char *dst, DiskNode *d, uint32_t parent = UINT32_MAX) {
         NCRead r{};
         int k = resolve(id, dst, r, parent);
         if (k == 3) { *d = DiskNode{id, r}; return Probe::Disk; }
+        if (k == 2 && expands_prefetch_page()) return Probe::Prefetch;
         return k ? Probe::Hit : Probe::Miss;
     }
     uint32_t submit_disk_nodes(const std::vector<DiskNode> &nodes) {
