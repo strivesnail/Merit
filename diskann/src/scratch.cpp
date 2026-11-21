@@ -122,9 +122,6 @@ template <typename T> void SSDQueryScratch<T>::reset()
     neighborcache_storage_node_order.clear();
     neighborcache_storage_nbrs.clear();
     neighborcache_storage_nbr_off.assign(1, 0);
-    neighborcache_seed_page_coords.clear();
-    neighborcache_seed_page_nbrs.clear();
-    neighborcache_seed_page_coord_ptr.clear();
 }
 
 template <typename T> SSDQueryScratch<T>::SSDQueryScratch(size_t aligned_dim, size_t visited_reserve)

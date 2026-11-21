@@ -172,6 +172,14 @@ void lazy_slot_blocks()
     assert(slots.find(0) == nullptr);
     slots.assign(10, 0);
     assert(slots.capacity() == 0 && slots[0].load() == 0);
+
+    slots.assign(15, UINT32_MAX, 6);
+    slots[5].store(5);
+    slots[6].store(6);
+    assert(slots.capacity() == 12 && slots[5].load() == 5 && slots[6].load() == 6);
+    assert(slots.find(14) == nullptr);
+    slots[14].store(14);
+    assert(slots.capacity() == 15 && slots.find(14)->load() == 14 && slots.find(15) == nullptr);
 }
 
 void stable_index_slots(diskann::NeighborCacheMetadataCache::Access access, size_t shards)

@@ -81,15 +81,15 @@ template <typename T> class NeighborCacheLazyArray
     {
         if (index >= _size)
             return nullptr;
-        T *block = _blocks[index / _block_size].load(std::memory_order_acquire);
-        return block == nullptr ? nullptr : block + index % _block_size;
+        const auto [block_id, offset] = locate(index);
+        T *block = _blocks[block_id].load(std::memory_order_acquire);
+        return block == nullptr ? nullptr : block + offset;
     }
 
     T *ptr(size_t index) const
     {
         assert(index < _size);
-        const size_t block_id = index / _block_size;
-        const size_t offset = index % _block_size;
+        const auto [block_id, offset] = locate(index);
         auto &entry = _blocks[block_id];
         T *block = entry.load(std::memory_order_acquire);
         if (block == nullptr)
@@ -134,6 +134,21 @@ template <typename T> class NeighborCacheLazyArray
     }
 
   private:
+    struct BlockLocation
+    {
+        size_t block;
+        size_t offset;
+    };
+
+    BlockLocation locate(size_t index) const
+    {
+        // Use compile-time division for the ordinary metadata blocks. The
+        // D-cache member array can still choose a block that fits whole pages.
+        if (_block_size == kBlockSize)
+            return {index / kBlockSize, index % kBlockSize};
+        return {index / _block_size, index % _block_size};
+    }
+
     size_t block_length(size_t block) const
     {
         return std::min(_block_size, _size - block * _block_size);

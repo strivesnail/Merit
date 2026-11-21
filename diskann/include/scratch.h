@@ -212,11 +212,14 @@ template <typename T> class SSDQueryScratch : public AbstractScratch<T>
     std::vector<uint32_t> neighborcache_storage_nbr_off;
     // Temporal order of sector ids for cache-miss disk reads (one query)
     std::vector<uint64_t> disk_read_sector_order;
-    // Bytes copied out of the separate seed-page LRU for this hop. Deque so a
-    // later push does not move the pointers already stored in cached_nhoods.
-    std::deque<std::vector<T>> neighborcache_seed_page_coords;
-    std::deque<std::vector<uint32_t>> neighborcache_seed_page_nbrs;
-    tsl::robin_map<uint32_t, T *> neighborcache_seed_page_coord_ptr;
+    // Own the Prefetch records until this hop completes, even if their
+    // source page is evicted. Keep storage for later hops and queries.
+    struct PrefetchRecord
+    {
+        std::vector<T> coords;
+        std::vector<uint32_t> neighbors;
+    };
+    std::deque<PrefetchRecord> neighborcache_prefetch_records;
 
     SSDQueryScratch(size_t aligned_dim, size_t visited_reserve);
     ~SSDQueryScratch();

@@ -2290,7 +2290,8 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
         {
             uint32_t id;
             std::pair<uint32_t, uint32_t *> neighbors;
-            T *ncache_coords = nullptr;
+            T *coords = nullptr;
+            bool from_ncache = false;
         };
         std::vector<CachedNeighborhood> cached_nhoods;
         cached_nhoods.reserve(hop_reserve);
@@ -2337,12 +2338,7 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
             cached_nhoods.clear();
             ncache_snapshots_used = 0; // Keep snapshot allocations for later hops.
             expand_order.clear();
-            if ((_neighborcache_seed_page_lru || _neighborcache_seed_prefetch) && query_scratch != nullptr)
-            {
-                query_scratch->neighborcache_seed_page_coords.clear();
-                query_scratch->neighborcache_seed_page_nbrs.clear();
-                query_scratch->neighborcache_seed_page_coord_ptr.clear();
-            }
+            size_t prefetch_records_used = 0;
             sector_scratch_idx = 0;
             float beam_max_dist = 0.0f;
             // find new beam
@@ -2391,7 +2387,7 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
                             nh_pair = {static_cast<uint32_t>(snapshot->nbrs.size()), snapshot->nbrs.data()};
                             ++ncache_snapshots_used;
                         }
-                        cached_nhoods.push_back({nbr.id, nh_pair, coord_ptr});
+                        cached_nhoods.push_back({nbr.id, nh_pair, coord_ptr, true});
                         mem_hit = true;
                         g_dyn_probe.ncache_hit++;
                         if (stats != nullptr)
@@ -2411,26 +2407,24 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
                 }
                 if (!mem_hit && (_neighborcache_seed_page_lru || _neighborcache_seed_prefetch) && query_scratch != nullptr)
                 {
-                    std::vector<T> sp_coords;
-                    std::vector<uint32_t> sp_nbrs;
+                    auto &records = query_scratch->neighborcache_prefetch_records;
+                    if (prefetch_records_used == records.size())
+                        records.emplace_back();
+                    auto &record = records[prefetch_records_used];
                     bool sp_hit;
                     {
                         NeighborCacheDemandProbeScope probe_scope(demand_probe);
-                        sp_hit = neighborcache_seed_page_lookup(nbr.id, sp_coords, sp_nbrs);
+                        sp_hit = neighborcache_seed_page_lookup(nbr.id, record.coords, record.neighbors);
                     }
-                    if (sp_hit && !sp_coords.empty())
+                    if (sp_hit && !record.coords.empty())
                     {
                         if (stats != nullptr)
                             stats->n_neighborcache_prefetch_hits++;
-                        query_scratch->neighborcache_seed_page_coords.push_back(std::move(sp_coords));
-                        query_scratch->neighborcache_seed_page_nbrs.push_back(std::move(sp_nbrs));
-                        auto &stored_nbrs = query_scratch->neighborcache_seed_page_nbrs.back();
                         std::pair<uint32_t, uint32_t *> nh_pair(
-                            static_cast<uint32_t>(stored_nbrs.size()),
-                            stored_nbrs.empty() ? nullptr : stored_nbrs.data());
-                        cached_nhoods.push_back({nbr.id, nh_pair});
-                        query_scratch->neighborcache_seed_page_coord_ptr[nbr.id] =
-                            query_scratch->neighborcache_seed_page_coords.back().data();
+                            static_cast<uint32_t>(record.neighbors.size()),
+                            record.neighbors.empty() ? nullptr : record.neighbors.data());
+                        cached_nhoods.push_back({nbr.id, nh_pair, record.coords.data()});
+                        ++prefetch_records_used;
                         mem_hit = true;
                     }
                 }
@@ -2801,30 +2795,15 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
         // process cached nhoods
         for (auto &cached_nhood : cached_nhoods)
         {
-            T *node_fp_coords_copy = nullptr;
-            if (cached_nhood.ncache_coords != nullptr)
+            T *node_fp_coords_copy = cached_nhood.coords;
+            if (cached_nhood.from_ncache)
+                node_fp_coords_copy = ncache_distance_coords(node_fp_coords_copy);
+            else if (node_fp_coords_copy == nullptr)
             {
-                node_fp_coords_copy = ncache_distance_coords(cached_nhood.ncache_coords);
-            }
-            else
-            {
-                bool seed_page_hit = false;
-                if ((_neighborcache_seed_page_lru || _neighborcache_seed_prefetch) && query_scratch != nullptr)
-                {
-                    const auto seed_it = query_scratch->neighborcache_seed_page_coord_ptr.find(cached_nhood.id);
-                    if (seed_it != query_scratch->neighborcache_seed_page_coord_ptr.end() && seed_it->second != nullptr)
-                    {
-                        node_fp_coords_copy = seed_it->second;
-                        seed_page_hit = true;
-                    }
-                }
-                if (!seed_page_hit)
-                {
-                    auto global_cache_iter = _coord_cache.find(cached_nhood.id);
-                    if (global_cache_iter == _coord_cache.end())
-                        continue;
-                    node_fp_coords_copy = global_cache_iter->second;
-                }
+                auto global_cache_iter = _coord_cache.find(cached_nhood.id);
+                if (global_cache_iter == _coord_cache.end())
+                    continue;
+                node_fp_coords_copy = global_cache_iter->second;
             }
             profile_on_acquired(cached_nhood.id);
             float cur_expanded_dist;
@@ -2841,7 +2820,7 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
                         query_float, (uint8_t *)node_fp_coords_copy);
             }
             if (patch_ncache_hits && query_scratch->neighborcache_dcache_maintenance_enabled &&
-                cached_nhood.ncache_coords != nullptr)
+                cached_nhood.from_ncache)
                 neighborcache_seed_prefetch_note_ncache_hit(cached_nhood.id,
                     query_scratch->parent_of(cached_nhood.id).value_or(UINT32_MAX),
                     node_fp_coords_copy, cached_nhood.neighbors.second, cached_nhood.neighbors.first);
@@ -2969,23 +2948,10 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
                 if (cached_it != cached_by_id.end())
                 {
                     auto &cached_nhood = cached_it->second;
-                    T *node_fp_coords_copy = nullptr;
-                    bool pool_hit = false;
-                    if (cached_nhood.ncache_coords != nullptr)
-                    {
-                        node_fp_coords_copy = ncache_distance_coords(cached_nhood.ncache_coords);
-                        pool_hit = true;
-                    }
-                    if (!pool_hit && (_neighborcache_seed_page_lru || _neighborcache_seed_prefetch) && query_scratch != nullptr)
-                    {
-                        const auto seed_it = query_scratch->neighborcache_seed_page_coord_ptr.find(cached_nhood.id);
-                        if (seed_it != query_scratch->neighborcache_seed_page_coord_ptr.end() && seed_it->second != nullptr)
-                        {
-                            node_fp_coords_copy = seed_it->second;
-                            pool_hit = true;
-                        }
-                    }
-                    if (!pool_hit)
+                    T *node_fp_coords_copy = cached_nhood.coords;
+                    if (cached_nhood.from_ncache)
+                        node_fp_coords_copy = ncache_distance_coords(node_fp_coords_copy);
+                    else if (node_fp_coords_copy == nullptr)
                     {
                         auto global_cache_iter = _coord_cache.find(cached_nhood.id);
                         if (global_cache_iter == _coord_cache.end())
@@ -3008,7 +2974,7 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
                             cur_expanded_dist = _disk_pq_table.l2_distance(query_float, (uint8_t *)node_fp_coords_copy);
                     }
                     if (patch_ncache_hits && query_scratch->neighborcache_dcache_maintenance_enabled &&
-                        cached_nhood.ncache_coords != nullptr)
+                        cached_nhood.from_ncache)
                         neighborcache_seed_prefetch_note_ncache_hit(cached_nhood.id,
                             query_scratch->parent_of(cached_nhood.id).value_or(UINT32_MAX),
                             node_fp_coords_copy, cached_nhood.neighbors.second, cached_nhood.neighbors.first);
