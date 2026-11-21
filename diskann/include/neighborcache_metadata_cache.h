@@ -31,13 +31,8 @@ class NeighborCacheMetadataCache
         SingleOwner
     };
 
-    using Heat = uint32_t;
-    static constexpr uint32_t kDecayScale = 1u << 16;
-
-    static constexpr Heat decay_heat(Heat heat, uint32_t multiplier)
-    {
-        return static_cast<Heat>(static_cast<uint64_t>(heat) * multiplier / kDecayScale);
-    }
+    using Heat = uint16_t;
+    static constexpr Heat kMaxHeat = std::numeric_limits<Heat>::max();
 
     struct Snapshot
     {
@@ -55,6 +50,7 @@ class NeighborCacheMetadataCache
         uint32_t evicted_slot = kInvalid;
         bool present = false;
         bool inserted = false;
+        bool heat_update_deferred = false;
     };
 
     NeighborCacheMetadataCache();
@@ -85,6 +81,7 @@ class NeighborCacheMetadataCache
     uint64_t size() const;
     uint64_t edge_count() const;
     uint64_t edge_descriptor_capacity_bytes() const;
+    uint64_t heat_capacity_bytes() const;
     uint64_t evictable_size() const;
 
     uint8_t sig_threshold() const
@@ -92,9 +89,9 @@ class NeighborCacheMetadataCache
         return _sig_t.load(std::memory_order_relaxed);
     }
 
-    TouchResult on_expand(uint32_t node_id, const std::atomic<Heat> &score_unit);
-    TouchResult on_edge(uint32_t parent, uint32_t child, Heat unit = 1);
-    TouchResult on_real_io_edge(uint32_t parent, uint32_t child, size_t max_edges = 64, Heat unit = 1);
+    TouchResult on_expand(uint32_t node_id);
+    TouchResult on_edge(uint32_t parent, uint32_t child);
+    TouchResult on_real_io_edge(uint32_t parent, uint32_t child, size_t max_edges = 64);
     uint64_t membership_bitmap_bytes() const
     {
         return _membership_word_count * sizeof(uint64_t);
@@ -107,10 +104,9 @@ class NeighborCacheMetadataCache
     Heat score(uint32_t node_id) const;
     Heat score_at(uint32_t slot_id) const;
     bool set_evictable(uint32_t node_id, bool evictable);
-    // The multiplier is in units of 1/kDecayScale. Round scaled counts down.
-    void scale_scores(uint32_t multiplier, std::atomic<Heat> &score_unit);
+    void halve_heat();
+    bool heat_decay_pending() const { return _heat_decay_pending.load(std::memory_order_acquire); }
     uint64_t edge_saturations() const;
-    bool edge_saturation_pending() const;
     bool snapshot(uint32_t node_id, Snapshot &out, bool include_all_edges = false) const;
     bool snapshot_from_slot(uint32_t node_id, uint32_t slot_id, Snapshot &out, bool include_all_edges) const;
 
@@ -135,13 +131,6 @@ class NeighborCacheMetadataCache
         uint8_t heat() const
         {
             return _bytes[sizeof(uint32_t)];
-        }
-
-        void bump_heat()
-        {
-            uint8_t &value = _bytes[sizeof(uint32_t)];
-            if (value < std::numeric_limits<uint8_t>::max())
-                ++value;
         }
 
         void set_heat(uint8_t heat)
@@ -179,14 +168,13 @@ class NeighborCacheMetadataCache
     void membership_clear(uint32_t node_id);
     uint32_t evict_one_unlocked(Shard &shard, size_t shard_id, uint32_t &evicted_slot,
                                 uint32_t &reclaimed_local_slot);
-    TouchResult touch_or_insert_unlocked(Shard &shard, size_t shard_id, uint32_t node_id, Heat score_delta);
+    TouchResult touch_or_insert_unlocked(Shard &shard, size_t shard_id, uint32_t node_id, bool count_expand);
     TouchResult touch_existing_unlocked(Shard &shard, size_t shard_id, uint32_t node_id,
-                                       uint32_t local_slot, Heat score_delta);
+                                       uint32_t local_slot, bool count_expand);
     void copy_snapshot_edges_unlocked(const Shard &shard, uint32_t local_slot, Snapshot &out,
                                       bool include_all_edges) const;
     static void sort_snapshot_edges(Snapshot &out);
-    uint8_t edge_increment(Heat unit) const;
-    void add_edge_heat_unlocked(Edge &edge, uint8_t increment);
+    void count_edge_unlocked(Edge &edge);
 
     std::vector<std::unique_ptr<Shard>> _shards;
     bool _shared = true;
@@ -199,7 +187,7 @@ class NeighborCacheMetadataCache
     bool _edge_heat_decay = true;
     size_t _max_edges = 64;
     std::atomic<uint64_t> _edge_saturations{0};
-    std::atomic<bool> _edge_saturation_pending{false};
+    std::atomic<bool> _heat_decay_pending{false};
     uint64_t _node_count = 0;
     bool _stable_slots = false;
     std::unique_ptr<std::atomic<uint64_t>[]> _membership_words;

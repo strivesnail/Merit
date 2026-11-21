@@ -47,6 +47,8 @@ void NeighborCacheMetadataCache::clear()
     _total_size.store(0, std::memory_order_relaxed);
     _total_edges.store(0, std::memory_order_relaxed);
     _total_evictable.store(0, std::memory_order_relaxed);
+    _heat_decay_pending.store(false, std::memory_order_relaxed);
+    _edge_saturations.store(0, std::memory_order_relaxed);
     _membership_words.reset();
     _membership_word_count = 0;
     _node_count = 0;
@@ -161,6 +163,14 @@ uint64_t NeighborCacheMetadataCache::edge_descriptor_capacity_bytes() const
     return bytes;
 }
 
+uint64_t NeighborCacheMetadataCache::heat_capacity_bytes() const
+{
+    uint64_t bytes = 0;
+    for (const auto &shard : _shards)
+        bytes += shard->scores.capacity() * sizeof(Heat);
+    return bytes;
+}
+
 uint64_t NeighborCacheMetadataCache::evictable_size() const
 {
     return _total_evictable.load(std::memory_order_relaxed);
@@ -241,14 +251,19 @@ uint32_t NeighborCacheMetadataCache::evict_one_unlocked(Shard &shard, size_t sha
 }
 
 NeighborCacheMetadataCache::TouchResult NeighborCacheMetadataCache::touch_existing_unlocked(
-    Shard &shard, size_t shard_id, uint32_t node_id, uint32_t local_slot, Heat score_delta)
+    Shard &shard, size_t shard_id, uint32_t node_id, uint32_t local_slot, bool count_expand)
 {
     Heat &score = shard.scores[local_slot];
-    if (score_delta != 0)
-        score += std::min(score_delta, std::numeric_limits<Heat>::max() - score);
+    TouchResult r;
+    if (count_expand)
+    {
+        if (score == kMaxHeat)
+            r.heat_update_deferred = true;
+        else if (++score == kMaxHeat)
+            _heat_decay_pending.store(true, std::memory_order_release);
+    }
     if (!_stable_slots)
         touch_unlocked(shard, local_slot);
-    TouchResult r;
     r.node_id = node_id;
     r.slot_id = static_cast<uint32_t>(static_cast<uint64_t>(shard_id) *
         _slot_stride.load(std::memory_order_relaxed) + local_slot);
@@ -258,13 +273,13 @@ NeighborCacheMetadataCache::TouchResult NeighborCacheMetadataCache::touch_existi
 }
 
 NeighborCacheMetadataCache::TouchResult NeighborCacheMetadataCache::touch_or_insert_unlocked(Shard &shard, size_t shard_id,
-                                                                            uint32_t node_id, Heat score_delta)
+                                                                            uint32_t node_id, bool count_expand)
 {
     TouchResult r;
     auto it = shard.node_to_slot.find(node_id);
     if (it != shard.node_to_slot.end())
     {
-        return touch_existing_unlocked(shard, shard_id, node_id, it->second, score_delta);
+        return touch_existing_unlocked(shard, shard_id, node_id, it->second, count_expand);
     }
 
     if (shard.capacity == 0 || (_stable_slots && node_id >= _node_count))
@@ -307,7 +322,7 @@ NeighborCacheMetadataCache::TouchResult NeighborCacheMetadataCache::touch_or_ins
     const uint32_t slot_stride = _slot_stride.load(std::memory_order_relaxed);
     const uint32_t slot_id =
         static_cast<uint32_t>(static_cast<uint64_t>(shard_id) * slot_stride + local_slot);
-    shard.scores[local_slot] = score_delta;
+    shard.scores[local_slot] = static_cast<Heat>(count_expand);
     shard.evictable[local_slot] = 1;
     shard.node_to_slot.insert({node_id, local_slot});
     if (!_stable_slots)
@@ -319,28 +334,27 @@ NeighborCacheMetadataCache::TouchResult NeighborCacheMetadataCache::touch_or_ins
     membership_set(node_id);
     r.node_id = node_id;
     r.slot_id = slot_id;
-    r.score = score_delta;
+    r.score = static_cast<Heat>(count_expand);
     r.present = true;
     r.inserted = true;
     return r;
 }
 
-NeighborCacheMetadataCache::TouchResult NeighborCacheMetadataCache::on_expand(uint32_t node_id,
-                                                              const std::atomic<Heat> &score_unit)
+NeighborCacheMetadataCache::TouchResult NeighborCacheMetadataCache::on_expand(uint32_t node_id)
 {
     const size_t shard_id = shard_index(node_id);
     Shard &shard = *_shards[shard_id];
     NeighborCacheTimedSharedMutexGuard lock(shard.mu, NeighborCacheLockKind::Metadata, true, _shared);
-    return touch_or_insert_unlocked(shard, shard_id, node_id, score_unit.load(std::memory_order_acquire));
+    return touch_or_insert_unlocked(shard, shard_id, node_id, true);
 }
 
-NeighborCacheMetadataCache::TouchResult NeighborCacheMetadataCache::on_edge(uint32_t parent, uint32_t child, Heat unit)
+NeighborCacheMetadataCache::TouchResult NeighborCacheMetadataCache::on_edge(uint32_t parent, uint32_t child)
 {
-    return on_real_io_edge(parent, child, _max_edges, unit);
+    return on_real_io_edge(parent, child, _max_edges);
 }
 
 NeighborCacheMetadataCache::TouchResult NeighborCacheMetadataCache::on_real_io_edge(uint32_t parent, uint32_t child,
-                                                                    size_t max_edges, Heat unit)
+                                                                    size_t max_edges)
 {
     TouchResult r;
     if (parent == child || max_edges == 0)
@@ -349,25 +363,24 @@ NeighborCacheMetadataCache::TouchResult NeighborCacheMetadataCache::on_real_io_e
     const size_t shard_id = shard_index(parent);
     Shard &shard = *_shards[shard_id];
     NeighborCacheTimedSharedMutexGuard lock(shard.mu, NeighborCacheLockKind::Metadata, true, _shared);
-    r = touch_or_insert_unlocked(shard, shard_id, parent, 0);
+    r = touch_or_insert_unlocked(shard, shard_id, parent, false);
     if (!r.present)
         return r;
 
     const size_t local_slot = r.slot_id - shard_id * _slot_stride.load(std::memory_order_relaxed);
     std::vector<Edge> &edges = shard.edges_by_slot[local_slot];
-    const uint8_t increment = edge_increment(unit);
     for (Edge &edge : edges)
     {
         if (edge.child() == child)
         {
-            add_edge_heat_unlocked(edge, increment);
+            count_edge_unlocked(edge);
             return r;
         }
     }
 
     if (edges.size() < max_edges)
     {
-        edges.emplace_back(child, increment);
+        edges.emplace_back(child, 1);
         _total_edges.fetch_add(1, std::memory_order_relaxed);
         return r;
     }
@@ -376,7 +389,7 @@ NeighborCacheMetadataCache::TouchResult NeighborCacheMetadataCache::on_real_io_e
                                     [](const Edge &a, const Edge &b) { return a.heat() < b.heat(); });
     const uint8_t inherited_heat = weakest->heat();
     *weakest = Edge(child, inherited_heat);
-    add_edge_heat_unlocked(*weakest, increment);
+    count_edge_unlocked(*weakest);
     return r;
 }
 
@@ -503,7 +516,7 @@ bool NeighborCacheMetadataCache::set_evictable(uint32_t node_id, bool evictable)
     return true;
 }
 
-void NeighborCacheMetadataCache::scale_scores(uint32_t multiplier, std::atomic<Heat> &score_unit)
+void NeighborCacheMetadataCache::halve_heat()
 {
     std::vector<std::unique_ptr<NeighborCacheTimedSharedMutexGuard<std::shared_mutex>>> locks;
     locks.reserve(shard_count());
@@ -511,41 +524,32 @@ void NeighborCacheMetadataCache::scale_scores(uint32_t multiplier, std::atomic<H
         locks.emplace_back(
             std::make_unique<NeighborCacheTimedSharedMutexGuard<std::shared_mutex>>(shard->mu, NeighborCacheLockKind::Metadata, true, _shared));
 
-    for (size_t shard_id = 0; shard_id < shard_count(); ++shard_id)
+    uint64_t removed_edges = 0;
+    for (auto &shard_ptr : _shards)
     {
-        Shard &shard = *_shards[shard_id];
+        Shard &shard = *shard_ptr;
         for (auto it = shard.node_to_slot.begin(); it != shard.node_to_slot.end(); ++it)
         {
             const uint32_t local_slot = it->second;
-            auto &score = shard.scores[local_slot];
-            score = decay_heat(score, multiplier);
-        }
-    }
-    if (_edge_heat_decay)
-    {
-        uint64_t removed_edges = 0;
-        for (size_t shard_id = 0; shard_id < shard_count(); ++shard_id)
-        {
-            Shard &shard = *_shards[shard_id];
-            for (auto it = shard.node_to_slot.begin(); it != shard.node_to_slot.end(); ++it)
+            shard.scores[local_slot] /= 2;
+            if (_edge_heat_decay)
             {
-                std::vector<Edge> &edges = shard.edges_by_slot[it->second];
+                std::vector<Edge> &edges = shard.edges_by_slot[local_slot];
                 size_t kept = 0;
-                for (size_t index = 0; index < edges.size(); ++index)
+                for (Edge &edge : edges)
                 {
-                    edges[index].set_heat(static_cast<uint8_t>(decay_heat(edges[index].heat(), multiplier)));
-                    if (edges[index].heat() != 0)
-                        edges[kept++] = edges[index];
+                    edge.set_heat(edge.heat() / 2);
+                    if (edge.heat() != 0)
+                        edges[kept++] = edge;
                 }
                 removed_edges += edges.size() - kept;
                 edges.resize(kept);
             }
         }
-        if (removed_edges != 0)
-            _total_edges.fetch_sub(removed_edges, std::memory_order_relaxed);
-        _edge_saturation_pending.store(false, std::memory_order_relaxed);
     }
-    score_unit.store(1, std::memory_order_release);
+    if (removed_edges != 0)
+        _total_edges.fetch_sub(removed_edges, std::memory_order_relaxed);
+    _heat_decay_pending.store(false, std::memory_order_release);
 }
 
 uint64_t NeighborCacheMetadataCache::edge_saturations() const
@@ -553,30 +557,13 @@ uint64_t NeighborCacheMetadataCache::edge_saturations() const
     return _edge_saturations.load(std::memory_order_relaxed);
 }
 
-bool NeighborCacheMetadataCache::edge_saturation_pending() const
+void NeighborCacheMetadataCache::count_edge_unlocked(Edge &edge)
 {
-    return _edge_saturation_pending.load(std::memory_order_relaxed);
-}
-
-uint8_t NeighborCacheMetadataCache::edge_increment(Heat unit) const
-{
-    if (!_edge_heat_decay || unit <= 1)
-        return 1;
-    return static_cast<uint8_t>(std::min<Heat>(unit, std::numeric_limits<uint8_t>::max()));
-}
-
-void NeighborCacheMetadataCache::add_edge_heat_unlocked(Edge &edge, uint8_t increment)
-{
-    const uint32_t next = static_cast<uint32_t>(edge.heat()) + increment;
-    if (next > std::numeric_limits<uint8_t>::max())
-    {
-        edge.set_heat(std::numeric_limits<uint8_t>::max());
+    const uint8_t heat = edge.heat();
+    if (heat == std::numeric_limits<uint8_t>::max())
         _edge_saturations.fetch_add(1, std::memory_order_relaxed);
-        if (_edge_heat_decay)
-            _edge_saturation_pending.store(true, std::memory_order_relaxed);
-        return;
-    }
-    edge.set_heat(static_cast<uint8_t>(next));
+    else
+        edge.set_heat(heat + 1);
 }
 
 void NeighborCacheMetadataCache::copy_snapshot_edges_unlocked(const Shard &shard, uint32_t local_slot,

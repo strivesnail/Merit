@@ -20,6 +20,48 @@ class NeighborCacheAdapter {
         }
     }
 public:
+    static void run_heat_saturation(bool single_owner)
+    {
+        using Metadata = NeighborCacheMetadataCache;
+        std::shared_ptr<AlignedFileReader> reader;
+        Index idx(reader, Metric::L2);
+        idx._neighborcache_query_owns_metadata = single_owner;
+        idx._neighborcache_heap_shard_count = 1;
+        idx._neighborcache_heap_position.assign(4, Metadata::kInvalid);
+        idx._neighborcache_heap_kind.assign(4, static_cast<uint8_t>(Index::NeighborCacheHeapKind::None));
+        idx._neighborcache_mcache.init(4, 2, 4, true,
+            single_owner ? Metadata::Access::SingleOwner : Metadata::Access::SingleShard);
+        const auto first = idx.neighborcache_count_expansion(0);
+        const auto second = idx.neighborcache_count_expansion(1);
+        for (uint32_t n = 1; n < Metadata::kMaxHeat - 1u; ++n)
+            idx.neighborcache_count_expansion(0);
+        assert(idx._neighborcache_mcache.score(0) == Metadata::kMaxHeat - 1);
+        assert(idx._neighborcache_decay_cycles.load() == 0);
+
+        // Scores 2 and 3 tie after rounding. The larger slot then leads the max heap.
+        using Kind = Index::NeighborCacheHeapKind;
+        idx.neighborcache_dyn_heap_insert_unlocked({3, first.slot_id}, Kind::Max);
+        idx.neighborcache_dyn_heap_insert_unlocked({2, second.slot_id}, Kind::Max);
+        if (single_owner)
+        {
+            assert(idx.neighborcache_count_expansion(0).score == Metadata::kMaxHeat / 2);
+            idx.neighborcache_count_expansion(0);
+        }
+        else
+        {
+            std::thread other([&] { idx.neighborcache_count_expansion(0); });
+            idx.neighborcache_count_expansion(0);
+            other.join();
+        }
+        assert(idx._neighborcache_mcache.score(0) == Metadata::kMaxHeat / 2 + 1);
+        assert(idx._neighborcache_mcache.score(1) == 0);
+        assert(idx._neighborcache_decay_cycles.load() == 1);
+        const auto &heap = idx._neighborcache_heap_shards[0].max_heap;
+        assert(heap.front().slot_id == second.slot_id && heap.front().score == 1);
+        assert(idx._neighborcache_heap_position[first.slot_id] == 1);
+        assert(idx._neighborcache_heap_position[second.slot_id] == 0);
+    }
+
     static void run_ranked_readback_seed()
     {
         setenv("NEIGHBORCACHE_DCACHE_UNBOUNDED", "1", 1);
@@ -61,7 +103,7 @@ public:
         SSDQueryScratch<uint8_t> scratch(128, 64);
         idx.neighborcache_dyn_prepare_query(&scratch);
         assert(!scratch.neighborcache_record_real_io);
-        const auto seed = idx._neighborcache_mcache.on_expand(1, idx._neighborcache_score_unit);
+        const auto seed = idx.neighborcache_count_expansion(1);
         assert(seed.present);
         alignas(uint32_t) std::array<char, 388> record{};
         idx.neighborcache_dyn_note_base_load(2, 1, record.data(), &scratch);
@@ -123,8 +165,8 @@ public:
         assert(!pool.single_owner() && !idx.neighborcache_tracks_pending_members());
         // Keep candidate refresh from building pages while inspecting the heap.
         idx._neighborcache_refresh_running.store(true);
-        const auto first = idx._neighborcache_mcache.on_expand(1, idx._neighborcache_score_unit);
-        const auto second = idx._neighborcache_mcache.on_expand(2, idx._neighborcache_score_unit);
+        const auto first = idx.neighborcache_count_expansion(1);
+        const auto second = idx.neighborcache_count_expansion(2);
         idx.neighborcache_dyn_heap_upsert_unlocked(first.slot_id, first.score);
         idx.neighborcache_dyn_heap_upsert_unlocked(second.slot_id, second.score);
         assert(idx.neighborcache_dyn_heap_kind_unlocked(first.slot_id) == Index::NeighborCacheHeapKind::Max);
@@ -245,7 +287,7 @@ public:
         for(auto *r:{&a,&b})idx._neighborcache_mem_pool->try_admit(uint8_t((*r)[0]),r->data(),128,388,0,false);
         SSDQueryScratch<uint8_t> lifecycle(128,4096);
         lifecycle.neighborcache_dcache_maintenance_enabled=true;
-        const auto first=idx._neighborcache_mcache.on_expand(1,idx._neighborcache_score_unit);
+        const auto first=idx.neighborcache_count_expansion(1);
         assert(first.present);
         idx.neighborcache_dyn_note_touch(first,&lifecycle);
         idx.neighborcache_dyn_note_base_load(2,1,b.data(),&lifecycle);
@@ -325,7 +367,7 @@ public:
         assert(!idx.neighborcache_pending_member_contains(1) && !idx.neighborcache_pending_member_contains(2));
         // Further heat must retain Seed eligibility and cannot create another
         // insertion or leave a pair waiting for the asynchronous SSD writer.
-        idx.neighborcache_dyn_note_touch(idx._neighborcache_mcache.on_expand(1,idx._neighborcache_score_unit),&lifecycle);
+        idx.neighborcache_dyn_note_touch(idx.neighborcache_count_expansion(1),&lifecycle);
         idx.neighborcache_dyn_flush_dirty_heap(&lifecycle);
         idx.neighborcache_dyn_maybe_refresh_pair();
         assert(idx._neighborcache_seed_page_opens==1 && idx._neighborcache_ready_pairs.empty());
@@ -337,8 +379,8 @@ public:
         // Raising the D cap then allows the same non-seed candidate to retry.
         auto retry_record=record(50,{2});
         idx._neighborcache_mem_pool->try_admit(50,retry_record.data(),128,388,0,false);
-        auto retry=idx._neighborcache_mcache.on_expand(50,idx._neighborcache_score_unit);
-        for(unsigned i=0;i<16;++i)retry=idx._neighborcache_mcache.on_expand(50,idx._neighborcache_score_unit);
+        auto retry=idx.neighborcache_count_expansion(50);
+        for(unsigned i=0;i<16;++i)retry=idx.neighborcache_count_expansion(50);
         idx.neighborcache_dyn_note_touch(retry,&lifecycle);
         idx.neighborcache_dyn_note_base_load(2,50,b.data(),&lifecycle);
         idx.neighborcache_dyn_flush_dirty_heap(&lifecycle);
@@ -649,6 +691,8 @@ public:
 }
 int main()
 {
+    diskann::NeighborCacheAdapter::run_heat_saturation(true);
+    diskann::NeighborCacheAdapter::run_heat_saturation(false);
     diskann::NeighborCacheAdapter::run_storage_budget(false);
     diskann::NeighborCacheAdapter::run_storage_budget(true);
     if (std::getenv("NEIGHBORCACHE_PREFETCH_THREAD_PRIVATE"))

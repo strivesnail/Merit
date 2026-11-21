@@ -887,19 +887,7 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
     std::atomic<bool> _neighborcache_refresh_needed{false};
     std::atomic<bool> _neighborcache_refresh_running{false};
     static constexpr size_t NEIGHBORCACHE_PENDING_PAIR_CAP_MAX = 65536;
-    std::atomic<NeighborCacheHeat> _neighborcache_score_unit{1};
-    // Forward decay shared by node scores and edge heat: increments add
-    // The increment is the nearest integer to 2^(accesses_since_cycle_start / half_life).
-    // At the end of the cycle, scale the counts down and reset the increment to 1.
-    std::atomic<uint64_t> _neighborcache_decay_query_count{0};
-    std::atomic<uint64_t> _neighborcache_decay_access_count{0};
-    std::atomic<uint64_t> _neighborcache_decay_cycle_start{0};
-    std::atomic<bool> _neighborcache_decay_started{false};
-    std::mutex _neighborcache_decay_mu;
-    double _neighborcache_decay_half_life_accesses = 2.8e6;
     std::atomic<uint64_t> _neighborcache_decay_cycles{0};
-    std::atomic<uint64_t> _neighborcache_decay_early_cycles{0};
-    static constexpr float NEIGHBORCACHE_SCORE_UNIT_MAX = 8.0f;
     uint64_t _neighborcache_pair_refresh = 0;
     uint64_t _neighborcache_heap_writes = 0;
     uint64_t _neighborcache_heap_deletes = 0;
@@ -1105,6 +1093,8 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
     void neighborcache_dyn_heap_erase_unlocked(uint32_t slot_id);
     void neighborcache_dyn_heap_apply_unlocked(uint32_t slot_id, NeighborCacheHeat score, NeighborCacheHeapKind desired);
     void neighborcache_dyn_heap_upsert_unlocked(uint32_t slot_id, NeighborCacheHeat score);
+    NeighborCacheMetadataCache::TouchResult neighborcache_count_expansion(uint32_t node_id);
+    void neighborcache_decay_saturated_heat();
     void neighborcache_dyn_clean_heap_unlocked(NeighborCacheHeapShard &shard, NeighborCacheHeapKind kind);
     bool neighborcache_dyn_best_heap_entry(NeighborCacheHeapKind kind, NeighborCacheHeapEntry &entry, size_t &shard_index);
     void neighborcache_dyn_flush_dirty_heap(SSDQueryScratch<T> *query_scratch);

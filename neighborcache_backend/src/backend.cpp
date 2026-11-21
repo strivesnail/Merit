@@ -259,7 +259,7 @@ class NeighborCacheAdapter {
         if (parent == UINT32_MAX || !q->scratch.profile_parent.insert({child, parent}).second) return;
         ++q->parents;
         if (!index._neighborcache_real_io_coaccess && !index._neighborcache_ranked_readback_edges) {
-            const auto tr = index._neighborcache_mcache.on_edge(parent, child, index._neighborcache_score_unit.load());
+            const auto tr = index._neighborcache_mcache.on_edge(parent, child);
             if (tr.present) {
                 index.neighborcache_dyn_note_touch(tr, &q->scratch);
                 index.neighborcache_mark_refresh_needed();
@@ -269,7 +269,7 @@ class NeighborCacheAdapter {
     bool selected(Query *q, uint32_t id) {
         q->scratch.neighborcache_expand_count++;
         if (!q->scratch.neighborcache_dcache_maintenance_enabled || index._neighborcache_coread_pack) return false;
-        const auto tr = index._neighborcache_mcache.on_expand(id, index._neighborcache_score_unit);
+        const auto tr = index.neighborcache_count_expansion(id);
         return index.neighborcache_dyn_note_touch(tr, &q->scratch);
     }
     int finish(Query *q, Ticket &t, char *raw) {

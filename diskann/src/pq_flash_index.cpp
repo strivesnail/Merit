@@ -2128,7 +2128,7 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
         if (this->_neighborcache_dyn_enabled && query_scratch->neighborcache_dcache_maintenance_enabled &&
             !this->_neighborcache_coread_pack)
         {
-            const auto tr = this->_neighborcache_mcache.on_expand(node_id, this->_neighborcache_score_unit);
+            const auto tr = this->neighborcache_count_expansion(node_id);
             if (stats != nullptr && tr.present)
             {
                 if (tr.inserted)
@@ -2168,8 +2168,7 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
             {
                 bool touched = false;
                 {
-                    const auto tr = this->_neighborcache_mcache.on_edge(
-                        parent, id, this->_neighborcache_score_unit.load(std::memory_order_relaxed));
+                    const auto tr = this->_neighborcache_mcache.on_edge(parent, id);
                     touched = tr.present;
                     if (touched)
                         this->neighborcache_dyn_note_touch(tr, query_scratch);
@@ -5496,15 +5495,7 @@ void PQFlashIndex<T, LabelT>::enable_neighborcache_dynamic_3cache(bool enable, c
         _neighborcache_query_epoch.store(0, std::memory_order_relaxed);
         _neighborcache_refresh_needed.store(false, std::memory_order_relaxed);
         _neighborcache_refresh_running.store(false, std::memory_order_relaxed);
-        _neighborcache_score_unit.store(1);
-        _neighborcache_decay_query_count.store(0, std::memory_order_relaxed);
-        _neighborcache_decay_access_count.store(0, std::memory_order_relaxed);
-        _neighborcache_decay_cycle_start.store(0, std::memory_order_relaxed);
-        _neighborcache_decay_half_life_accesses =
-            static_cast<double>(std::max<uint64_t>(1, neighborcache_env_u64("NEIGHBORCACHE_DECAY_HALF_LIFE_ACCESSES", 2800000)));
         _neighborcache_decay_cycles.store(0, std::memory_order_relaxed);
-        _neighborcache_decay_early_cycles.store(0, std::memory_order_relaxed);
-        _neighborcache_decay_started.store(false, std::memory_order_relaxed);
         _neighborcache_pair_refresh = 0;
         _neighborcache_heap_writes = 0;
         _neighborcache_heap_deletes = 0;
@@ -5735,7 +5726,7 @@ void PQFlashIndex<T, LabelT>::enable_neighborcache_dynamic_3cache(bool enable, c
                   << (unbounded_dcache ? std::string() : std::to_string(_neighborcache_dyn_page_cap))
                   << " (directory seed addresses=" << seed_address_slots << ", base pages=" << base_pages << ")"
                   << " file=" << _neighborcache_dyn_path << " physical_pages=" << _neighborcache_dyn_physical_cap
-                  << " score=uint32 unit_max=" << NEIGHBORCACHE_SCORE_UNIT_MAX
+                  << " score=uint16 max_heat=" << NeighborCacheMetadataCache::kMaxHeat
                   << " mcache_shards=" << _neighborcache_mcache.shard_count()
                   << " heap_shards=" << _neighborcache_heap_shard_count
                   << " dcache_location_shards=" << _neighborcache_dyn_loc_shard_count
@@ -5989,7 +5980,7 @@ template <typename T, typename LabelT> int PQFlashIndex<T, LabelT>::neighborcach
     if (!_neighborcache_static_no_mcache)
     for (uint32_t seed : seeds)
     {
-        const auto tr = _neighborcache_mcache.on_expand(seed, _neighborcache_score_unit);
+        const auto tr = neighborcache_count_expansion(seed);
         if (!tr.present || tr.evicted_id != NeighborCacheMetadataCache::kInvalid)
         {
             diskann::cerr << "NEIGHBORCACHE BFS prefill could not register all page seeds in m-cache." << std::endl;
@@ -6561,6 +6552,7 @@ template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::print_neigh
                   << " parent_fetched_capacity_bytes=" << parent_fetched_bytes << std::endl;
     diskann::cout << "NEIGHBORCACHE mcache_storage: capacity=" << _neighborcache_mcache.capacity()
                   << " live=" << _neighborcache_mcache.size()
+                  << " heat_capacity_bytes=" << _neighborcache_mcache.heat_capacity_bytes()
                   << " edge_descriptor_capacity_bytes=" << _neighborcache_mcache.edge_descriptor_capacity_bytes()
                   << std::endl;
     diskann::cout << "NEIGHBORCACHE pending_buffer: payload_bytes=" << pending_buffer_payload_bytes << "/"
@@ -6655,9 +6647,6 @@ template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::print_neigh
     uint32_t del = std::numeric_limits<uint32_t>::max();
     uint64_t pair_n = 0;
     uint64_t writes = 0, deletes = 0, trig = 0, refresh = 0, max_n = 0, min_n = 0, heap_storage_bytes = 0;
-    uint64_t decay_queries = 0, decay_accesses = 0, decay_cycles = 0, decay_early_cycles = 0;
-    bool decay_started = false;
-    NeighborCacheHeat score_unit = 1;
     bool have_max = false;
     bool have_min = false;
     NeighborCacheHeapEntry best_max;
@@ -6707,24 +6696,15 @@ template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::print_neigh
         deletes = _neighborcache_heap_deletes;
         trig = _neighborcache_ncache_write_trig;
         refresh = _neighborcache_pair_refresh;
-        decay_queries = _neighborcache_decay_query_count.load(std::memory_order_relaxed);
-        decay_accesses = _neighborcache_decay_access_count.load(std::memory_order_relaxed);
-        decay_cycles = _neighborcache_decay_cycles.load(std::memory_order_relaxed);
-        decay_early_cycles = _neighborcache_decay_early_cycles.load(std::memory_order_relaxed);
-        decay_started = _neighborcache_decay_started.load(std::memory_order_relaxed);
-        score_unit = _neighborcache_score_unit.load();
     }
     diskann::cout << "NEIGHBORCACHE heap: max_top=" << max_id << ":" << max_c << " min_top=" << min_id << ":" << min_c
                   << " max_n=" << max_n << " min_n=" << min_n << " pending=" << pair_n
                   << " ins=" << ins << " del=" << del << " writes=" << writes << " deletes=" << deletes
                   << " trig=" << trig << " pair_refresh=" << refresh << " storage_bytes=" << heap_storage_bytes
                   << std::endl;
-    diskann::cout << "NEIGHBORCACHE score: unit=" << score_unit << "/" << NEIGHBORCACHE_SCORE_UNIT_MAX
-                  << " half_life_accesses=" << _neighborcache_decay_half_life_accesses << " cycles=" << decay_cycles
-                  << " early_cycles=" << decay_early_cycles << " decay_queries=" << decay_queries
-                  << " decay_accesses=" << decay_accesses << " accesses_per_query="
-                  << (decay_queries == 0 ? 0.0 : static_cast<double>(decay_accesses) / decay_queries)
-                  << " decay=" << (decay_started ? "on" : "off")
+    const uint64_t decay_cycles = _neighborcache_decay_cycles.load(std::memory_order_relaxed);
+    diskann::cout << "NEIGHBORCACHE score: type=uint16 trigger=saturation max_heat=" << NeighborCacheMetadataCache::kMaxHeat
+                  << " cycles=" << decay_cycles << " decay=" << (decay_cycles != 0 ? "on" : "off")
                   << " edge_saturations=" << _neighborcache_mcache.edge_saturations()
                   << " mcache_evictable=" << _neighborcache_mcache.evictable_size()
                   << " probe pair_set=" << g_dyn_probe.pair_set
@@ -7393,6 +7373,8 @@ void PQFlashIndex<T, LabelT>::neighborcache_dyn_flush_dirty_heap(SSDQueryScratch
         return;
 
     const bool shared_ncache = _neighborcache_mem_pool != nullptr && !_neighborcache_mem_pool->single_owner();
+    const uint64_t decay_cycles = _neighborcache_query_owns_metadata ? 0 :
+        _neighborcache_decay_cycles.load(std::memory_order_acquire);
     const size_t dirty_count = query_scratch->neighborcache_heap_dirty_slots.size();
     query_scratch->neighborcache_heap_dirty_nodes.resize(dirty_count);
     query_scratch->neighborcache_heap_dirty_scores.resize(dirty_count);
@@ -7419,7 +7401,7 @@ void PQFlashIndex<T, LabelT>::neighborcache_dyn_flush_dirty_heap(SSDQueryScratch
             query_scratch->neighborcache_heap_dirty_eligible[index] =
                 static_cast<uint8_t>(neighborcache_dyn_ncache_evictable(node_id));
     }
-    const auto apply = [&](size_t index) {
+    const auto apply = [&](size_t index, bool heat_decayed) {
         const uint32_t slot_id = query_scratch->neighborcache_heap_dirty_slots[index];
         const uint32_t node_id = query_scratch->neighborcache_heap_dirty_nodes[index];
         if (node_id == NeighborCacheMetadataCache::kInvalid)
@@ -7436,13 +7418,22 @@ void PQFlashIndex<T, LabelT>::neighborcache_dyn_flush_dirty_heap(SSDQueryScratch
                  (shared_ncache ? neighborcache_dyn_ncache_evictable(node_id)
                                 : query_scratch->neighborcache_heap_dirty_eligible[index] != 0))
             desired = NeighborCacheHeapKind::Max;
-        neighborcache_dyn_heap_apply_unlocked(slot_id, query_scratch->neighborcache_heap_dirty_scores[index], desired);
+        NeighborCacheHeat score = query_scratch->neighborcache_heap_dirty_scores[index];
+        if (heat_decayed)
+        {
+            uint32_t current_node = NeighborCacheMetadataCache::kInvalid;
+            if (!_neighborcache_mcache.node_score_at(slot_id, current_node, score) || current_node != node_id)
+                return;
+        }
+        neighborcache_dyn_heap_apply_unlocked(slot_id, score, desired);
     };
     if (_neighborcache_heap_shard_count == 1)
     {
         NeighborCacheTimedMutexGuard hlock(_neighborcache_heap_shards[0].mu, NeighborCacheLockKind::Heap, !_neighborcache_query_owns_metadata);
+        const bool heat_decayed = !_neighborcache_query_owns_metadata &&
+            _neighborcache_decay_cycles.load(std::memory_order_acquire) != decay_cycles;
         for (size_t index = 0; index < dirty_count; ++index)
-            apply(index);
+            apply(index, heat_decayed);
     }
     else
     {
@@ -7466,8 +7457,9 @@ void PQFlashIndex<T, LabelT>::neighborcache_dyn_flush_dirty_heap(SSDQueryScratch
             if (shard_begin[shard_index] == shard_begin[shard_index + 1])
                 continue;
             NeighborCacheTimedMutexGuard hlock(_neighborcache_heap_shards[shard_index].mu, NeighborCacheLockKind::Heap, !_neighborcache_query_owns_metadata);
+            const bool heat_decayed = _neighborcache_decay_cycles.load(std::memory_order_acquire) != decay_cycles;
             for (uint32_t bi = shard_begin[shard_index]; bi < shard_begin[shard_index + 1]; ++bi)
-                apply(by_shard[bi]);
+                apply(by_shard[bi], heat_decayed);
         }
     }
 
@@ -11280,7 +11272,6 @@ void PQFlashIndex<T, LabelT>::neighborcache_dyn_record_real_io_coaccess(SSDQuery
     _neighborcache_real_io_nodes.fetch_add(nodes.size(), std::memory_order_relaxed);
     uint64_t recorded_pairs = 0, window_pairs = 0, adjacent_pairs = 0;
     bool touched = false;
-    const NeighborCacheHeat unit = _neighborcache_score_unit.load(std::memory_order_relaxed);
     const std::vector<uint32_t> &nbrs = query_scratch->neighborcache_storage_nbrs;
     const std::vector<uint32_t> &off = query_scratch->neighborcache_storage_nbr_off;
     const bool have_nbrs = off.size() == nodes.size() + 1;
@@ -11300,14 +11291,14 @@ void PQFlashIndex<T, LabelT>::neighborcache_dyn_record_real_io_coaccess(SSDQuery
             if (_neighborcache_real_io_direct && !adjacent)
                 continue;
             const auto forward =
-                _neighborcache_mcache.on_real_io_edge(nodes[i], nodes[j], _neighborcache_real_io_max_partners, unit);
+                _neighborcache_mcache.on_real_io_edge(nodes[i], nodes[j], _neighborcache_real_io_max_partners);
             if (forward.present)
             {
                 neighborcache_dyn_note_touch(forward, query_scratch);
                 touched = true;
             }
             const auto reverse =
-                _neighborcache_mcache.on_real_io_edge(nodes[j], nodes[i], _neighborcache_real_io_max_partners, unit);
+                _neighborcache_mcache.on_real_io_edge(nodes[j], nodes[i], _neighborcache_real_io_max_partners);
             if (reverse.present)
             {
                 neighborcache_dyn_note_touch(reverse, query_scratch);
@@ -12262,48 +12253,43 @@ template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::neighborcac
         stats->n_neighborcache_dyn_pages = static_cast<unsigned>(
             std::min<uint64_t>(page_count, static_cast<uint64_t>(std::numeric_limits<unsigned>::max())));
     neighborcache_dyn_request_refresh();
-    const bool disk_full = page_count >= _neighborcache_dyn_page_cap;
-    if (!_neighborcache_decay_started.load(std::memory_order_acquire))
-    {
-        if (!disk_full)
-            return;
-        bool expected = false;
-        _neighborcache_decay_started.compare_exchange_strong(expected, true, std::memory_order_acq_rel);
-    }
+}
 
-    _neighborcache_decay_query_count.fetch_add(1, std::memory_order_relaxed);
-    const uint64_t accesses = query_scratch->neighborcache_expand_count;
-    const uint64_t now = _neighborcache_decay_access_count.fetch_add(accesses, std::memory_order_acq_rel) + accesses;
-    const uint64_t elapsed = now - std::min(now, _neighborcache_decay_cycle_start.load(std::memory_order_acquire));
-    const float unit = static_cast<float>(std::exp2(static_cast<double>(elapsed) / _neighborcache_decay_half_life_accesses));
-    const bool saturated = _neighborcache_mcache.edge_saturation_pending();
-    if (unit < NEIGHBORCACHE_SCORE_UNIT_MAX && !(saturated && unit >= 2.0f))
+template <typename T, typename LabelT>
+NeighborCacheMetadataCache::TouchResult PQFlashIndex<T, LabelT>::neighborcache_count_expansion(uint32_t node_id)
+{
+    auto touch = _neighborcache_mcache.on_expand(node_id);
+    while (touch.score == NeighborCacheMetadataCache::kMaxHeat)
     {
-        _neighborcache_score_unit.store(static_cast<NeighborCacheHeat>(std::round(unit)), std::memory_order_release);
-        return;
+        neighborcache_decay_saturated_heat();
+        if (!touch.heat_update_deferred)
+        {
+            touch.score = _neighborcache_mcache.score(node_id);
+            break;
+        }
+        touch = _neighborcache_mcache.on_expand(node_id);
     }
+    return touch;
+}
 
-    std::unique_lock<std::mutex> decay_lock(_neighborcache_decay_mu, std::try_to_lock);
-    if (!decay_lock.owns_lock())
+template <typename T, typename LabelT>
+void PQFlashIndex<T, LabelT>::neighborcache_decay_saturated_heat()
+{
+    // Serialize decay with seed-pair decisions and heap updates. The
+    // single-owner query path can perform the same operation without locks.
+    NeighborCacheTimedSharedMutexGuard pair_lock(_neighborcache_pair_mu, NeighborCacheLockKind::Pair, true,
+                                                 !_neighborcache_query_owns_metadata);
+    if (!_neighborcache_mcache.heat_decay_pending())
         return;
-    const uint64_t cycle_start = _neighborcache_decay_cycle_start.load(std::memory_order_acquire);
-    if (cycle_start > now)
-        return;
-    const float divisor = std::min(
-        NEIGHBORCACHE_SCORE_UNIT_MAX,
-        static_cast<float>(std::exp2(static_cast<double>(now - cycle_start) / _neighborcache_decay_half_life_accesses)));
-    if (divisor < 2.0f)
-        return;
-    const uint32_t multiplier = static_cast<uint32_t>(NeighborCacheMetadataCache::kDecayScale / divisor);
     std::vector<std::unique_ptr<NeighborCacheTimedMutexGuard>> heap_locks;
     heap_locks.reserve(_neighborcache_heap_shard_count);
     for (size_t shard_index = 0; shard_index < _neighborcache_heap_shard_count; ++shard_index)
         heap_locks.emplace_back(
             std::make_unique<NeighborCacheTimedMutexGuard>(_neighborcache_heap_shards[shard_index].mu, NeighborCacheLockKind::Heap, !_neighborcache_query_owns_metadata));
-    _neighborcache_mcache.scale_scores(multiplier, _neighborcache_score_unit);
+    _neighborcache_mcache.halve_heat();
     const auto decay_heap = [&](std::vector<NeighborCacheHeapEntry> &heap, NeighborCacheHeapKind kind) {
         for (NeighborCacheHeapEntry &entry : heap)
-            entry.score = NeighborCacheMetadataCache::decay_heat(entry.score, multiplier);
+            entry.score /= 2;
         // Integer rounding can tie scores that were previously ordered by heat.
         // Restore the slot-ID tie order and update the reverse heap positions.
         for (size_t parent = heap.size() / 2; parent > 0; --parent)
@@ -12315,10 +12301,7 @@ template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::neighborcac
         decay_heap(shard.max_heap, NeighborCacheHeapKind::Max);
         decay_heap(shard.min_heap, NeighborCacheHeapKind::Min);
     }
-    _neighborcache_decay_cycle_start.store(now, std::memory_order_release);
-    _neighborcache_decay_cycles.fetch_add(1, std::memory_order_relaxed);
-    if (divisor < NEIGHBORCACHE_SCORE_UNIT_MAX)
-        _neighborcache_decay_early_cycles.fetch_add(1, std::memory_order_relaxed);
+    _neighborcache_decay_cycles.fetch_add(1, std::memory_order_release);
 }
 
 template <typename T, typename LabelT>
