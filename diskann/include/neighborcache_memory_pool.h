@@ -23,12 +23,24 @@ class NeighborCacheNcacheMutex
   public:
     void set_spin(bool spin)
     {
-        _spin = spin;
+        _mode = spin ? Mode::Spin : Mode::Shared;
+    }
+
+    void set_single_owner()
+    {
+        _mode = Mode::SingleOwner;
+    }
+
+    bool single_owner() const
+    {
+        return _mode == Mode::SingleOwner;
     }
 
     void lock()
     {
-        if (!_spin)
+        if (single_owner())
+            return;
+        if (_mode == Mode::Shared)
         {
             _mutex.lock();
             return;
@@ -49,34 +61,31 @@ class NeighborCacheNcacheMutex
 
     void unlock()
     {
-        if (_spin)
+        if (_mode == Mode::Spin)
             _flag.clear(std::memory_order_release);
-        else
+        else if (_mode == Mode::Shared)
             _mutex.unlock();
     }
 
     void lock_shared()
     {
-        if (_spin)
-        {
+        if (_mode == Mode::Spin)
             lock();
-            return;
-        }
-        _mutex.lock_shared();
+        else if (_mode == Mode::Shared)
+            _mutex.lock_shared();
     }
 
     void unlock_shared()
     {
-        if (_spin)
-        {
+        if (_mode == Mode::Spin)
             unlock();
-            return;
-        }
-        _mutex.unlock_shared();
+        else if (_mode == Mode::Shared)
+            _mutex.unlock_shared();
     }
 
   private:
-    bool _spin = false;
+    enum class Mode : uint8_t { Shared, Spin, SingleOwner };
+    Mode _mode = Mode::Shared;
     std::atomic_flag _flag = ATOMIC_FLAG_INIT;
     std::shared_mutex _mutex;
 };
@@ -106,6 +115,37 @@ template <typename T> class NeighborCacheMemoryPool
     void clear();
 
     void init(uint64_t capacity, uint64_t aligned_dim, uint64_t max_degree, uint64_t node_count);
+    void init(uint64_t capacity, uint64_t aligned_dim, uint64_t max_degree, uint64_t node_count,
+              uint64_t query_threads);
+
+    // Change ownership only when no queries or N-cache workers are running.
+    void set_single_owner(bool exclusive)
+    {
+        if (_shard_count != 1)
+            return;
+        if (exclusive)
+            _shards[0].mu.set_single_owner();
+        else
+            _shards[0].mu.set_spin(_spin_lock_enabled);
+    }
+
+    size_t shard_count() const
+    {
+        return _shard_count;
+    }
+
+    bool single_owner() const
+    {
+        return _shards[0].mu.single_owner();
+    }
+
+    bool can_borrow_lru_records(uint64_t batch_size) const
+    {
+        // Every hit moves to the head. Leave enough replaceable slots for all
+        // hits and admissions in this batch before any hit can reach the tail.
+        return single_owner() && !_clock_enabled && !_seed_hold_limit && _capacity >= _pinned.size() &&
+               _capacity - _pinned.size() >= batch_size;
+    }
 
     bool active() const
     {
@@ -196,6 +236,17 @@ template <typename T> class NeighborCacheMemoryPool
     bool copy_record(uint32_t node_id, char *dst, size_t capacity, size_t coord_bytes) const;
 
     bool should_admit(uint32_t node_id, uint32_t search_hop, bool &admitted_after_rejection);
+
+    struct AdmissionResult
+    {
+        uint32_t evicted = INVALID_NODE;
+        bool resident = false;
+    };
+
+    // A known miss is valid only if the sole owner has not admitted this ID
+    // since its lookup. Synchronized caches always recheck under the lock.
+    AdmissionResult admit_record(uint32_t node_id, const char *node_disk_buf, uint64_t disk_bytes_per_point,
+                                 uint32_t search_hop, bool admitted_after_rejection, bool known_miss);
 
     uint32_t try_admit(uint32_t node_id, const char *node_disk_buf, uint64_t disk_bytes_per_point,
                        uint64_t max_node_len_for_coords, uint32_t search_hop,

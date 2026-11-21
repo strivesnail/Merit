@@ -14,6 +14,7 @@
 #include <unordered_map>
 #include <utility>
 #include "defaults.h"
+#include "neighborcache_lazy_array.h"
 #include "tsl/robin_map.h"
 
 namespace diskann {
@@ -157,16 +158,25 @@ class NeighborCacheThreadPageCache {
     size_t threads_ = 0;
     uint64_t capacity_ = 0;
     bool reset_ = false, immutable_ = true, trim_zero_tail_ = true;
+    bool single_owner_ = false;
+    mutable bool owner_bound_ = false;
     uint32_t dynamic_base_ = 0;
     uint64_t dynamic_count_ = 0;
-    std::unique_ptr<std::atomic<uint64_t>[]> versions_;
+    NeighborCacheLazyArray<std::atomic<uint64_t>> versions_;
     // Only mutation/invalidation/writeback handoff uses these short metadata
     // locks. Hits never acquire a shared cache lock.
     std::array<std::mutex, 256> mutation_;
     using Hook = bool (*)(void *, uint32_t, const char *, bool);
+    using MembersHook = bool (*)(void *, uint32_t, const char *, bool, const uint32_t *, size_t);
     Hook hook_ = nullptr;
+    MembersHook members_hook_ = nullptr;
     void *hook_context_ = nullptr;
     Local *local(bool create) const {
+        if (single_owner_) {
+            if (create)
+                owner_bound_ = true;
+            return owner_bound_ ? locals_.get() : nullptr;
+        }
         auto it = bindings.find(this);
         if (it != bindings.end() && it->second.generation == generation_) return it->second.local;
         if (!create) return nullptr;
@@ -175,6 +185,11 @@ class NeighborCacheThreadPageCache {
         Local *l = &locals_[worker];
         bindings[this] = {generation_, l};
         return l;
+    }
+    std::unique_lock<std::mutex> lock_mutation(uint32_t key) {
+        if (single_owner_)
+            return {};
+        return std::unique_lock<std::mutex>(mutation_[key % mutation_.size()]);
     }
     static size_t hash(uint32_t key) { return uint64_t(key) * 11400714819323198485ull; }
     static uint32_t find(const Local &l, uint32_t key) {
@@ -218,7 +233,8 @@ class NeighborCacheThreadPageCache {
     }
     bool dynamic(uint32_t key) const { return versions_ && key>=dynamic_base_ && uint64_t(key-dynamic_base_)<dynamic_count_; }
     uint64_t version(uint32_t key) const {
-        return dynamic(key) ? versions_[key-dynamic_base_].load(std::memory_order_acquire) : 0;
+        const auto *entry = dynamic(key) ? versions_.find(key-dynamic_base_) : nullptr;
+        return entry == nullptr ? 0 : entry->load(std::memory_order_acquire);
     }
     bool valid(const Slot &s) const { return s.version==version(s.key); }
     static void forget_records(Local &l, uint32_t page_slot) {
@@ -231,14 +247,15 @@ class NeighborCacheThreadPageCache {
 
         auto &s=l.slots[i];
         if(s.dirty && dynamic(s.key)) {
-            std::unique_lock<std::mutex> lock(mutation_[s.key%mutation_.size()],std::defer_lock);
-            lock.lock();
+            auto lock = lock_mutation(s.key);
             // An obsolete replica must never write its bytes over the current D page.
             if(valid(s) && hook_) {
                 Bytes image;
                 const char *data=s.bytes.data();
                 if(!s.bytes.full()) { s.bytes.copy_to(image.data()); data=image.data(); }
-                if(!hook_(hook_context_,s.key,data,discard)) return false;
+                if(members_hook_) {
+                    if(!members_hook_(hook_context_,s.key,data,discard,s.members.data(),s.members.size())) return false;
+                } else if(!hook_(hook_context_,s.key,data,discard)) return false;
             }
         }
         forget_records(l,i);
@@ -274,10 +291,16 @@ class NeighborCacheThreadPageCache {
         if(immutable_) return;
         if(versions_ || uint64_t(base)+count>none) throw std::runtime_error("Invalid private D version range");
         dynamic_base_=base; dynamic_count_=count;
-        versions_=std::make_unique<std::atomic<uint64_t>[]>(count);
-        for(uint64_t i=0;i<count;i++) versions_[i].store(0,std::memory_order_relaxed);
+        versions_.assign(count);
     }
     void set_evict_hook(Hook h,void *ctx) { hook_=h; hook_context_=ctx; }
+    void set_member_evict_hook(MembersHook h) { members_hook_=h; }
+    // Select ownership before any query or background cache access.
+    void set_single_owner(bool enabled) {
+        single_owner_ = enabled && threads_ == 1;
+        owner_bound_ = false;
+    }
+    bool current_worker_active() const { return local(false) != nullptr; }
     bool enabled() const { return bool(locals_); }
     uint64_t capacity_pages() const { return capacity_; }
     // Called after the page payload and its membership have been published.
@@ -408,8 +431,7 @@ class NeighborCacheThreadPageCache {
     }
     void erase(uint32_t key) {
         if(dynamic(key)) {
-            std::unique_lock<std::mutex> lock(mutation_[key%mutation_.size()],std::defer_lock);
-            lock.lock();
+            auto lock = lock_mutation(key);
             versions_[key-dynamic_base_].fetch_add(1,std::memory_order_release);
         }
         auto *l=local(false); if(!l) return;
@@ -425,8 +447,7 @@ class NeighborCacheThreadPageCache {
         // Dirty maintenance snapshots are handed directly to the existing writer.
         if(!l) {
             if(!dynamic(key) || !overwrite) return false;
-            std::unique_lock<std::mutex> lock(mutation_[key%mutation_.size()],std::defer_lock);
-            lock.lock();
+            auto lock = lock_mutation(key);
             const uint64_t v=versions_[key-dynamic_base_].fetch_add(1,std::memory_order_acq_rel)+1;
             if(!dirty) return false;
             dirty->store(v,std::memory_order_release);
@@ -440,7 +461,8 @@ class NeighborCacheThreadPageCache {
         const bool inserting=i==none;
         if(inserting) { i=reserve(*l); if(i==none) return false; }
         std::unique_lock<std::mutex> lock;
-        if(dynamic(key)) {  lock=std::unique_lock<std::mutex>(mutation_[key%mutation_.size()]); }
+        if (dynamic(key))
+            lock = lock_mutation(key);
         if(disk_dirty && disk_dirty->load(std::memory_order_acquire)) {
             if(inserting) l->free.push_back(i);
             return false;

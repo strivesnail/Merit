@@ -19,7 +19,7 @@ target_link_libraries(neighborcache_backend PRIVATE OpenMP::OpenMP_CXX aio pthre
 include(CTest)
 if(BUILD_TESTING)
     # Exercise the same private-page implementation used by all four adapters.
-    foreach(case IN ITEMS prefetch_zero_tail prefetch_record_directory prefetch_private_records heat_sample)
+    foreach(case IN ITEMS prefetch_zero_tail prefetch_record_directory prefetch_private_records)
         add_executable(nc_${case} ${REF}/tests/${case}.cpp)
         target_include_directories(nc_${case} PRIVATE ${REF}/include)
         target_compile_options(nc_${case} PRIVATE -UNDEBUG)
@@ -137,5 +137,8 @@ if(BUILD_TESTING)
         add_test(NAME ${mode}_dynamic_page_expansion COMMAND nc_trace 260 4)
         set_tests_properties(${mode}_dynamic_page_expansion PROPERTIES TIMEOUT 120
             ENVIRONMENT "NEIGHBORCACHE_BACKEND_LIBRARY=$<TARGET_FILE:neighborcache_backend>;NEIGHBORCACHE_PREFETCH_THREAD_PRIVATE=${private_mode};NEIGHBORCACHE_FREEZE_MAINTENANCE=0;NEIGHBORCACHE_EXPAND_PREFETCH_PAGE=1")
+        add_test(NAME ${mode}_unaligned_record_trace COMMAND nc_trace 232 4 100)
+        set_tests_properties(${mode}_unaligned_record_trace PROPERTIES TIMEOUT 120
+            ENVIRONMENT "NEIGHBORCACHE_BACKEND_LIBRARY=$<TARGET_FILE:neighborcache_backend>;NEIGHBORCACHE_PREFETCH_THREAD_PRIVATE=${private_mode};NEIGHBORCACHE_FREEZE_MAINTENANCE=0")
     endforeach()
 endif()

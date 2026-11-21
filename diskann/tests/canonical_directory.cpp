@@ -17,10 +17,9 @@ class NeighborCacheAdapter
     }
     static void reset(Index &idx, size_t slots)
     {
-        idx._neighborcache_canon_slots.reset(new std::atomic<uint64_t>[slots]);
+        idx._neighborcache_canon_slots.assign(slots);
         idx._neighborcache_canon_mask = slots - 1;
         idx._neighborcache_canon_authoritative = 1;
-        for (size_t i = 0; i < slots; ++i) idx._neighborcache_canon_slots[i] = 0;
     }
     static bool same(const Index::NeighborCacheDiskLoc &a, const Index::NeighborCacheDiskLoc &b)
     {

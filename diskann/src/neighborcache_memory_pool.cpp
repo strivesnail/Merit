@@ -126,14 +126,21 @@ template <typename T> void NeighborCacheMemoryPool<T>::clear()
 template <typename T>
 void NeighborCacheMemoryPool<T>::init(uint64_t capacity, uint64_t aligned_dim, uint64_t max_degree, uint64_t node_count)
 {
+    init(capacity, aligned_dim, max_degree, node_count, kDefaultShardCount);
+}
+
+template <typename T>
+void NeighborCacheMemoryPool<T>::init(uint64_t capacity, uint64_t aligned_dim, uint64_t max_degree, uint64_t node_count,
+                                     uint64_t query_threads)
+{
     const char *clock = std::getenv("NEIGHBORCACHE_NCACHE_CLOCK");
     _clock_enabled = clock != nullptr && std::strtoull(clock, nullptr, 10) != 0;
     const char *spin_lock = std::getenv("NEIGHBORCACHE_NCACHE_SPIN");
     _spin_lock_enabled = spin_lock == nullptr || std::strtoull(spin_lock, nullptr, 10) != 0;
     const char *shard_count = std::getenv("NEIGHBORCACHE_NCACHE_SHARDS");
+    _shard_count = query_threads == 1 ? 1 : kDefaultShardCount;
     const uint64_t requested_shards =
-        shard_count == nullptr ? kDefaultShardCount : std::strtoull(shard_count, nullptr, 10);
-    _shard_count = kDefaultShardCount;
+        query_threads == 1 || shard_count == nullptr ? _shard_count : std::strtoull(shard_count, nullptr, 10);
     for (size_t candidate = 1; candidate <= kMaxShardCount; candidate <<= 1)
     {
         if (requested_shards == candidate)
@@ -447,6 +454,8 @@ template <typename T> bool NeighborCacheMemoryPool<T>::contains_evictable(uint32
 
 template <typename T> size_t NeighborCacheMemoryPool<T>::shard_index(uint32_t node_id) const
 {
+    if (_shard_count == 1)
+        return 0;
     constexpr uint64_t kHashMultiplier = 11400714819323198485ull;
     const uint32_t hash = static_cast<uint32_t>((static_cast<uint64_t>(node_id) * kHashMultiplier) >> 32);
     return static_cast<size_t>(hash) & (_shard_count - 1);
@@ -1363,6 +1372,15 @@ uint32_t NeighborCacheMemoryPool<T>::try_admit(uint32_t node_id, const char *nod
                                        bool admitted_after_rejection)
 {
     (void)max_node_len_for_coords;
+    return admit_record(node_id, node_disk_buf, disk_bytes_per_point, search_hop, admitted_after_rejection, false)
+        .evicted;
+}
+
+template <typename T>
+typename NeighborCacheMemoryPool<T>::AdmissionResult
+NeighborCacheMemoryPool<T>::admit_record(uint32_t node_id, const char *node_disk_buf, uint64_t disk_bytes_per_point,
+                                        uint32_t search_hop, bool admitted_after_rejection, bool known_miss)
+{
     const bool measure_shadow_cost = shadow_sampled_node(node_id);
     const auto shadow_cost_start =
         measure_shadow_cost ? std::chrono::steady_clock::now()
@@ -1377,17 +1395,20 @@ uint32_t NeighborCacheMemoryPool<T>::try_admit(uint32_t node_id, const char *nod
             _shadow_real_admit_ns.fetch_add(elapsed_ns, std::memory_order_relaxed);
             _shadow_real_admit_samples.fetch_add(1, std::memory_order_relaxed);
         }
-        return result;
+        return AdmissionResult{result, admitted};
     };
     Shard &shard = _shards[shard_index(node_id)];
     std::lock_guard<NeighborCacheNcacheMutex> lock(shard.mu);
     if (!_coords_buf || node_disk_buf == nullptr)
         return finish(INVALID_NODE, false);
-    const auto existing = shard.id_to_slot.find(node_id);
-    if (existing != shard.id_to_slot.end())
+    if (!known_miss || !shard.mu.single_owner())
     {
-        touch_or_mark_unlocked(shard, existing->second);
-        return finish(INVALID_NODE, false);
+        const auto existing = shard.id_to_slot.find(node_id);
+        if (existing != shard.id_to_slot.end())
+        {
+            touch_or_mark_unlocked(shard, existing->second);
+            return {INVALID_NODE, true};
+        }
     }
 
     const uint32_t *nhood_base = reinterpret_cast<const uint32_t *>(node_disk_buf + disk_bytes_per_point);

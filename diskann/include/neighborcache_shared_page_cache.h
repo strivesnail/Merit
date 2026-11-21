@@ -70,12 +70,12 @@ class NeighborCacheSharedPageCache
         std::free(_data);
     }
 
-    bool init(uint64_t capacity_pages, uint64_t query_threads = 1)
+    bool init(uint64_t capacity_pages, uint64_t query_threads = 1, bool force_private = false)
     {
         if (capacity_pages == 0)
             return false;
         const char *mode = std::getenv("NEIGHBORCACHE_PREFETCH_THREAD_PRIVATE");
-        if (mode && std::strcmp(mode, "1") == 0) {
+        if (force_private || (mode && std::strcmp(mode, "1") == 0)) {
             const char *frozen = std::getenv("NEIGHBORCACHE_FREEZE_MAINTENANCE");
             const char *reset = std::getenv("NEIGHBORCACHE_PREFETCH_RESET_EACH_QUERY");
             _private = std::make_unique<NeighborCacheThreadPageCache>();
@@ -133,6 +133,11 @@ class NeighborCacheSharedPageCache
     }
 
     bool thread_private() const { return bool(_private); }
+    void set_private_single_owner(bool enabled)
+    {
+        if (_private)
+            _private->set_single_owner(enabled);
+    }
     void register_private_records(uint32_t key, const uint32_t *ids, size_t count)
     {
         if (_private) _private->register_records(key, ids, count);
@@ -146,6 +151,11 @@ class NeighborCacheSharedPageCache
                                uint32_t missing_record=UINT32_MAX, size_t append_capacity=0)
     {
         return _private && _private->seed_snapshot(seed, key, ids, dst, missing_record, append_capacity);
+    }
+    bool private_worker_active() const { return _private && _private->current_worker_active(); }
+    void set_private_member_evict_hook(bool (*hook)(void *, uint32_t, const char *, bool, const uint32_t *, size_t))
+    {
+        if (_private) _private->set_member_evict_hook(hook);
     }
     bool copy_private_record(uint32_t id, size_t record_bytes, char *dst, bool current_version = false)
     {

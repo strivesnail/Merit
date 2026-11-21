@@ -3,7 +3,8 @@
 # Usage: QUERY=... OUTROOT=... LS="50 100 200" SYSTEMS="bfs_eqmem ncache neighborcache" run_1b_perturbed.sh
 export PATH=/home/jianz/miniconda3/bin:$PATH
 set -uo pipefail
-SEARCH=${SEARCH:-/home/jianz/workload/code/NeighborCache/diskann/build/apps/search_disk_index}
+REPO_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
+SEARCH=${SEARCH:-"$REPO_ROOT/diskann/build/apps/search_disk_index"}
 LIB=/tmp/neighborcache-link-deps/root/usr/lib/x86_64-linux-gnu:/home/jianz/miniconda3/lib
 INDEX=${INDEX:-/mnt/graid_single/sift1b/sift1b_index}
 : "${QUERY:?}" "${OUTROOT:?}"
@@ -67,7 +68,6 @@ run_neighborcache() { # $1=out $2=L
     NEIGHBORCACHE_SEED_T=2 NEIGHBORCACHE_DCACHE_EVICT_NCACHE_ON_COMMIT=0 \
     NEIGHBORCACHE_DEFERRED_NCACHE_PAGE_WRITE=${DEFERRED_WRITE:-1} NEIGHBORCACHE_PENDING_REQUIRE_FULL_PAGE=0 \
     NEIGHBORCACHE_PENDING_BUFFER_BYTES=4194304 "${NC_ENV[@]}" \
-    NEIGHBORCACHE_MCACHE_ADAPTIVE_UPDATE=0 NEIGHBORCACHE_MCACHE_EXPAND_SAMPLE=1 \
     NEIGHBORCACHE_MCACHE_MAX_EDGES=${MCACHE_MAX_EDGES:-64} \
     NEIGHBORCACHE_DCACHE_NET_GATE=${NET_GATE:-0} NEIGHBORCACHE_DCACHE_NET_WRITE_WEIGHT=${NET_WRITE_WEIGHT:-0} \
     NEIGHBORCACHE_DCACHE_BASE_READ_US=${BASE_READ_US:-40} NEIGHBORCACHE_DCACHE_READ_US=${DCACHE_READ_US:-50} \

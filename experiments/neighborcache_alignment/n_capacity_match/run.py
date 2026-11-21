@@ -13,11 +13,15 @@ import os
 import re
 import statistics as st
 import subprocess
+import sys
 import time
 from cache_control import clear_files, prefixed_files
 
 REPO = Path(__file__).resolve().parents[3]
-DEFAULT_ROOT = Path('/mnt/nvme2/nc_n_capacity_match_20261031')
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from cache_validation import LEGACY_MCACHE_HEAT_OPTIONS, checked_binary_digest
+
+DEFAULT_ROOT = Path('/mnt/nvme2/nc_n_capacity_match_full_heat')
 BASE = REPO / 'experiments/neighborcache_alignment/compact_memory/measured_configuration.json'
 REFERENCE = Path('/mnt/nvme2/nc_private_prefetch_fix_20261031/cost_final/bfs_1')
 
@@ -35,12 +39,16 @@ def run(root, mode, nodes, rep, prefetch_pages=None):
     if prefetch_pages is not None:tag+=f'_p{prefetch_pages}'
     out = root / tag
     if (out / 'result.json').exists():
+        if mode == 'nmd' and json.loads((out / 'command.json').read_text()).get(
+                'mcache_heat_updates') != 'every_expansion':
+            raise RuntimeError(f'{out} contains an earlier M-cache policy. Choose a fresh --root.')
         return json.loads((out / 'result.json').read_text())
-    out.mkdir(exist_ok=False)
     config = json.loads(BASE.read_text())
     cmd = config['command']
     cmd[2] = '0,20-23'
     cmd[3] = str(REPO / 'diskann/build/apps/search_disk_index')
+    binary_digest = checked_binary_digest(cmd[3], full_mcache_heat=(mode == 'nmd'))
+    out.mkdir(exist_ok=False)
     for key, value in {'--num_threads':'1', '--result_path':str(out/'result'),
                        '--dump_query_stats':str(out/'query_stats.csv'),
                        '--neighborcache_memory_gb':'2.0' if nodes else '0'}.items():
@@ -51,12 +59,12 @@ def run(root, mode, nodes, rep, prefetch_pages=None):
            if not k.startswith(('NC_', 'NEIGHBORCACHE_', 'OMP_'))}
     env.update(OMP_NUM_THREADS='1', OMP_DYNAMIC='FALSE', OMP_PROC_BIND='close',
                OMP_PLACES='{0}', NEIGHBORCACHE_QUERY_CPUS='0',
-               NEIGHBORCACHE_THREADS='1', NEIGHBORCACHE_QUERY_SCHEDULE='static',
-               NEIGHBORCACHE_HEAT_SAMPLE_SEED='20261031')
+               NEIGHBORCACHE_THREADS='1', NEIGHBORCACHE_QUERY_SCHEDULE='static')
     if nodes:
         env.update(NEIGHBORCACHE_NCACHE_CAP_NODES=str(nodes), NEIGHBORCACHE_NCACHE_COLD='1')
     if mode == 'nmd':
-        env.update({k:v for k,v in config['environment'].items() if k.startswith('NEIGHBORCACHE_')})
+        env.update({k:v for k,v in config['environment'].items()
+                    if k.startswith('NEIGHBORCACHE_') and k not in LEGACY_MCACHE_HEAT_OPTIONS})
         env.update(NEIGHBORCACHE_NCACHE_CAP_NODES=str(nodes), NEIGHBORCACHE_THREADS='1',
                    NEIGHBORCACHE_QUERY_CPUS='0', NEIGHBORCACHE_BG_CPUS='20-23',
                    NEIGHBORCACHE_SHARED_PAGE_CACHE_PAGES=str(2560 if prefetch_pages is None else prefetch_pages))
@@ -64,9 +72,11 @@ def run(root, mode, nodes, rep, prefetch_pages=None):
         env['NEIGHBORCACHE_NCACHE_ONLY'] = '1'
     # Query-local original-page reuse is enabled for BOTH schemes. Only NMD
     # receives a cross-query prefetch page budget, M, D, writer and stash.
-    cfg = dict(command=cmd, environment=env, binary_sha256=sha(cmd[3]),
+    cfg = dict(command=cmd, environment=env, binary_sha256=binary_digest,
                warmup_queries=20000, measured_queries=20000, threads=1,
                input_sha256=sha(cmd[cmd.index('--query_file')+1]))
+    if mode == 'nmd':
+        cfg['mcache_heat_updates'] = 'every_expansion'
     write(out/'command.json', cfg)
     actual = {k:v for k,v in os.environ.items()
               if not k.startswith(('NEIGHBORCACHE_', 'NC_', 'OMP_', 'PIPEANN_', 'AISAQ_'))}
@@ -78,6 +88,8 @@ def run(root, mode, nodes, rep, prefetch_pages=None):
     with (out/'run.out').open('w') as log:
         subprocess.run(cmd, env=actual, stdout=log, stderr=subprocess.STDOUT, check=True, timeout=900)
     log = (out/'run.out').read_text()
+    if mode == 'nmd':
+        assert 'NEIGHBORCACHE mcache heat: update=every_expansion' in log
     rows = re.findall(r'^\s*128\s+4\s+([\d.]+).*$', log, re.M)
     assert len(rows) == 2, (out, rows)
     with (out/'query_stats.csv').open() as source:

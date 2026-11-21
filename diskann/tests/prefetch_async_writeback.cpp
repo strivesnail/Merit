@@ -20,6 +20,139 @@ class NeighborCacheAdapter {
         }
     }
 public:
+    static void run_ranked_readback_seed()
+    {
+        setenv("NEIGHBORCACHE_DCACHE_UNBOUNDED", "1", 1);
+        setenv("NEIGHBORCACHE_MCACHE_CAP", "128", 1);
+        setenv("NEIGHBORCACHE_SEED_T", "5", 1);
+        setenv("NEIGHBORCACHE_REFRESH_THREAD", "0", 1);
+        std::shared_ptr<AlignedFileReader> reader;
+        Index idx(reader, Metric::L2);
+        idx._num_points = 128;
+        idx._max_nthreads = 1;
+        idx._data_dim = idx._aligned_dim = idx._disk_bytes_per_point = 128;
+        idx._max_degree = 64;
+        idx._max_node_len = 388;
+        idx._nnodes_per_sector = 3;
+        idx._neighborcache_mem_pool = std::make_unique<NeighborCacheMemoryPool<uint8_t>>();
+        auto &pool = *idx._neighborcache_mem_pool;
+        pool.init(32, 128, 64, 128);
+        pool.nhood_ptr(0)[0] = 3;
+        pool.nhood_ptr(0)[1] = 2;
+        pool.nhood_ptr(0)[2] = 3;
+        pool.nhood_ptr(0)[3] = 4;
+        pool.nhood_ptr(1)[0] = pool.nhood_ptr(2)[0] = 0;
+        pool.commit_initial_load({1, 2, 3}, {});
+        idx._query_sector_cache_enabled = true;
+        assert(idx._neighborcache_shared_cache.init(4, 1));
+        idx._neighborcache_shared_cache_dyn = true;
+        char prefix[] = "/tmp/nc_ranked_readback_XXXXXX";
+        const int temporary = mkstemp(prefix);
+        assert(temporary >= 0);
+        close(temporary);
+        unlink(prefix);
+        idx.enable_neighborcache_dynamic_3cache(true, prefix);
+        unlink((std::string(prefix) + "_neighborcache_dc.dyn.data").c_str());
+        assert(idx._neighborcache_ranked_readback_edges && !idx._neighborcache_real_io_coaccess);
+        assert(idx._neighborcache_parent_fetched_by_slot.capacity() == 0);
+        assert(idx._neighborcache_parent_fetched_owner.capacity() == 0);
+
+        NeighborCacheSharedPageCache::ReadSection query(idx._neighborcache_shared_cache);
+        SSDQueryScratch<uint8_t> scratch(128, 64);
+        idx.neighborcache_dyn_prepare_query(&scratch);
+        assert(!scratch.neighborcache_record_real_io);
+        const auto seed = idx._neighborcache_mcache.on_expand(1, idx._neighborcache_score_unit);
+        assert(seed.present);
+        alignas(uint32_t) std::array<char, 388> record{};
+        idx.neighborcache_dyn_note_base_load(2, 1, record.data(), &scratch);
+        for (unsigned i = 0; i < 2; ++i)
+            idx.neighborcache_dyn_note_base_load(3, 1, record.data(), &scratch);
+        for (unsigned i = 0; i < 3; ++i)
+            idx.neighborcache_dyn_note_base_load(4, 1, record.data(), &scratch);
+
+        NeighborCacheMetadataCache::Snapshot ranked;
+        assert(idx._neighborcache_mcache.snapshot(1, ranked, true));
+        const std::vector<std::pair<uint32_t, uint8_t>> expected{{4, 3}, {3, 2}, {2, 1}};
+        assert(ranked.significant == expected && ranked.score == seed.score);
+        assert(scratch.neighborcache_storage_node_order.empty());
+        assert(idx._neighborcache_payload_stash.empty());
+        idx.neighborcache_dyn_flush_dirty_heap(&scratch);
+        idx.neighborcache_dyn_maybe_refresh_pair();
+        uint32_t key = 0;
+        std::vector<uint32_t> members;
+        alignas(4096) std::array<char, bytes> page{};
+        assert(idx._neighborcache_shared_cache.private_seed_snapshot(1, key, members, page.data()));
+        assert((members == std::vector<uint32_t>{1, 3, 2}));
+        assert(idx.neighborcache_dyn_state_unlocked(seed.slot_id) == Index::NeighborCacheNodeState::Seed);
+        assert(idx._neighborcache_ready_pairs.empty() && idx._neighborcache_pending_pair_count == 0);
+        unsetenv("NEIGHBORCACHE_DCACHE_UNBOUNDED");
+        unsetenv("NEIGHBORCACHE_SEED_T");
+    }
+
+    static void run_shared_ncache_eviction()
+    {
+        setenv("NEIGHBORCACHE_NCACHE_SHARDS", "1", 1);
+        setenv("NEIGHBORCACHE_NCACHE_CLOCK", "1", 1);
+        setenv("NEIGHBORCACHE_NCACHE_ADMISSION", "mru", 1);
+        setenv("NEIGHBORCACHE_REFRESH_THREAD", "0", 1);
+        std::shared_ptr<AlignedFileReader> reader;
+        Index idx(reader, Metric::L2);
+        idx._num_points = 128;
+        idx._max_nthreads = 2;
+        idx._data_dim = idx._aligned_dim = idx._disk_bytes_per_point = 128;
+        idx._max_degree = 1;
+        idx._max_node_len = 136;
+        idx._nnodes_per_sector = 30;
+        idx._neighborcache_mem_pool = std::make_unique<NeighborCacheMemoryPool<uint8_t>>();
+        auto &pool = *idx._neighborcache_mem_pool;
+        pool.init(2, 128, 1, 128, 2);
+        for (uint32_t slot = 0; slot < 2; ++slot)
+            pool.nhood_ptr(slot)[0] = 0;
+        pool.commit_initial_load({1, 2}, {});
+        idx._query_sector_cache_enabled = true;
+        assert(idx._neighborcache_shared_cache.init(4, 2));
+        assert(idx._neighborcache_shared_cache.thread_private());
+        idx._neighborcache_shared_cache_dyn = true;
+        char prefix[] = "/tmp/nc_actual_victim_XXXXXX";
+        const int temporary = mkstemp(prefix);
+        assert(temporary >= 0);
+        close(temporary);
+        unlink(prefix);
+        idx.enable_neighborcache_dynamic_3cache(true, prefix);
+        unlink((std::string(prefix) + "_neighborcache_dc.dyn.data").c_str());
+        assert(!pool.single_owner() && !idx.neighborcache_tracks_pending_members());
+        // Keep candidate refresh from building pages while inspecting the heap.
+        idx._neighborcache_refresh_running.store(true);
+        const auto first = idx._neighborcache_mcache.on_expand(1, idx._neighborcache_score_unit);
+        const auto second = idx._neighborcache_mcache.on_expand(2, idx._neighborcache_score_unit);
+        idx.neighborcache_dyn_heap_upsert_unlocked(first.slot_id, first.score);
+        idx.neighborcache_dyn_heap_upsert_unlocked(second.slot_id, second.score);
+        assert(idx.neighborcache_dyn_heap_kind_unlocked(first.slot_id) == Index::NeighborCacheHeapKind::Max);
+        assert(idx.neighborcache_dyn_heap_kind_unlocked(second.slot_id) == Index::NeighborCacheHeapKind::Max);
+
+        // The preflight LRU tail is node 2. CLOCK gives it a second chance
+        // after a hit on another worker and picks node 1 at commit.
+        bool present = false;
+        assert(pool.inspect_admission(3, present) == 2 && !present);
+        std::thread([&] {
+            uint8_t *coords = nullptr;
+            std::pair<uint32_t, uint32_t *> neighbors;
+            assert(pool.lookup(2, coords, neighbors));
+        }).join();
+        SSDQueryScratch<uint8_t> scratch(128, 4096);
+        idx.neighborcache_dyn_prepare_query(&scratch);
+        const std::array<uint32_t, 34> record{};
+        assert(idx.neighborcache_dyn_admit_node(3, UINT32_MAX, reinterpret_cast<const char *>(record.data()), nullptr,
+                                               &scratch, 0, true) == 1);
+        assert(!pool.contains(1) && pool.contains(2));
+        assert(idx.neighborcache_dyn_heap_kind_unlocked(first.slot_id) == Index::NeighborCacheHeapKind::None);
+        assert(idx.neighborcache_dyn_heap_kind_unlocked(second.slot_id) == Index::NeighborCacheHeapKind::Max);
+        idx.neighborcache_dyn_on_ncache_evict(2, nullptr, /*eviction_completed=*/true);
+        assert(idx.neighborcache_dyn_heap_kind_unlocked(second.slot_id) == Index::NeighborCacheHeapKind::Max);
+        idx._neighborcache_refresh_running.store(false);
+        idx.enable_neighborcache_dynamic_3cache(false);
+    }
+
     static void run_storage_budget(bool unlimited) {
         setenv("NEIGHBORCACHE_DCACHE_CAP","1",1);
         setenv("NEIGHBORCACHE_DCACHE_SPACE_CAP_PAGES","1",1);
@@ -311,10 +444,10 @@ public:
         assert(ftruncate(fd, 128 * bytes) == 0);
         idx._neighborcache_dyn_write_fd = fd;
         idx._neighborcache_dyn_physical_cap = 128;
-        idx._neighborcache_prefetch_dirty.reset(new std::atomic<uint64_t>[128]);
-        idx._neighborcache_prefetch_writeback.reset(new std::atomic<uint32_t>[128]);
-        idx._neighborcache_dyn_page_readers.reset(new std::atomic<uint32_t>[128]);
-        idx._neighborcache_dyn_page_retired.reset(new std::atomic<uint8_t>[128]);
+        idx._neighborcache_prefetch_dirty.assign(128);
+        idx._neighborcache_prefetch_writeback.assign(128);
+        idx._neighborcache_dyn_page_readers.assign(128);
+        idx._neighborcache_dyn_page_retired.assign(128);
         for (unsigned p=0;p<128;++p) {
             idx._neighborcache_prefetch_dirty[p]=0;idx._neighborcache_prefetch_writeback[p]=0;
             idx._neighborcache_dyn_page_readers[p]=0;idx._neighborcache_dyn_page_retired[p]=0;
@@ -352,7 +485,9 @@ public:
         auto pause=[&]() {idx._neighborcache_dyn_writer_started=true;idx._neighborcache_dyn_writer_stop=false;};
         idx._query_sector_cache_enabled=true;idx._neighborcache_shared_cache_dyn=true;
         idx._nnodes_per_sector=10;idx._max_node_len=388;
-        idx._neighborcache_dyn_page_member_count.resize(128,1);
+        idx._neighborcache_dyn_page_member_count.assign(128, 0);
+        for (unsigned page = 0; page < 128; ++page)
+            idx._neighborcache_dyn_page_member_count[page] = 1;
         Index::NeighborCacheDiskLoc location{};
         location.sector=Index::NEIGHBORCACHE_DYN_SECTOR_BASE+1;location.slot=0;location.nsectors=1;
         idx._neighborcache_dc_map[42]={location};
@@ -467,10 +602,10 @@ public:
         assert(ftruncate(fd, 128 * bytes) == 0);
         idx._neighborcache_dyn_write_fd = fd;
         idx._neighborcache_dyn_physical_cap = 128;
-        idx._neighborcache_prefetch_dirty.reset(new std::atomic<uint64_t>[128]);
-        idx._neighborcache_prefetch_writeback.reset(new std::atomic<uint32_t>[128]);
-        idx._neighborcache_dyn_page_readers.reset(new std::atomic<uint32_t>[128]);
-        idx._neighborcache_dyn_page_retired.reset(new std::atomic<uint8_t>[128]);
+        idx._neighborcache_prefetch_dirty.assign(128);
+        idx._neighborcache_prefetch_writeback.assign(128);
+        idx._neighborcache_dyn_page_readers.assign(128);
+        idx._neighborcache_dyn_page_retired.assign(128);
         for (unsigned p=0;p<128;++p) {
             idx._neighborcache_prefetch_dirty[p]=0;idx._neighborcache_prefetch_writeback[p]=0;
             idx._neighborcache_dyn_page_readers[p]=0;idx._neighborcache_dyn_page_retired[p]=0;
@@ -512,4 +647,17 @@ public:
     }
 };
 }
-int main(){diskann::NeighborCacheAdapter::run_storage_budget(false);diskann::NeighborCacheAdapter::run_storage_budget(true);if(std::getenv("NEIGHBORCACHE_PREFETCH_THREAD_PRIVATE"))diskann::NeighborCacheAdapter::run_private();else diskann::NeighborCacheAdapter::run();std::cout<<"prefetch async writeback tests passed\n";}
+int main()
+{
+    diskann::NeighborCacheAdapter::run_storage_budget(false);
+    diskann::NeighborCacheAdapter::run_storage_budget(true);
+    if (std::getenv("NEIGHBORCACHE_PREFETCH_THREAD_PRIVATE"))
+    {
+        diskann::NeighborCacheAdapter::run_ranked_readback_seed();
+        diskann::NeighborCacheAdapter::run_private();
+        diskann::NeighborCacheAdapter::run_shared_ncache_eviction();
+    }
+    else
+        diskann::NeighborCacheAdapter::run();
+    std::cout << "prefetch async writeback tests passed\n";
+}

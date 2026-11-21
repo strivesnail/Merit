@@ -336,12 +336,8 @@ Native NeighborCache and all four adapters now share the following changes:
 - Seed packing copies resident N/stash records directly into the final page.
   N hits retain an owned snapshot copied under the N shard lock, so later slot
   reuse cannot change an acquired record.
-- Every acquired full record passes the node-heat gate (100%) before the
-  M-cache update decision/locking. Native search and adapter `selected` share
-  `neighborcache_heat_sample.h`; the gate no longer uses an RNG or skips first
-  registration. PQ-only candidates do not update node heat. Existing explicit
-  maintenance suspension and adaptive-update controls still apply.
-  `NEIGHBORCACHE_HEAT_SAMPLE_SEED` no longer affects this gate.
+- Native search and adapter `selected` update M-cache heat for every acquired
+  full record during online maintenance. PQ-only candidates do not update heat.
 - Successful dynamic prefetch publication completes seed insertion immediately:
   M state becomes `Seed`, the candidate moves out of the insertion heap, and
   pending-pair/member bookkeeping is released. SSD persistence still happens

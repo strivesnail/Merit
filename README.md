@@ -26,10 +26,10 @@ This tree is a **DiskANN fork** with NEIGHBORCACHE integrated in `diskann/` plus
 The current runtime can learn directly from the live query stream; it does not need to know whether the workload is uniform or contains moving hotspots.
 
 - **N-cache** stores complete nodes in DRAM. It uses 128 lock shards by default, an atomic membership bitmap for lock-free misses, a reader-writer lock, and CLOCK replacement. Adaptive mode samples nodes by ID (1/64 by default) and continuously simulates three independent shadow caches: normal MRU admission, Hop-12 reject-first, and Hop-8 reject-first. The shadow caches never serve queries. Every 25K queries, NEIGHBORCACHE estimates each policy's cost from its predicted misses and admissions, the measured device I/O time, and sampled real admission time. It switches immediately when the predicted gain is at least 2%, or after the same policy wins three consecutive windows by at least 0.5%. Evaluation starts only after the active shadow cache is full, avoiding cold-start decisions. No workload label or hit-rate range is used.
-- **M-cache** stores node and edge hotness metadata. Every 1,000 queries it measures the current-window hit rate. Each run of 25 consecutive windows below 20% reduces updates one step from 100% to 10%, then from 10% to 1%; six windows above 40% restore one level at a time.
+- **M-cache** stores node and edge hotness metadata. Native search and the shared backend update node heat on every expansion during online maintenance.
 - **D-cache** stores runtime-generated 4 KiB pages. Page membership is learned from nodes actually served by base storage or D-cache in the same query, rather than graph neighbors merely discovered during traversal. One in every 64 queries records a four-node neighborhood in the real storage-access order; each metadata entry retains at most 64 partners (`NEIGHBORCACHE_REAL_IO_MAX_PARTNERS`). With deferred writes enabled, an optional bounded write-back buffer retains complete payloads only for nodes already selected into pending seed pages. D-cache maintenance is controlled by net physical-I/O benefit, not hit rate alone. NEIGHBORCACHE counts base-index pages avoided and D-cache pages read. Twenty-five consecutive 1,000-query windows saving less than 0.1 page/query disable M/D-cache maintenance. While disabled, 1% of queries remain full probes. Two consecutive 10,000-query probe windows with at least 0.25 net page saved/query and at least 1.25 avoided pages per D-cache page read re-enable maintenance.
 
-The D-cache net-benefit gate is enabled automatically when `NEIGHBORCACHE_MCACHE_ADAPTIVE_UPDATE=1`; set `NEIGHBORCACHE_DCACHE_NET_GATE=0` to disable it.
+Set `NEIGHBORCACHE_DCACHE_NET_GATE=1` to enable the D-cache net-benefit gate.
 
 All reported dynamic D-cache benchmarks must use a full-cache warmup. Set
 `NEIGHBORCACHE_REQUIRE_FULL_DCACHE_WARMUP=1`; the search application repeatedly runs
@@ -68,7 +68,6 @@ export NEIGHBORCACHE_NCACHE_HOP_THRESHOLD=12
 export NEIGHBORCACHE_NCACHE_ADAPT_MIN_HOP=8
 export NEIGHBORCACHE_NCACHE_ADAPT_HALF_LIFE_QUERIES=25000
 export NEIGHBORCACHE_NCACHE_GHOST_PERCENT=10
-export NEIGHBORCACHE_MCACHE_ADAPTIVE_UPDATE=1
 
 ./diskann/build/apps/search_disk_index \
   --data_type uint8 --dist_fn l2 \
@@ -195,8 +194,7 @@ See `experiments/test-scripts/README.md` for more scripts (eviction, Layout A/B,
 | `NEIGHBORCACHE_DYNAMIC_3CACHE=1` | Enable online N/M/D three-cache mode |
 | `NEIGHBORCACHE_NCACHE_ADMISSION=adaptive_hop_reject` | Enable adaptive normal/Hop-12/Hop-8 admission |
 | `NEIGHBORCACHE_NCACHE_FAST_MISS=1` / `NEIGHBORCACHE_NCACHE_CLOCK=1` | Enable lock-free miss checks and CLOCK replacement |
-| `NEIGHBORCACHE_MCACHE_ADAPTIVE_UPDATE=1` | Enable adaptive M-cache update frequency and D-cache net-I/O gate |
-| `NEIGHBORCACHE_DCACHE_NET_GATE=0` | Explicitly disable the net-I/O gate |
+| `NEIGHBORCACHE_DCACHE_NET_GATE=1` | Enable the optional D-cache net-I/O gate |
 | `NEIGHBORCACHE_DCACHE_PROBE_PERIOD` | Probe period while D-cache is disabled; default `100` |
 | `NEIGHBORCACHE_PENDING_BUFFER_BYTES` | Pending seed-page payload buffer; default 4 MiB with deferred writes, `0` restores immediate first-eviction writes |
 | `NEIGHBORCACHE_PENDING_BUFFER_READY_PERCENT` | Optional early-write fullness threshold; default `0` (pressure-only) |

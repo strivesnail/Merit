@@ -459,9 +459,11 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
         ReadyToDeletion = 3
     };
 
+    struct NeighborCacheDynWriteJob;
     struct NeighborCachePendingFlush
     {
         uint32_t seed_id = 0;
+        std::shared_ptr<NeighborCacheDynWriteJob> directory_job;
         NeighborCacheMetadataCache::Snapshot snap;
         std::vector<uint32_t> member_ids;
         std::vector<std::vector<T>> member_coords;
@@ -577,8 +579,8 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
     // A dirty page is written to the D-cache only when the prefetch evicts it.
     bool _neighborcache_seed_prefetch = false;
     // Zero is clean; each in-memory update advances the dirty version.
-    std::unique_ptr<std::atomic<uint64_t>[]> _neighborcache_prefetch_dirty;
-    std::unique_ptr<std::atomic<uint32_t>[]> _neighborcache_prefetch_writeback;
+    NeighborCacheLazyArray<std::atomic<uint64_t>> _neighborcache_prefetch_dirty;
+    NeighborCacheLazyArray<std::atomic<uint32_t>> _neighborcache_prefetch_writeback;
     std::atomic<uint64_t> _neighborcache_writeback_queue_drops{0};
     std::atomic<uint64_t> _neighborcache_writeback_read_bypasses{0};
     std::mutex _neighborcache_seed_lock_mu;
@@ -626,6 +628,7 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
     std::atomic<uint64_t> _neighborcache_coread_write_dropped{0};
     bool _neighborcache_dcache_evict_ncache_on_commit = false;
     std::atomic<uint64_t> _neighborcache_dcache_ncache_erases{0};
+    bool _neighborcache_ranked_readback_edges = false;
     bool _neighborcache_real_io_coaccess = true;
     uint32_t _neighborcache_real_io_window = 4;
     uint32_t _neighborcache_real_io_sample_queries = 64;
@@ -639,23 +642,25 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
     std::atomic<uint64_t> _neighborcache_real_io_window_pairs{0};
     std::atomic<uint64_t> _neighborcache_real_io_adjacent_pairs{0};
     NeighborCacheMetadataCache _neighborcache_mcache;
+    bool _neighborcache_query_owns_metadata = false;
     // Members are stored densely by physical page to avoid one heap-allocated
     // vector per live d-cache page.
-    std::vector<uint32_t> _neighborcache_dyn_page_members;
+    NeighborCacheLazyArray<uint32_t> _neighborcache_dyn_page_members;
     // Second page of a seed. INVALID if this page has no partner.
     // Partners are adjacent physical pages so one read covers both.
-    std::vector<uint32_t> _neighborcache_dyn_page_sibling;
-    std::vector<uint8_t> _neighborcache_dyn_page_secondary;
+    NeighborCacheLazyArray<uint32_t> _neighborcache_dyn_page_sibling;
+    NeighborCacheLazyArray<uint8_t> _neighborcache_dyn_page_secondary;
     // Contiguous on-demand span. Length is stored on every page of the span.
-    std::vector<uint8_t> _neighborcache_dyn_page_span_len;
-    std::vector<uint32_t> _neighborcache_dyn_page_span_base;
-    std::vector<uint16_t> _neighborcache_dyn_page_member_count;
+    NeighborCacheLazyArray<uint8_t> _neighborcache_dyn_page_span_len;
+    NeighborCacheLazyArray<uint32_t> _neighborcache_dyn_page_span_base;
+    NeighborCacheLazyArray<uint16_t> _neighborcache_dyn_page_member_count;
     uint32_t _neighborcache_dyn_members_per_page = 1;
     // Member count of each seed's first successful page write. Same-seed rewrites keep it.
     tsl::robin_map<uint32_t, uint16_t> _neighborcache_seed_first_fill;
     std::array<std::unique_ptr<NeighborCacheDynLocShard>, NEIGHBORCACHE_DYN_LOC_MAX_SHARDS> _neighborcache_dyn_loc_shards;
     size_t _neighborcache_dyn_loc_shard_count = 64;
-    std::unique_ptr<std::atomic<uint64_t>[]> _neighborcache_canon_slots;
+    bool _neighborcache_d_metadata_shared = true;
+    NeighborCacheLazyArray<std::atomic<uint64_t>> _neighborcache_canon_slots;
     size_t _neighborcache_canon_mask = 0;
     std::atomic<uint8_t> _neighborcache_canon_authoritative{1};
     std::vector<uint32_t> _neighborcache_dyn_free;
@@ -663,12 +668,12 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
     uint64_t _neighborcache_dyn_page_cap = 4096;
     uint64_t _neighborcache_dyn_physical_cap = 0;
     uint32_t _neighborcache_dyn_next_page = 0;
-    std::unique_ptr<std::atomic<uint32_t>[]> _neighborcache_dyn_page_gen;
-    std::unique_ptr<std::atomic<uint32_t>[]> _neighborcache_dyn_page_readers;
-    std::unique_ptr<std::atomic<uint8_t>[]> _neighborcache_dyn_page_retired;
-    std::unique_ptr<std::atomic<uint32_t>[]> _neighborcache_span_reads;
-    std::unique_ptr<std::atomic<uint32_t>[]> _neighborcache_span_hits;
-    std::unique_ptr<std::atomic<uint32_t>[]> _neighborcache_span_decisions;
+    NeighborCacheLazyArray<std::atomic<uint32_t>> _neighborcache_dyn_page_gen;
+    NeighborCacheLazyArray<std::atomic<uint32_t>> _neighborcache_dyn_page_readers;
+    NeighborCacheLazyArray<std::atomic<uint8_t>> _neighborcache_dyn_page_retired;
+    NeighborCacheLazyArray<std::atomic<uint32_t>> _neighborcache_span_reads;
+    NeighborCacheLazyArray<std::atomic<uint32_t>> _neighborcache_span_hits;
+    NeighborCacheLazyArray<std::atomic<uint32_t>> _neighborcache_span_decisions;
     bool _neighborcache_span_adaptive = false;
     float _neighborcache_span_min_hits = 1.0f;
     uint32_t _neighborcache_span_explore = 16;
@@ -699,7 +704,11 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
         uint64_t enqueued_ns = 0;
         uint32_t prefetch_page = std::numeric_limits<uint32_t>::max();
         uint64_t prefetch_version = 0;
+        std::array<uint32_t, kNeighborCacheSeedPageSlots> directory_members{};
+        uint8_t directory_member_count = 0;
         std::shared_ptr<NeighborCacheDynWriteJob> predecessor;
+        std::shared_ptr<NeighborCacheDynWriteJob> directory_predecessor;
+        bool directory_done = false;
         std::mutex mu;
         std::condition_variable cv;
         bool done = false;
@@ -730,7 +739,8 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
     std::shared_ptr<NeighborCacheDynWriteJob> neighborcache_dyn_writer_submit(NeighborCacheDynWriteOp op, off_t offset, const void *data,
                                                              size_t nbytes, bool nonblocking = false,
                                                              uint32_t prefetch_page = std::numeric_limits<uint32_t>::max(),
-                                                             uint64_t prefetch_version = 0);
+                                                             uint64_t prefetch_version = 0, const uint32_t *directory_members = nullptr,
+                                                             size_t directory_member_count = 0);
     bool neighborcache_dyn_writer_submit_and_wait(NeighborCacheDynWriteOp op, off_t offset, const void *data, size_t nbytes);
     // Co-read: one commit thread allocates and hands the page to a writer.
     // Locations are published only after that pwrite finishes.
@@ -740,8 +750,16 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
     size_t neighborcache_dyn_loc_shard_index(uint32_t node_id) const;
     NeighborCacheDynLocShard &neighborcache_dyn_loc_shard(uint32_t node_id);
     const NeighborCacheDynLocShard &neighborcache_dyn_loc_shard(uint32_t node_id) const;
+    static bool neighborcache_dyn_loc_append_enabled()
+    {
+        static const bool enabled = [] {
+            const char *value = std::getenv("NEIGHBORCACHE_DYN_LOC_APPEND");
+            return value == nullptr || std::strtoull(value, nullptr, 10) != 0;
+        }();
+        return enabled;
+    }
     void neighborcache_dyn_loc_clear_unlocked();
-    void neighborcache_dyn_loc_add_unlocked(uint32_t node_id, const NeighborCacheDiskLoc &loc);
+    void neighborcache_dyn_loc_add_unlocked(uint32_t node_id, const NeighborCacheDiskLoc &loc, bool fresh_page = false);
     void neighborcache_dyn_loc_erase_sector_unlocked(uint32_t node_id, uint32_t sector);
     // One atomic word per slot: tag in the low 32 bits, page/slot in the high bits.
     // Query threads load it directly. 1 = live loc, 0 = not in the D-cache, -1 = use the locked map.
@@ -762,13 +780,18 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
         if (_neighborcache_dyn_enabled)
         {
             const NeighborCacheDynLocShard &shard = neighborcache_dyn_loc_shard(node_id);
-            NeighborCacheTimedSharedMutexGuard lock(shard.mu, NeighborCacheLockKind::DynamicShared, false);
+            NeighborCacheTimedSharedMutexGuard lock(shard.mu, NeighborCacheLockKind::DynamicShared, false,
+                                                    _neighborcache_d_metadata_shared);
             const auto it = shard.locations.find(node_id);
             if (it == shard.locations.end())
                 return;
             size_t index = 0;
-            for (const NeighborCacheDiskLoc &loc : it.value())
-                fn(loc, index++);
+            if (neighborcache_dyn_loc_append_enabled())
+                for (auto loc = it.value().rbegin(); loc != it.value().rend(); ++loc)
+                    fn(*loc, index++);
+            else
+                for (const NeighborCacheDiskLoc &loc : it.value())
+                    fn(loc, index++);
             return;
         }
         const auto it = _neighborcache_dc_map.find(node_id);
@@ -798,9 +821,9 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
     };
     std::array<NeighborCacheHeapShard, NEIGHBORCACHE_MAX_HEAP_SHARDS> _neighborcache_heap_shards;
     size_t _neighborcache_heap_shard_count = NEIGHBORCACHE_DEFAULT_HEAP_SHARDS;
-    std::vector<uint32_t> _neighborcache_heap_position;
-    std::vector<uint8_t> _neighborcache_heap_kind;
-    std::unique_ptr<std::atomic<uint8_t>[]> _neighborcache_node_state;
+    NeighborCacheLazyArray<uint32_t> _neighborcache_heap_position;
+    NeighborCacheLazyArray<uint8_t> _neighborcache_heap_kind;
+    NeighborCacheLazyArray<std::atomic<uint8_t>> _neighborcache_node_state;
     uint64_t _neighborcache_node_state_capacity = 0;
     tsl::robin_map<uint32_t, NeighborCacheReadyPair> _neighborcache_ready_pairs; // insertion slot -> pair
     static constexpr size_t NEIGHBORCACHE_PENDING_MEMBER_SHARDS = 64;
@@ -811,6 +834,7 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
     };
     std::array<std::unique_ptr<NeighborCachePendingMemberShard>, NEIGHBORCACHE_PENDING_MEMBER_SHARDS>
         _neighborcache_pending_member_shards;
+    size_t _neighborcache_pending_member_shard_count = NEIGHBORCACHE_PENDING_MEMBER_SHARDS;
     tsl::robin_map<uint32_t, uint32_t> _neighborcache_deletion_to_pending;
     uint64_t _neighborcache_reserved_free_pages = 0;
     std::atomic<uint32_t> _neighborcache_pending_pair_count{0};
@@ -975,8 +999,8 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
     uint32_t _neighborcache_monitor_warmup_queries = 0;
     uint32_t _neighborcache_monitor_interval_queries = 1000000;
     std::vector<tsl::robin_set<uint32_t>> _neighborcache_pending_buffer_buckets;
-    std::vector<NeighborCacheRecentChildren> _neighborcache_parent_fetched_by_slot;
-    std::vector<uint32_t> _neighborcache_parent_fetched_owner;
+    NeighborCacheLazyArray<NeighborCacheRecentChildren> _neighborcache_parent_fetched_by_slot;
+    NeighborCacheLazyArray<uint32_t> _neighborcache_parent_fetched_owner;
     struct alignas(64) NeighborCachePaddedMutex
     {
         std::mutex mu;
@@ -985,7 +1009,8 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
     mutable std::array<NeighborCachePaddedMutex, NEIGHBORCACHE_PARENT_FETCHED_STRIPES> _neighborcache_parent_fetched_mu;
     std::mutex &neighborcache_parent_fetched_mu(uint32_t slot_id) const
     {
-        return _neighborcache_parent_fetched_mu[slot_id & (NEIGHBORCACHE_PARENT_FETCHED_STRIPES - 1)].mu;
+        const size_t stripe = _max_nthreads == 1 ? 0 : slot_id & (NEIGHBORCACHE_PARENT_FETCHED_STRIPES - 1);
+        return _neighborcache_parent_fetched_mu[stripe].mu;
     }
     void neighborcache_mark_refresh_needed()
     {
@@ -1004,8 +1029,8 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
     }
     bool neighborcache_dyn_page_live(uint32_t page_idx) const
     {
-        return page_idx < _neighborcache_dyn_page_member_count.size() &&
-               _neighborcache_dyn_page_member_count[page_idx] != 0;
+        const auto *count = _neighborcache_dyn_page_member_count.find(page_idx);
+        return count != nullptr && *count != 0;
     }
     std::vector<uint32_t> neighborcache_dyn_now_page_ids(uint32_t seed_id, const NeighborCacheMetadataCache::Snapshot &snap,
                                                  bool ncache_only = false) const;
@@ -1020,7 +1045,7 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
     void neighborcache_dyn_drain_reclaim_unlocked();
     uint32_t neighborcache_dyn_alloc_contiguous_unlocked(uint32_t count);
     void neighborcache_dyn_maybe_mark_seed(uint32_t node_id);
-    void neighborcache_dyn_note_touch(const NeighborCacheMetadataCache::TouchResult &tr, SSDQueryScratch<T> *query_scratch);
+    bool neighborcache_dyn_note_touch(const NeighborCacheMetadataCache::TouchResult &tr, SSDQueryScratch<T> *query_scratch);
     void neighborcache_dyn_on_mcache_evict(uint32_t node_id, uint32_t slot_id);
     bool neighborcache_dyn_ncache_evictable(uint32_t node_id) const;
     bool neighborcache_dyn_heap_better_unlocked(const NeighborCacheHeapEntry &a, const NeighborCacheHeapEntry &b,
@@ -1054,6 +1079,7 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
     void neighborcache_pending_member_remove(uint32_t node_id, uint32_t insertion_slot);
     void neighborcache_pending_member_clear();
     void neighborcache_dyn_clear_ready_pair_unlocked(uint32_t insertion_slot, bool restore_states = true);
+    bool neighborcache_dyn_omit_min_heap() const;
     bool neighborcache_dyn_disk_is_full() const;
     bool neighborcache_dcache_updates_frozen() const;
     bool neighborcache_dyn_build_pending_flush(uint32_t seed_id, const NeighborCacheMetadataCache::Snapshot &snap,
@@ -1073,13 +1099,15 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
     void neighborcache_seed_page_unlink(uint32_t seed_id, const std::vector<uint32_t> &nbrs);
     void neighborcache_seed_page_enqueue(NeighborCachePendingFlush pf);
     void neighborcache_seed_page_flush_evicted(NeighborCacheSeedPage &page);
-    void neighborcache_seed_page_open(uint32_t seed_id);
+    enum class NeighborCacheSeedOpen { MissingPayload, Retry, Published };
+    NeighborCacheSeedOpen neighborcache_seed_page_open(
+        uint32_t seed_id, const NeighborCacheMetadataCache::Snapshot *ranking = nullptr);
     void neighborcache_seed_prefetch_finish_candidate(uint32_t seed_id, uint32_t insertion_slot);
     void neighborcache_seed_page_note(uint32_t node_id, uint32_t parent_id, const char *node_disk_buf);
     bool neighborcache_seed_page_lookup(uint32_t node_id, std::vector<T> &coords, std::vector<uint32_t> &nbrs);
     // Assembled seed pages live in the shared prefetch. No second page LRU.
     // A write locks only this seed; readers of the prefetch take no lock.
-    NeighborCacheSpinLock &neighborcache_seed_write_lock(uint32_t seed_id);
+    std::unique_lock<NeighborCacheSpinLock> neighborcache_lock_seed_write(uint32_t seed_id);
     bool neighborcache_seed_prefetch_publish(uint32_t seed_id, const std::vector<uint32_t> &ids,
                                      const std::vector<std::vector<T>> &coords,
                                      const std::vector<std::vector<uint32_t>> &nbrs);
@@ -1158,8 +1186,9 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
     void stop_neighborcache_dyn_commit_workers();
     void neighborcache_dyn_wait_for_commits();
     void neighborcache_dyn_commit_expired_pairs(uint32_t query_epoch, QueryStats *stats);
-    uint32_t neighborcache_dyn_admit_node(uint32_t node_id, const char *node_disk_buf, QueryStats *stats,
-                                  SSDQueryScratch<T> *query_scratch, uint32_t search_hop);
+    uint32_t neighborcache_dyn_admit_node(uint32_t node_id, uint32_t parent_id, const char *node_disk_buf,
+                                         QueryStats *stats, SSDQueryScratch<T> *query_scratch, uint32_t search_hop,
+                                         bool ncache_miss_known = false, bool mcache_heap_dirty = false);
     void neighborcache_dyn_note_base_load(uint32_t node_id, uint32_t parent, const char *node_disk_buf,
                                   SSDQueryScratch<T> *query_scratch);
     bool neighborcache_dyn_note_patch_candidate(uint32_t node_id, uint32_t parent, SSDQueryScratch<T> *query_scratch);
@@ -1193,7 +1222,7 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
     void neighborcache_dyn_trim_pending_buffer();
     void neighborcache_dyn_stash_evict_unlocked();
     void neighborcache_dyn_release_page_pin(uint32_t sector);
-    void neighborcache_dyn_on_ncache_evict(uint32_t node_id, QueryStats *stats);
+    void neighborcache_dyn_on_ncache_evict(uint32_t node_id, QueryStats *stats, bool eviction_completed = false);
     void neighborcache_family_note_read(uint32_t sector);
     void neighborcache_family_on_evict(uint32_t node_id);
     void neighborcache_family_link_unlocked(uint32_t node_id, uint32_t seed_id);
@@ -1264,7 +1293,13 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
     }
     void neighborcache_prefetch_mark_dirty(uint32_t page_idx);
     static bool neighborcache_prefetch_evict_hook(void *ctx, uint32_t key, const char *page, bool discard);
-    bool neighborcache_prefetch_on_evict(uint32_t key, const char *page, bool discard);
+    bool neighborcache_prefetch_on_evict(uint32_t key, const char *page, bool discard,
+                                         const uint32_t *members = nullptr, size_t count = 0);
+    static bool neighborcache_prefetch_member_evict_hook(void *ctx, uint32_t key, const char *page,
+                                                        bool discard, const uint32_t *members, size_t count);
+    bool neighborcache_defer_d_locations() const;
+    bool neighborcache_publish_written_locations(const NeighborCacheDynWriteJob &job);
+    void neighborcache_finish_directory_job(const std::shared_ptr<NeighborCacheDynWriteJob> &job);
     // Copies [base, base+nsectors) from the shared or query-local cache into dst; all or nothing.
     bool neighborcache_cache_get_range(SSDQueryScratch<T> *query_scratch, uint32_t base, uint16_t nsectors, char *dst);
     // Pointer to the packed node at (sector, slot) inside the shared page cache, or nullptr on miss.

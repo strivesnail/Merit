@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 from matplotlib.ticker import FuncFormatter
 
 parser=argparse.ArgumentParser(description=__doc__)
-parser.add_argument('--root',type=Path,default=Path('/mnt/nvme2/nc_n_capacity_match_20261031'))
+parser.add_argument('--root',type=Path,default=Path('/mnt/nvme2/nc_n_capacity_match_full_heat'))
 args=parser.parse_args(); root=args.root
 raw=json.loads((root/'results.json').read_text())
 groups={}

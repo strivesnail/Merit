@@ -72,8 +72,11 @@ inline void neighborcache_lock_record(NeighborCacheLockKind kind, uint64_t wait_
 class NeighborCacheTimedMutexGuard
 {
   public:
-    NeighborCacheTimedMutexGuard(std::mutex &mu, NeighborCacheLockKind kind) : _mu(mu), _kind(kind)
+    NeighborCacheTimedMutexGuard(std::mutex &mu, NeighborCacheLockKind kind, bool enabled = true)
+        : _mu(mu), _kind(kind), _owns(enabled)
     {
+        if (!_owns)
+            return;
         _sampled = neighborcache_lock_should_sample(kind);
         const uint64_t before = _sampled ? neighborcache_lock_now_ns() : 0;
         _mu.lock();
@@ -86,6 +89,8 @@ class NeighborCacheTimedMutexGuard
 
     ~NeighborCacheTimedMutexGuard()
     {
+        if (!_owns)
+            return;
         if (_sampled)
             neighborcache_lock_record(_kind, _wait_ns, neighborcache_lock_now_ns() - _locked_at);
         _mu.unlock();
@@ -97,6 +102,7 @@ class NeighborCacheTimedMutexGuard
   private:
     std::mutex &_mu;
     NeighborCacheLockKind _kind;
+    bool _owns;
     bool _sampled = false;
     uint64_t _wait_ns = 0;
     uint64_t _locked_at = 0;
@@ -105,9 +111,11 @@ class NeighborCacheTimedMutexGuard
 template <typename Mutex> class NeighborCacheTimedSharedMutexGuard
 {
   public:
-    NeighborCacheTimedSharedMutexGuard(Mutex &mu, NeighborCacheLockKind kind, bool exclusive)
-        : _mu(mu), _kind(kind), _exclusive(exclusive)
+    NeighborCacheTimedSharedMutexGuard(Mutex &mu, NeighborCacheLockKind kind, bool exclusive, bool enabled = true)
+        : _mu(mu), _kind(kind), _exclusive(exclusive), _owns(enabled)
     {
+        if (!_owns)
+            return;
         _sampled = neighborcache_lock_should_sample(kind);
         const uint64_t before = _sampled ? neighborcache_lock_now_ns() : 0;
         if (_exclusive)

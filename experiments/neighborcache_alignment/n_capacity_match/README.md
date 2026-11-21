@@ -2,7 +2,8 @@
 
 This experiment changes N capacity alone in online native NeighborCache. M is
 131,072 entries, D is 65,536 SSD pages / 256 MiB, private prefetch is 2,560 pages /
-10 MiB, stash capacity is 424,742 nodes, and node heat sampling is 1/10. Query
+10 MiB, and stash capacity is 424,742 nodes. New runs update M-cache heat on
+every node expansion during online maintenance. Query
 worker 0 is pinned to CPU 0; background workers use CPUs 20-23. The canonical
 accelerator has 1,048,576 slots; private page zero-tail storage is enabled.
 

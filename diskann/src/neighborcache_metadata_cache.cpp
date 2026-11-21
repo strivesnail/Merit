@@ -5,23 +5,18 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
-#include <functional>
-#include <iostream>
-#include <random>
-#include <thread>
 
 namespace diskann
 {
 
 NeighborCacheMetadataCache::NeighborCacheMetadataCache()
 {
-    for (auto &shard : _shards)
-        shard = std::make_unique<Shard>();
+    _shards.push_back(std::make_unique<Shard>());
 }
 
-size_t NeighborCacheMetadataCache::shard_index(uint32_t node_id)
+size_t NeighborCacheMetadataCache::shard_index(uint32_t node_id) const
 {
-    return static_cast<size_t>(node_id % kShardCount);
+    return shard_count() == 1 ? 0 : static_cast<size_t>(node_id % kShardCount);
 }
 
 void NeighborCacheMetadataCache::clear()
@@ -29,17 +24,17 @@ void NeighborCacheMetadataCache::clear()
     _capacity.store(0, std::memory_order_relaxed);
 
     std::vector<std::unique_ptr<NeighborCacheTimedSharedMutexGuard<std::shared_mutex>>> locks;
-    locks.reserve(kShardCount);
+    locks.reserve(shard_count());
     for (auto &shard : _shards)
         locks.emplace_back(
-            std::make_unique<NeighborCacheTimedSharedMutexGuard<std::shared_mutex>>(shard->mu, NeighborCacheLockKind::Metadata, true));
+            std::make_unique<NeighborCacheTimedSharedMutexGuard<std::shared_mutex>>(shard->mu, NeighborCacheLockKind::Metadata, true, _shared));
 
     for (auto &shard_ptr : _shards)
     {
         Shard &shard = *shard_ptr;
         shard.node_to_slot.clear();
         shard.scores.clear();
-        shard.slot_to_node.reset();
+        shard.slot_to_node.clear();
         std::vector<std::vector<Edge>>().swap(shard.edges_by_slot);
         shard.evictable.clear();
         shard.next_unused_slot = 0;
@@ -53,37 +48,21 @@ void NeighborCacheMetadataCache::clear()
     _total_size.store(0, std::memory_order_relaxed);
     _total_edges.store(0, std::memory_order_relaxed);
     _total_evictable.store(0, std::memory_order_relaxed);
-    _adaptive_update_enabled = false;
     _membership_words.reset();
     _membership_word_count = 0;
     _node_count = 0;
-    _update_denominator.store(1, std::memory_order_relaxed);
-    for (size_t index = 0; index < kShardCount; ++index)
-    {
-        _adaptive_counters[index].observed_hits.store(0, std::memory_order_relaxed);
-        _adaptive_counters[index].observed_misses.store(0, std::memory_order_relaxed);
-        _adaptive_counters[index].performed_updates.store(0, std::memory_order_relaxed);
-        _adaptive_counters[index].skipped_updates.store(0, std::memory_order_relaxed);
-    }
-    _adaptive_query_count.store(0, std::memory_order_relaxed);
-    {
-        std::lock_guard<std::mutex> adaptive_lock(_adaptive_mu);
-        _adaptive_last_hits = 0;
-        _adaptive_last_misses = 0;
-        _adaptive_ewma_hit_rate = 0.0;
-        _adaptive_low_stages = 0;
-        _adaptive_high_stages = 0;
-        _adaptive_transitions = 0;
-        _adaptive_ewma_initialized = false;
-    }
+    _stable_slots = false;
 }
 
-void NeighborCacheMetadataCache::init(uint64_t capacity, uint8_t sig_threshold, uint64_t node_count)
+void NeighborCacheMetadataCache::init(uint64_t capacity, uint8_t sig_threshold, uint64_t node_count,
+                                      bool index_ids_only, Access access)
 {
     clear();
-    const char *adaptive_update = std::getenv("NEIGHBORCACHE_MCACHE_ADAPTIVE_UPDATE");
-    _adaptive_update_enabled =
-        adaptive_update != nullptr && std::strtoull(adaptive_update, nullptr, 10) != 0;
+    _shared = access != Access::SingleOwner;
+    _shards.resize(access == Access::Sharded ? kShardCount : 1);
+    for (auto &shard : _shards)
+        if (!shard)
+            shard = std::make_unique<Shard>();
     const char *edge_heat_decay = std::getenv("NEIGHBORCACHE_EDGE_HEAT_DECAY");
     _edge_heat_decay = edge_heat_decay == nullptr || std::strtoull(edge_heat_decay, nullptr, 10) != 0;
     const char *max_edges = std::getenv("NEIGHBORCACHE_MCACHE_MAX_EDGES");
@@ -94,7 +73,7 @@ void NeighborCacheMetadataCache::init(uint64_t capacity, uint8_t sig_threshold, 
     _node_count = node_count;
     const char *lookup_bitmap = std::getenv("NEIGHBORCACHE_MCACHE_LOOKUP_BITMAP");
     const bool accelerate_lookups = lookup_bitmap != nullptr && std::strcmp(lookup_bitmap, "0") != 0;
-    if ((_adaptive_update_enabled || accelerate_lookups) && _node_count > 0)
+    if (accelerate_lookups && _node_count > 0)
     {
         _membership_word_count = (_node_count + 63) / 64;
         _membership_words = std::make_unique<std::atomic<uint64_t>[]>(_membership_word_count);
@@ -102,35 +81,38 @@ void NeighborCacheMetadataCache::init(uint64_t capacity, uint8_t sig_threshold, 
             _membership_words[index].store(0, std::memory_order_relaxed);
     }
     const uint64_t effective_capacity = std::min<uint64_t>(capacity, static_cast<uint64_t>(kInvalid));
+    // Both IDs and capacity are distributed across shards in the same order.
+    _stable_slots = index_ids_only && node_count != 0 && effective_capacity >= node_count;
     const char *eager_edges = std::getenv("NEIGHBORCACHE_MCACHE_EAGER_EDGE_SLOTS");
     const bool eager_edge_slots = eager_edges != nullptr && std::strcmp(eager_edges, "0") != 0;
     const uint32_t slot_stride =
-        effective_capacity == 0 ? 0 : static_cast<uint32_t>((effective_capacity + kShardCount - 1) / kShardCount);
-    const uint64_t base_capacity = effective_capacity / kShardCount;
-    const uint64_t extra_shards = effective_capacity % kShardCount;
+        effective_capacity == 0 ? 0 : static_cast<uint32_t>((effective_capacity + shard_count() - 1) / shard_count());
+    const uint64_t base_capacity = effective_capacity / shard_count();
+    const uint64_t extra_shards = effective_capacity % shard_count();
 
     std::vector<std::unique_ptr<NeighborCacheTimedSharedMutexGuard<std::shared_mutex>>> locks;
-    locks.reserve(kShardCount);
+    locks.reserve(shard_count());
     for (auto &shard : _shards)
         locks.emplace_back(
-            std::make_unique<NeighborCacheTimedSharedMutexGuard<std::shared_mutex>>(shard->mu, NeighborCacheLockKind::Metadata, true));
+            std::make_unique<NeighborCacheTimedSharedMutexGuard<std::shared_mutex>>(shard->mu, NeighborCacheLockKind::Metadata, true, _shared));
 
     _sig_t.store(sig_threshold == 0 ? kDefaultSigT : sig_threshold, std::memory_order_relaxed);
     _slot_stride.store(slot_stride, std::memory_order_relaxed);
-    for (size_t shard_id = 0; shard_id < kShardCount; ++shard_id)
+    for (size_t shard_id = 0; shard_id < shard_count(); ++shard_id)
     {
         Shard &shard = *_shards[shard_id];
         shard.capacity = base_capacity + (shard_id < extra_shards ? 1 : 0);
         shard.scores.assign(static_cast<size_t>(shard.capacity), 0.0f);
-        shard.slot_to_node.reset(new std::atomic<uint32_t>[static_cast<size_t>(shard.capacity)]);
-        for (uint64_t slot = 0; slot < shard.capacity; ++slot)
-            shard.slot_to_node[slot].store(kInvalid, std::memory_order_relaxed);
+        shard.slot_to_node.assign(static_cast<size_t>(shard.capacity), kInvalid);
         if (eager_edge_slots)
             shard.edges_by_slot.resize(static_cast<size_t>(shard.capacity));
         shard.evictable.assign(static_cast<size_t>(shard.capacity), 0);
         shard.next_unused_slot = 0;
-        shard.nonseed_prev.assign(static_cast<size_t>(shard.capacity), kInvalid);
-        shard.nonseed_next.assign(static_cast<size_t>(shard.capacity), kInvalid);
+        if (!_stable_slots)
+        {
+            shard.nonseed_prev.assign(static_cast<size_t>(shard.capacity), kInvalid);
+            shard.nonseed_next.assign(static_cast<size_t>(shard.capacity), kInvalid);
+        }
         shard.nonseed_head = kInvalid;
         shard.nonseed_tail = kInvalid;
     }
@@ -174,7 +156,7 @@ uint64_t NeighborCacheMetadataCache::edge_descriptor_capacity_bytes() const
     uint64_t bytes = 0;
     for (const auto &shard : _shards)
     {
-        NeighborCacheTimedSharedMutexGuard lock(shard->mu, NeighborCacheLockKind::Metadata, false);
+        NeighborCacheTimedSharedMutexGuard lock(shard->mu, NeighborCacheLockKind::Metadata, false, _shared);
         bytes += shard->edges_by_slot.capacity() * sizeof(std::vector<Edge>);
     }
     return bytes;
@@ -259,6 +241,22 @@ uint32_t NeighborCacheMetadataCache::evict_one_unlocked(Shard &shard, size_t sha
     return victim;
 }
 
+NeighborCacheMetadataCache::TouchResult NeighborCacheMetadataCache::touch_existing_unlocked(
+    Shard &shard, size_t shard_id, uint32_t node_id, uint32_t local_slot, float score_delta)
+{
+    if (score_delta > 0.0f)
+        shard.scores[local_slot] += score_delta;
+    if (!_stable_slots)
+        touch_unlocked(shard, local_slot);
+    TouchResult r;
+    r.node_id = node_id;
+    r.slot_id = static_cast<uint32_t>(static_cast<uint64_t>(shard_id) *
+        _slot_stride.load(std::memory_order_relaxed) + local_slot);
+    r.score = shard.scores[local_slot];
+    r.present = true;
+    return r;
+}
+
 NeighborCacheMetadataCache::TouchResult NeighborCacheMetadataCache::touch_or_insert_unlocked(Shard &shard, size_t shard_id,
                                                                             uint32_t node_id, float score_delta)
 {
@@ -266,24 +264,17 @@ NeighborCacheMetadataCache::TouchResult NeighborCacheMetadataCache::touch_or_ins
     auto it = shard.node_to_slot.find(node_id);
     if (it != shard.node_to_slot.end())
     {
-        const uint32_t local_slot = it->second;
-        if (score_delta > 0.0f)
-            shard.scores[local_slot] += score_delta;
-        touch_unlocked(shard, local_slot);
-        const uint32_t slot_stride = _slot_stride.load(std::memory_order_relaxed);
-        r.node_id = node_id;
-        r.slot_id = static_cast<uint32_t>(static_cast<uint64_t>(shard_id) * slot_stride + local_slot);
-        r.score = shard.scores[local_slot];
-        r.present = true;
-        return r;
+        return touch_existing_unlocked(shard, shard_id, node_id, it->second, score_delta);
     }
 
-    if (shard.capacity == 0)
+    if (shard.capacity == 0 || (_stable_slots && node_id >= _node_count))
         return r;
 
     uint32_t local_slot = kInvalid;
     if (shard.node_to_slot.size() >= shard.capacity)
     {
+        if (_stable_slots)
+            return r;
         uint32_t evicted_slot = kInvalid;
         const uint32_t ev = evict_one_unlocked(shard, shard_id, evicted_slot, local_slot);
         if (ev == kInvalid)
@@ -318,12 +309,14 @@ NeighborCacheMetadataCache::TouchResult NeighborCacheMetadataCache::touch_or_ins
         static_cast<uint32_t>(static_cast<uint64_t>(shard_id) * slot_stride + local_slot);
     shard.scores[local_slot] = std::max(score_delta, 0.0f);
     shard.evictable[local_slot] = 1;
-    membership_set(node_id);
     shard.node_to_slot.insert({node_id, local_slot});
-    nonseed_push_front_unlocked(shard, local_slot);
+    if (!_stable_slots)
+        nonseed_push_front_unlocked(shard, local_slot);
     shard.slot_to_node[local_slot].store(node_id, std::memory_order_release);
     _total_size.fetch_add(1, std::memory_order_relaxed);
     _total_evictable.fetch_add(1, std::memory_order_relaxed);
+    // Publish membership only once the record is fully initialized.
+    membership_set(node_id);
     r.node_id = node_id;
     r.slot_id = slot_id;
     r.score = shard.scores[local_slot];
@@ -337,211 +330,13 @@ NeighborCacheMetadataCache::TouchResult NeighborCacheMetadataCache::on_expand(ui
 {
     const size_t shard_id = shard_index(node_id);
     Shard &shard = *_shards[shard_id];
-    NeighborCacheTimedSharedMutexGuard lock(shard.mu, NeighborCacheLockKind::Metadata, true);
+    NeighborCacheTimedSharedMutexGuard lock(shard.mu, NeighborCacheLockKind::Metadata, true, _shared);
     return touch_or_insert_unlocked(shard, shard_id, node_id, score_unit.load(std::memory_order_acquire));
-}
-
-NeighborCacheMetadataCache::UpdateDecision NeighborCacheMetadataCache::plan_expand_update(uint32_t node_id, bool force_update,
-                                                                           bool suppress_update)
-{
-    UpdateDecision decision;
-    if (!_adaptive_update_enabled)
-    {
-        decision.update = !suppress_update;
-        return decision;
-    }
-
-    const size_t counter_shard = shard_index(node_id);
-    decision.observed_hit = membership_contains(node_id);
-    if (decision.observed_hit)
-        _adaptive_counters[counter_shard].observed_hits.fetch_add(1, std::memory_order_relaxed);
-    else
-        _adaptive_counters[counter_shard].observed_misses.fetch_add(1, std::memory_order_relaxed);
-
-    const uint32_t denominator = _update_denominator.load(std::memory_order_relaxed);
-    if (force_update)
-        decision.update = true;
-    else if (suppress_update)
-        decision.update = false;
-    else if (denominator > 1)
-    {
-        thread_local uint32_t state =
-            static_cast<uint32_t>(std::hash<std::thread::id>{}(std::this_thread::get_id())) ^ 0x9e3779b9u;
-        state = state * 1664525u + 1013904223u;
-        decision.update = state % denominator == 0;
-    }
-
-    if (decision.update)
-        _adaptive_counters[counter_shard].performed_updates.fetch_add(1, std::memory_order_relaxed);
-    else
-        _adaptive_counters[counter_shard].skipped_updates.fetch_add(1, std::memory_order_relaxed);
-    return decision;
-}
-
-void NeighborCacheMetadataCache::on_query_end()
-{
-    if (!_adaptive_update_enabled)
-        return;
-
-    constexpr uint64_t stage_queries = 1000;
-    constexpr uint64_t half_life_queries = 25000;
-    constexpr double low_hit_rate = 0.20;
-    constexpr double high_hit_rate = 0.40;
-    const uint64_t query_count = _adaptive_query_count.fetch_add(1, std::memory_order_relaxed) + 1;
-    if (query_count % stage_queries != 0)
-        return;
-
-    std::lock_guard<std::mutex> lock(_adaptive_mu);
-    uint64_t hits = 0;
-    uint64_t misses = 0;
-    for (size_t index = 0; index < kShardCount; ++index)
-    {
-        hits += _adaptive_counters[index].observed_hits.load(std::memory_order_relaxed);
-        misses += _adaptive_counters[index].observed_misses.load(std::memory_order_relaxed);
-    }
-    const uint64_t hit_delta = hits - _adaptive_last_hits;
-    const uint64_t miss_delta = misses - _adaptive_last_misses;
-    _adaptive_last_hits = hits;
-    _adaptive_last_misses = misses;
-    const uint64_t access_delta = hit_delta + miss_delta;
-    if (access_delta == 0)
-        return;
-
-    const double hit_rate = static_cast<double>(hit_delta) / static_cast<double>(access_delta);
-    const double decay =
-        std::pow(0.5, static_cast<double>(stage_queries) / static_cast<double>(half_life_queries));
-    if (!_adaptive_ewma_initialized)
-    {
-        _adaptive_ewma_hit_rate = hit_rate;
-        _adaptive_ewma_initialized = true;
-    }
-    else
-    {
-        _adaptive_ewma_hit_rate =
-            decay * _adaptive_ewma_hit_rate + (1.0 - decay) * hit_rate;
-    }
-
-    _adaptive_low_stages = hit_rate < low_hit_rate ? _adaptive_low_stages + 1 : 0;
-    _adaptive_high_stages = hit_rate > high_hit_rate ? _adaptive_high_stages + 1 : 0;
-    const uint32_t half_life_stages =
-        static_cast<uint32_t>(half_life_queries / stage_queries);
-    const uint32_t recovery_stages = std::max<uint32_t>(1, half_life_stages / 4);
-    const uint32_t current = _update_denominator.load(std::memory_order_relaxed);
-    uint32_t next = current;
-    if (_adaptive_low_stages >= half_life_stages)
-    {
-        if (current == 1)
-            next = 10;
-        else
-            next = 100;
-        _adaptive_low_stages = 0;
-        _adaptive_high_stages = 0;
-    }
-    else if (_adaptive_high_stages >= recovery_stages)
-    {
-        if (current == 100)
-            next = 10;
-        else
-            next = 1;
-        _adaptive_low_stages = 0;
-        _adaptive_high_stages = 0;
-    }
-    if (next != current)
-    {
-        _update_denominator.store(next, std::memory_order_relaxed);
-        ++_adaptive_transitions;
-        std::cout << "NEIGHBORCACHE mcache adaptive: queries=" << query_count
-                  << " update=1/" << current << "->1/" << next
-                  << " window_hit_rate=" << hit_rate
-                  << " ewma_hit_rate=" << _adaptive_ewma_hit_rate
-                  << " maintenance=" << (next >= 100 ? "suspended" : "active") << std::endl;
-    }
-}
-
-double NeighborCacheMetadataCache::adaptive_hit_rate() const
-{
-    std::lock_guard<std::mutex> lock(_adaptive_mu);
-    return _adaptive_ewma_hit_rate;
-}
-
-uint64_t NeighborCacheMetadataCache::observed_accesses() const
-{
-    uint64_t total = 0;
-    for (size_t index = 0; index < kShardCount; ++index)
-    {
-        total += _adaptive_counters[index].observed_hits.load(std::memory_order_relaxed);
-        total += _adaptive_counters[index].observed_misses.load(std::memory_order_relaxed);
-    }
-    return total;
-}
-
-uint64_t NeighborCacheMetadataCache::performed_updates() const
-{
-    uint64_t total = 0;
-    for (size_t index = 0; index < kShardCount; ++index)
-        total += _adaptive_counters[index].performed_updates.load(std::memory_order_relaxed);
-    return total;
-}
-
-uint64_t NeighborCacheMetadataCache::skipped_updates() const
-{
-    uint64_t total = 0;
-    for (size_t index = 0; index < kShardCount; ++index)
-        total += _adaptive_counters[index].skipped_updates.load(std::memory_order_relaxed);
-    return total;
-}
-
-uint64_t NeighborCacheMetadataCache::adaptive_transition_count() const
-{
-    std::lock_guard<std::mutex> lock(_adaptive_mu);
-    return _adaptive_transitions;
 }
 
 NeighborCacheMetadataCache::TouchResult NeighborCacheMetadataCache::on_edge(uint32_t parent, uint32_t child, float unit)
 {
-    thread_local std::mt19937 rng{std::random_device{}()};
-    TouchResult r;
-    const uint32_t update_denominator = _update_denominator.load(std::memory_order_relaxed);
-    if (_adaptive_update_enabled && update_denominator > 1 && (rng() % update_denominator) != 0u)
-        return r;
-    if ((rng() % 10u) != 0u)
-        return r;
-
-    const size_t shard_id = shard_index(parent);
-    Shard &shard = *_shards[shard_id];
-    NeighborCacheTimedSharedMutexGuard lock(shard.mu, NeighborCacheLockKind::Metadata, true);
-    r = touch_or_insert_unlocked(shard, shard_id, parent, 0.0f);
-    if (!r.present)
-        return r;
-
-    auto eit = shard.node_to_slot.find(parent);
-    if (eit == shard.node_to_slot.end())
-        return r;
-    std::vector<Edge> &edges = shard.edges_by_slot[eit->second];
-    const uint8_t increment = edge_increment(unit);
-
-    for (Edge &edge : edges)
-    {
-        if (edge.child() == child)
-        {
-            add_edge_heat_unlocked(edge, increment);
-            return r;
-        }
-    }
-
-    if (edges.size() < _max_edges)
-    {
-        edges.emplace_back(child, increment);
-        _total_edges.fetch_add(1, std::memory_order_relaxed);
-        return r;
-    }
-
-    auto weakest = std::min_element(edges.begin(), edges.end(),
-                                    [](const Edge &a, const Edge &b) { return a.heat() < b.heat(); });
-    const uint8_t inherited_heat = weakest->heat();
-    *weakest = Edge(child, inherited_heat);
-    add_edge_heat_unlocked(*weakest, increment);
-    return r;
+    return on_real_io_edge(parent, child, _max_edges, unit);
 }
 
 NeighborCacheMetadataCache::TouchResult NeighborCacheMetadataCache::on_real_io_edge(uint32_t parent, uint32_t child,
@@ -553,15 +348,13 @@ NeighborCacheMetadataCache::TouchResult NeighborCacheMetadataCache::on_real_io_e
 
     const size_t shard_id = shard_index(parent);
     Shard &shard = *_shards[shard_id];
-    NeighborCacheTimedSharedMutexGuard lock(shard.mu, NeighborCacheLockKind::Metadata, true);
+    NeighborCacheTimedSharedMutexGuard lock(shard.mu, NeighborCacheLockKind::Metadata, true, _shared);
     r = touch_or_insert_unlocked(shard, shard_id, parent, 0.0f);
     if (!r.present)
         return r;
 
-    const auto parent_it = shard.node_to_slot.find(parent);
-    if (parent_it == shard.node_to_slot.end())
-        return r;
-    std::vector<Edge> &edges = shard.edges_by_slot[parent_it->second];
+    const size_t local_slot = r.slot_id - shard_id * _slot_stride.load(std::memory_order_relaxed);
+    std::vector<Edge> &edges = shard.edges_by_slot[local_slot];
     const uint8_t increment = edge_increment(unit);
     for (Edge &edge : edges)
     {
@@ -594,7 +387,7 @@ bool NeighborCacheMetadataCache::contains(uint32_t node_id) const
     if (_membership_words != nullptr && node_id < _node_count && !membership_contains(node_id))
         return false;
     const Shard &shard = *_shards[shard_index(node_id)];
-    NeighborCacheTimedSharedMutexGuard lock(shard.mu, NeighborCacheLockKind::Metadata, false);
+    NeighborCacheTimedSharedMutexGuard lock(shard.mu, NeighborCacheLockKind::Metadata, false, _shared);
     return shard.node_to_slot.find(node_id) != shard.node_to_slot.end();
 }
 
@@ -605,7 +398,7 @@ uint32_t NeighborCacheMetadataCache::slot_of(uint32_t node_id) const
     if (_membership_words != nullptr && node_id < _node_count && !membership_contains(node_id))
         return kInvalid;
     const Shard &shard = *_shards[shard_index(node_id)];
-    NeighborCacheTimedSharedMutexGuard lock(shard.mu, NeighborCacheLockKind::Metadata, false);
+    NeighborCacheTimedSharedMutexGuard lock(shard.mu, NeighborCacheLockKind::Metadata, false, _shared);
     const auto it = shard.node_to_slot.find(node_id);
     if (it == shard.node_to_slot.end())
         return kInvalid;
@@ -618,12 +411,14 @@ uint32_t NeighborCacheMetadataCache::node_at(uint32_t slot_id) const
     const uint32_t slot_stride = _slot_stride.load(std::memory_order_relaxed);
     if (slot_stride == 0 || slot_id == kInvalid)
         return kInvalid;
-    const size_t shard_id = slot_id / slot_stride;
-    const uint32_t local_slot = slot_id % slot_stride;
-    if (shard_id >= kShardCount)
+    const bool single_shard = shard_count() == 1;
+    const size_t shard_id = single_shard ? 0 : slot_id / slot_stride;
+    const uint32_t local_slot = single_shard ? slot_id : slot_id % slot_stride;
+    if (shard_id >= shard_count())
         return kInvalid;
     const Shard &shard = *_shards[shard_id];
-    return local_slot < shard.capacity ? shard.slot_to_node[local_slot].load(std::memory_order_acquire) : kInvalid;
+    const auto *entry = shard.slot_to_node.find(local_slot);
+    return entry == nullptr ? kInvalid : entry->load(std::memory_order_acquire);
 }
 
 bool NeighborCacheMetadataCache::node_score_at(uint32_t slot_id, uint32_t &node_id, float &score) const
@@ -633,13 +428,14 @@ bool NeighborCacheMetadataCache::node_score_at(uint32_t slot_id, uint32_t &node_
     const uint32_t slot_stride = _slot_stride.load(std::memory_order_relaxed);
     if (slot_stride == 0 || slot_id == kInvalid)
         return false;
-    const size_t shard_id = slot_id / slot_stride;
-    const uint32_t local_slot = slot_id % slot_stride;
-    if (shard_id >= kShardCount)
+    const bool single_shard = shard_count() == 1;
+    const size_t shard_id = single_shard ? 0 : slot_id / slot_stride;
+    const uint32_t local_slot = single_shard ? slot_id : slot_id % slot_stride;
+    if (shard_id >= shard_count())
         return false;
     const Shard &shard = *_shards[shard_id];
-    NeighborCacheTimedSharedMutexGuard lock(shard.mu, NeighborCacheLockKind::Metadata, false);
-    if (local_slot >= shard.capacity ||
+    NeighborCacheTimedSharedMutexGuard lock(shard.mu, NeighborCacheLockKind::Metadata, false, _shared);
+    if (local_slot >= shard.next_unused_slot ||
         shard.slot_to_node[local_slot].load(std::memory_order_relaxed) == kInvalid)
         return false;
     node_id = shard.slot_to_node[local_slot].load(std::memory_order_relaxed);
@@ -654,7 +450,7 @@ float NeighborCacheMetadataCache::score(uint32_t node_id) const
     if (_membership_words != nullptr && node_id < _node_count && !membership_contains(node_id))
         return 0.0f;
     const Shard &shard = *_shards[shard_index(node_id)];
-    NeighborCacheTimedSharedMutexGuard lock(shard.mu, NeighborCacheLockKind::Metadata, false);
+    NeighborCacheTimedSharedMutexGuard lock(shard.mu, NeighborCacheLockKind::Metadata, false, _shared);
     const auto it = shard.node_to_slot.find(node_id);
     return it == shard.node_to_slot.end() ? 0.0f : shard.scores[it->second];
 }
@@ -664,13 +460,14 @@ float NeighborCacheMetadataCache::score_at(uint32_t slot_id) const
     const uint32_t slot_stride = _slot_stride.load(std::memory_order_relaxed);
     if (slot_stride == 0 || slot_id == kInvalid)
         return 0.0f;
-    const size_t shard_id = slot_id / slot_stride;
-    const uint32_t local_slot = slot_id % slot_stride;
-    if (shard_id >= kShardCount)
+    const bool single_shard = shard_count() == 1;
+    const size_t shard_id = single_shard ? 0 : slot_id / slot_stride;
+    const uint32_t local_slot = single_shard ? slot_id : slot_id % slot_stride;
+    if (shard_id >= shard_count())
         return 0.0f;
     const Shard &shard = *_shards[shard_id];
-    NeighborCacheTimedSharedMutexGuard lock(shard.mu, NeighborCacheLockKind::Metadata, false);
-    if (local_slot >= shard.capacity ||
+    NeighborCacheTimedSharedMutexGuard lock(shard.mu, NeighborCacheLockKind::Metadata, false, _shared);
+    if (local_slot >= shard.next_unused_slot ||
         shard.slot_to_node[local_slot].load(std::memory_order_relaxed) == kInvalid)
         return 0.0f;
     return shard.scores[local_slot];
@@ -683,7 +480,7 @@ bool NeighborCacheMetadataCache::set_evictable(uint32_t node_id, bool evictable)
     if (_membership_words != nullptr && node_id < _node_count && !membership_contains(node_id))
         return false;
     Shard &shard = *_shards[shard_index(node_id)];
-    NeighborCacheTimedSharedMutexGuard lock(shard.mu, NeighborCacheLockKind::Metadata, true);
+    NeighborCacheTimedSharedMutexGuard lock(shard.mu, NeighborCacheLockKind::Metadata, true, _shared);
     auto it = shard.node_to_slot.find(node_id);
     if (it == shard.node_to_slot.end())
         return false;
@@ -692,12 +489,14 @@ bool NeighborCacheMetadataCache::set_evictable(uint32_t node_id, bool evictable)
         return true;
     if (evictable)
     {
-        nonseed_push_front_unlocked(shard, local_slot);
+        if (!_stable_slots)
+            nonseed_push_front_unlocked(shard, local_slot);
         _total_evictable.fetch_add(1, std::memory_order_relaxed);
     }
     else
     {
-        nonseed_unlink_unlocked(shard, local_slot);
+        if (!_stable_slots)
+            nonseed_unlink_unlocked(shard, local_slot);
         _total_evictable.fetch_sub(1, std::memory_order_relaxed);
     }
     shard.evictable[local_slot] = evictable ? 1 : 0;
@@ -707,12 +506,12 @@ bool NeighborCacheMetadataCache::set_evictable(uint32_t node_id, bool evictable)
 void NeighborCacheMetadataCache::scale_scores(float factor, std::atomic<float> &score_unit, float next_score_unit)
 {
     std::vector<std::unique_ptr<NeighborCacheTimedSharedMutexGuard<std::shared_mutex>>> locks;
-    locks.reserve(kShardCount);
+    locks.reserve(shard_count());
     for (auto &shard : _shards)
         locks.emplace_back(
-            std::make_unique<NeighborCacheTimedSharedMutexGuard<std::shared_mutex>>(shard->mu, NeighborCacheLockKind::Metadata, true));
+            std::make_unique<NeighborCacheTimedSharedMutexGuard<std::shared_mutex>>(shard->mu, NeighborCacheLockKind::Metadata, true, _shared));
 
-    for (size_t shard_id = 0; shard_id < kShardCount; ++shard_id)
+    for (size_t shard_id = 0; shard_id < shard_count(); ++shard_id)
     {
         Shard &shard = *_shards[shard_id];
         for (auto it = shard.node_to_slot.begin(); it != shard.node_to_slot.end(); ++it)
@@ -726,7 +525,7 @@ void NeighborCacheMetadataCache::scale_scores(float factor, std::atomic<float> &
         // Fixed-point floor so that heat-1 edges reach zero for any divisor >= 2.
         const uint32_t mul = static_cast<uint32_t>(factor * 65536.0f);
         uint64_t removed_edges = 0;
-        for (size_t shard_id = 0; shard_id < kShardCount; ++shard_id)
+        for (size_t shard_id = 0; shard_id < shard_count(); ++shard_id)
         {
             Shard &shard = *_shards[shard_id];
             for (auto it = shard.node_to_slot.begin(); it != shard.node_to_slot.end(); ++it)
@@ -764,11 +563,7 @@ uint8_t NeighborCacheMetadataCache::edge_increment(float unit) const
 {
     if (!_edge_heat_decay || unit <= 1.0f)
         return 1;
-    thread_local std::mt19937 rng{std::random_device{}()};
-    const float whole = std::floor(unit);
-    const float frac = unit - whole;
-    const bool round_up = frac > 0.0f && static_cast<float>(rng() >> 8) * (1.0f / 16777216.0f) < frac;
-    return static_cast<uint8_t>(std::min(255.0f, whole + (round_up ? 1.0f : 0.0f)));
+    return static_cast<uint8_t>(std::min(255.0f, std::round(unit)));
 }
 
 void NeighborCacheMetadataCache::add_edge_heat_unlocked(Edge &edge, uint8_t increment)
@@ -785,7 +580,7 @@ void NeighborCacheMetadataCache::add_edge_heat_unlocked(Edge &edge, uint8_t incr
     edge.set_heat(static_cast<uint8_t>(next));
 }
 
-bool NeighborCacheMetadataCache::snapshot(uint32_t node_id, Snapshot &out) const
+bool NeighborCacheMetadataCache::snapshot(uint32_t node_id, Snapshot &out, bool include_all_edges) const
 {
     // Only a definite absence bypasses the shard lock. IDs beyond the bitmap
     // retain the ordinary lookup path, and hits still validate the live map.
@@ -793,7 +588,7 @@ bool NeighborCacheMetadataCache::snapshot(uint32_t node_id, Snapshot &out) const
         return false;
     const Shard &shard = *_shards[shard_index(node_id)];
     {
-        NeighborCacheTimedSharedMutexGuard lock(shard.mu, NeighborCacheLockKind::Metadata, false);
+        NeighborCacheTimedSharedMutexGuard lock(shard.mu, NeighborCacheLockKind::Metadata, false, _shared);
         const auto it = shard.node_to_slot.find(node_id);
         if (it == shard.node_to_slot.end())
             return false;
@@ -809,7 +604,7 @@ bool NeighborCacheMetadataCache::snapshot(uint32_t node_id, Snapshot &out) const
         for (const Edge &ed : edges)
         {
             const uint8_t heat = ed.heat();
-            if (heat >= sig_t)
+            if (include_all_edges || heat >= sig_t)
                 out.significant.emplace_back(ed.child(), heat);
         }
     }

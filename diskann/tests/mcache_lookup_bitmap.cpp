@@ -79,6 +79,13 @@ void snapshot_sorting()
     diskann::NeighborCacheMetadataCache cache;
     cache.init(128, 2, 4096);
     std::atomic<float> unit{1.0f};
+    cache.on_edge(1, 99, unit);
+    cache.on_edge(1, 99, unit);
+    diskann::NeighborCacheMetadataCache::Snapshot registered;
+    assert(cache.snapshot(1, registered));
+    assert(registered.significant.size() == 1);
+    assert(registered.significant.front().first == 99);
+    assert(registered.significant.front().second == 2);
     for (unsigned i = 0; i < 1000; ++i)
         cache.on_edge(1, 2 + i % 13, unit);
     diskann::NeighborCacheMetadataCache::Snapshot snap;
@@ -142,9 +149,66 @@ void concurrent_edge_slot_growth()
     }
     writer.join();assert(cache.size()==5001 && cache.capacity()==524288);
 }
+void lazy_slot_blocks()
+{
+    using Slot = std::atomic<uint32_t>;
+    diskann::NeighborCacheLazyArray<Slot> slots;
+    slots.assign(1'000'000, UINT32_MAX);
+    assert(slots.capacity() == 0 && slots.find(500'000) == nullptr);
+
+    auto touch = [&](size_t index) {
+        slots[index].store(static_cast<uint32_t>(index), std::memory_order_release);
+    };
+    std::thread first(touch, 500'000);
+    std::thread second(touch, 500'001);
+    first.join();
+    second.join();
+    assert(slots.capacity() == slots.kBlockSize);
+    assert(slots[500'000].load() == 500'000 && slots[500'001].load() == 500'001);
+    assert(slots[500'002].load() == UINT32_MAX);
+    const auto *stable = slots.find(500'000);
+    slots[999'999].store(7);
+    assert(slots.find(500'000) == stable && stable->load() == 500'000);
+    assert(slots.find(0) == nullptr);
+    slots.assign(10, 0);
+    assert(slots.capacity() == 0 && slots[0].load() == 0);
+}
+
+void stable_index_slots(diskann::NeighborCacheMetadataCache::Access access, size_t shards)
+{
+    diskann::NeighborCacheMetadataCache cache;
+    std::atomic<float> unit{1.0f};
+    constexpr uint32_t nodes = 129;
+    cache.init(nodes, 2, nodes, /*index_ids_only=*/true, access);
+    assert(cache.has_stable_slots());
+    assert(cache.shard_count() == shards);
+    assert(cache.slot_capacity() >= nodes);
+    for (uint32_t id = 0; id < nodes; ++id)
+    {
+        const auto touch = cache.on_expand(id, unit);
+        assert(touch.inserted && touch.evicted_id == cache.kInvalid);
+        assert(cache.node_at(touch.slot_id) == id);
+    }
+    assert(!cache.on_expand(nodes, unit).present);
+    assert(cache.set_evictable(0, false));
+    assert(cache.evictable_size() == nodes - 1);
+    assert(cache.on_expand(0, unit).score == 2.0f);
+    assert(cache.set_evictable(0, true));
+    assert(cache.evictable_size() == nodes);
+
+    cache.init(shards, 2, nodes, /*index_ids_only=*/true, access);
+    assert(!cache.has_stable_slots());
+    assert(cache.on_expand(0, unit).inserted);
+    assert(cache.on_expand(64, unit).evicted_id == 0);
+}
+
 int main()
 {
-    setenv("NEIGHBORCACHE_MCACHE_ADAPTIVE_UPDATE", "0", 1);
+    using Access = diskann::NeighborCacheMetadataCache::Access;
+    stable_index_slots(Access::Sharded, 64);
+    stable_index_slots(Access::SingleShard, 1);
+    stable_index_slots(Access::SingleOwner, 1);
+    lazy_slot_blocks();
     lazy_edge_slots();
     concurrent_edge_slot_growth();
     reference_membership(false);

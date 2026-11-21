@@ -78,7 +78,7 @@ class NeighborCacheAdapter {
             std::copy(c.medoids, c.medoids + c.medoid_count, index._medoids);
         }
         index._neighborcache_mem_pool = std::make_unique<NeighborCacheMemoryPool<uint8_t>>();
-        index._neighborcache_mem_pool->init(c.n_capacity, index._aligned_dim, c.degree, c.points);
+        index._neighborcache_mem_pool->init(c.n_capacity, index._aligned_dim, c.degree, c.points, index._max_nthreads);
         index._neighborcache_mem_pool->commit_initial_load({}, {});
         index._query_sector_cache_enabled = true;
         if (!index._neighborcache_shared_cache.init(c.prefetch_pages, c.threads))
@@ -258,7 +258,7 @@ class NeighborCacheAdapter {
             ? q->scratch.neighborcache_candidate_parent : UINT32_MAX;
         if (parent == UINT32_MAX || !q->scratch.profile_parent.insert({child, parent}).second) return;
         ++q->parents;
-        if (q->scratch.neighborcache_dcache_maintenance_enabled && !index._neighborcache_real_io_coaccess) {
+        if (!index._neighborcache_real_io_coaccess && !index._neighborcache_ranked_readback_edges) {
             const auto tr = index._neighborcache_mcache.on_edge(parent, child, index._neighborcache_score_unit.load());
             if (tr.present) {
                 index.neighborcache_dyn_note_touch(tr, &q->scratch);
@@ -266,17 +266,11 @@ class NeighborCacheAdapter {
             }
         }
     }
-    void selected(Query *q, uint32_t id) {
+    bool selected(Query *q, uint32_t id) {
         q->scratch.neighborcache_expand_count++;
-        if (!q->scratch.neighborcache_dcache_maintenance_enabled || index._neighborcache_coread_pack) return;
-        if (!neighborcache_sample_node_heat()) return;
-        const auto decision = index._neighborcache_mcache.plan_expand_update(id,
-            index._neighborcache_dcache_net_gate_enabled && q->scratch.neighborcache_dcache_probe,
-            index._neighborcache_dcache_net_gate_enabled && !q->scratch.neighborcache_dcache_lookup_enabled);
-        if (decision.update) {
-            const auto tr = index._neighborcache_mcache.on_expand(id, index._neighborcache_score_unit);
-            index.neighborcache_dyn_note_touch(tr, &q->scratch);
-        }
+        if (!q->scratch.neighborcache_dcache_maintenance_enabled || index._neighborcache_coread_pack) return false;
+        const auto tr = index._neighborcache_mcache.on_expand(id, index._neighborcache_score_unit);
+        return index.neighborcache_dyn_note_touch(tr, &q->scratch);
     }
     int finish(Query *q, Ticket &t, char *raw) {
         index.complete_neighborcache_disk_cache_io(&q->scratch, t.pending, t.groups);
@@ -442,7 +436,7 @@ class NeighborCacheAdapter {
     void expand(Query *q, uint32_t id, const char *raw, uint32_t hop) {
         acquired_parent(q, id);
         // Starling also expands other nodes from a page it already fetched.
-        selected(q, id);
+        const bool heap_dirty = selected(q, id);
         auto src = q->source.find(id);
         if (src == q->source.end()) { q->source[id] = 0; src = q->source.find(id); }
         if (src->second == 1 || src->second == 2) {
@@ -452,12 +446,14 @@ class NeighborCacheAdapter {
         }
         std::vector<char> canonical(config.record_bytes);
         encode(raw, canonical.data());
-        index.neighborcache_dyn_admit_node(id, canonical.data(), &q->stats, &q->scratch, hop);
-        if (!q->scratch.neighborcache_dcache_maintenance_enabled) return;
         uint32_t parent = UINT32_MAX;
         auto p = q->scratch.profile_parent.find(id);
         if (p != q->scratch.profile_parent.end()) parent = p->second;
-        index.neighborcache_dyn_note_base_load(id, parent, canonical.data(), &q->scratch);
+        index.neighborcache_dyn_admit_node(id, parent, canonical.data(), &q->stats, &q->scratch, hop,
+                                          /*ncache_miss_known=*/false, heap_dirty);
+        if (q->scratch.neighborcache_dcache_maintenance_enabled &&
+            (!index._neighborcache_ranked_readback_edges || src->second == 0))
+            index.neighborcache_dyn_note_base_load(id, parent, canonical.data(), &q->scratch);
     }
     void stats(NCStats *s) {
         *s = {nh.load(), ph.load(), da.load(), dh.load(), dr.load(), bm.load(),

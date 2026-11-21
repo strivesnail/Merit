@@ -47,7 +47,7 @@ def report(root):
 
 def main():
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--root',type=Path,default=Path('/mnt/nvme2/nc_prefetch_reduction_single_20261031'))
+    p.add_argument('--root',type=Path,default=Path('/mnt/nvme2/nc_prefetch_reduction_single_full_heat'))
     p.add_argument('--plot-only',action='store_true')
     args=p.parse_args();root=args.root;root.mkdir(parents=True,exist_ok=True)
     os.sched_setaffinity(0,{23})
@@ -55,14 +55,10 @@ def main():
     bench.write(root/'protocol.json',dict(threads=1,n_nodes=2048,m_entries=131072,d_pages=65536,
         stash_capacity_nodes=424742,prefetch_pages=[2560,1280,512,256,128],
         prefetch_mib=[10,5,2,1,.5],warmup_queries=20000,measured_queries=20000,
-        main_denominator='all node accesses',baseline_reused_from='nc_n_capacity_match_20261031',
+        main_denominator='all node accesses',mcache_heat_updates='every_expansion',
         no_other_experiment_running=True))
     for rep in (0,1):
-        source=bench.DEFAULT_ROOT/f'nmd_2048_{rep}'
-        dest=root/f'baseline10_{rep}';dest.mkdir(exist_ok=True)
-        row=json.loads((source/'result.json').read_text());row['prefetch_pages']=2560
-        row['source_artifact']=str(source);bench.write(dest/'result.json',row)
-        bench.write(dest/'command.json',json.loads((source/'command.json').read_text()))
+        bench.run(root,'nmd',2048,rep,prefetch_pages=2560)
     for pages in (1280,512,256,128):
         bench.run(root,'nmd',2048,0,prefetch_pages=pages)
         report(root)

@@ -11,8 +11,12 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 
 import numpy as np
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from cache_validation import LEGACY_MCACHE_HEAT_OPTIONS, checked_binary_digest
 
 
 def sha(path):
@@ -33,6 +37,7 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--engines', nargs='+', default=['starling', 'margo', 'pipeann', 'aisaq'])
     args = parser.parse_args()
+    backend_digest = checked_binary_digest(args.backend, full_mcache_heat=True)
     args.output.mkdir(parents=True, exist_ok=False)
     summary = []
     for engine in args.engines:
@@ -41,6 +46,8 @@ def main():
         for trim in (0, 1):
             cfg = json.loads(json.dumps(template))
             cmd, env = cfg['command'], cfg['environment']
+            for option in LEGACY_MCACHE_HEAT_OPTIONS:
+                env.pop(option, None)
             out = args.output / f'{engine}_trim{trim}'
             out.mkdir()
             threads = 8 if engine == 'aisaq' else 20
@@ -62,7 +69,6 @@ def main():
                        NEIGHBORCACHE_DCACHE_SECOND_PAGE='0',
                        NEIGHBORCACHE_DCACHE_MAX_PAGES='1',
                        NEIGHBORCACHE_BG_CPUS='20-23',
-                       NEIGHBORCACHE_HEAT_SAMPLE_SEED='20261031',
                        NEIGHBORCACHE_BACKEND_REPORT='1',
                        NEIGHBORCACHE_THREADS=str(threads),
                        NEIGHBORCACHE_VERIFY='1', PIPEANN_NMD_VERIFY='1', AISAQ_NMD_VERIFY='1')
@@ -95,7 +101,7 @@ def main():
                     alias.symlink_to(disk)
                     cmd[at] = str(alias.absolute())
             cfg.update(purpose='Full-record correctness only; verification I/O invalidates timings',
-                       backend_sha256=sha(args.backend))
+                       backend_sha256=backend_digest, mcache_heat_updates='every_expansion')
             binary = next(x for x in cmd if x.endswith('/search_disk_index'))
             cfg['binary_sha256'] = sha(binary)
             write(out / 'command.json', cfg)
