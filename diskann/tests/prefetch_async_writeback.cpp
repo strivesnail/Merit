@@ -99,6 +99,18 @@ public:
         assert(heap.front().slot_id == second.slot_id && heap.front().score == 1);
         assert(idx._neighborcache_heap_position[first.slot_id] == 1);
         assert(idx._neighborcache_heap_position[second.slot_id] == 0);
+
+        idx._neighborcache_node_state_capacity = 4;
+        idx._neighborcache_node_state.assign(4, static_cast<uint8_t>(Index::NeighborCacheNodeState::NonSeed));
+        idx.neighborcache_dyn_set_state_unlocked(0, first.slot_id, Index::NeighborCacheNodeState::Seed);
+        SSDQueryScratch<uint8_t> scratch(128, 4096);
+        scratch.mark_neighborcache_heap_dirty(first.slot_id);
+        scratch.mark_neighborcache_heap_dirty(second.slot_id);
+        idx.neighborcache_dyn_flush_dirty_heap(&scratch);
+        assert(scratch.neighborcache_heap_dirty_slots.empty() && heap.empty());
+        const auto &min_heap = idx._neighborcache_heap_shards[0].min_heap;
+        assert(min_heap.size() == 1 && min_heap.front().slot_id == first.slot_id);
+        assert(min_heap.front().score == idx._neighborcache_mcache.score(0));
     }
 
     static void run_ranked_readback_seed()

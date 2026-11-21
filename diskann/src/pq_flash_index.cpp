@@ -7373,6 +7373,30 @@ void PQFlashIndex<T, LabelT>::neighborcache_dyn_flush_dirty_heap(SSDQueryScratch
         return;
 
     const bool shared_ncache = _neighborcache_mem_pool != nullptr && !_neighborcache_mem_pool->single_owner();
+    if (_neighborcache_query_owns_metadata && !shared_ncache && _neighborcache_mcache.has_stable_slots() &&
+        _neighborcache_heap_shard_count == 1 && _neighborcache_deletion_pair_count.load(std::memory_order_acquire) == 0)
+    {
+        // The query worker owns these slots, eligibility checks, and the heap.
+        const bool omit_min_heap = neighborcache_dyn_omit_min_heap();
+        for (uint32_t slot_id : query_scratch->neighborcache_heap_dirty_slots)
+        {
+            const auto state = neighborcache_dyn_state_unlocked(slot_id);
+            if (omit_min_heap && state == NeighborCacheNodeState::Seed)
+                continue;
+            uint32_t node_id = NeighborCacheMetadataCache::kInvalid;
+            NeighborCacheHeat score = 0;
+            if (!_neighborcache_mcache.node_score_at(slot_id, node_id, score))
+                continue;
+            auto desired = NeighborCacheHeapKind::None;
+            if (state == NeighborCacheNodeState::Seed)
+                desired = NeighborCacheHeapKind::Min;
+            else if (state == NeighborCacheNodeState::NonSeed && neighborcache_dyn_ncache_evictable(node_id))
+                desired = NeighborCacheHeapKind::Max;
+            neighborcache_dyn_heap_apply_unlocked(slot_id, score, desired);
+        }
+        query_scratch->clear_neighborcache_heap_dirty();
+        return;
+    }
     const uint64_t decay_cycles = _neighborcache_query_owns_metadata ? 0 :
         _neighborcache_decay_cycles.load(std::memory_order_acquire);
     const size_t dirty_count = query_scratch->neighborcache_heap_dirty_slots.size();
