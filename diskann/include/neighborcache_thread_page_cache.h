@@ -291,6 +291,20 @@ class NeighborCacheThreadPageCache {
         }
         uint32_t i=l.free.back(); l.free.pop_back(); return i;
     }
+    RecordLocation find_record_location(const Local &local, uint32_t id, bool seed_only,
+                                        bool current_version) const {
+        RecordLocation location{none, none};
+        local.records.newest_first(id, [&](RecordLocation candidate) {
+            const auto &page = local.slots[candidate.page_slot];
+            if (page.key == none || (current_version && !valid(page)) ||
+                candidate.record_slot >= page.members.size() || page.members[candidate.record_slot] != id ||
+                (seed_only && candidate.record_slot != 0))
+                return false;
+            location = candidate;
+            return true;
+        });
+        return location;
+    }
   public:
     bool init(uint64_t pages,size_t threads,bool reset=false,bool immutable=true) {
         if(locals_ || !threads || pages<threads || pages>=none)
@@ -358,36 +372,33 @@ class NeighborCacheThreadPageCache {
     }
     bool record_location(uint32_t id, uint32_t &key, uint32_t &record_slot, bool seed_only=false,
                          bool current_version=true) const {
-        auto *l=local(false); if(!l) return false;
-        return l->records.newest_first(id,[&](RecordLocation loc) {
-            const auto &s=l->slots[loc.page_slot];
-            if(s.key!=none && (!current_version || valid(s)) && loc.record_slot<s.members.size() &&
-               s.members[loc.record_slot]==id && (!seed_only || loc.record_slot==0)) {
-                key=s.key; record_slot=loc.record_slot; return true;
-            }
-            return false;
-        });
+        const auto *worker = local(false);
+        if (!worker) return false;
+        const auto location = find_record_location(*worker, id, seed_only, current_version);
+        if (location.page_slot == none) return false;
+        key = worker->slots[location.page_slot].key;
+        record_slot = location.record_slot;
+        return true;
     }
     bool seed_snapshot(uint32_t seed, uint32_t &key, std::vector<uint32_t> &ids, char *dst,
                        uint32_t missing_record=none, size_t append_capacity=0) {
-
-        uint32_t slot=0;
-        if(!record_location(seed,key,slot,true,false)) return false;
-        auto *l=local(false);
-        const uint32_t i=find(*l,key);
-        const auto &s=l->slots[i];
-        // Append-only N-hit maintenance must not copy full pages or change LRU
-        // recency when no insertion is possible.
-        if(append_capacity && (s.members.size()>=append_capacity ||
-           (missing_record!=none && std::find(s.members.begin(),s.members.end(),missing_record)!=s.members.end())))
+        auto *worker = local(false);
+        if (!worker) return false;
+        const auto location = find_record_location(*worker, seed, true, false);
+        if (location.page_slot == none) return false;
+        const auto &page = worker->slots[location.page_slot];
+        key = page.key;
+        if (append_capacity && page.members.size() >= append_capacity)
             return false;
-        // Preserve the old recency update even when no page update is needed,
-        // but avoid copying/allocating a snapshot for an existing member.
-        touch(*l,i);
-        if(missing_record!=none && std::find(s.members.begin(),s.members.end(),missing_record)!=s.members.end())
+        const bool already_present = missing_record != none &&
+            std::find(page.members.begin(), page.members.end(), missing_record) != page.members.end();
+        // Replacement updates also touch the page when the member is present.
+        if (!append_capacity || !already_present)
+            touch(*worker, location.page_slot);
+        if (already_present)
             return false;
-        ids=s.members;
-        s.bytes.copy_to(dst);
+        ids = page.members;
+        page.bytes.copy_to(dst);
         return true;
     }
     // The base-index records are immutable. Repacking a shared D page changes

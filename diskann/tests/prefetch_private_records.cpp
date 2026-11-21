@@ -46,6 +46,9 @@ int main() {
         cache.register_records(first+1,second_members,2);
         assert(cache.record_location(100,key,slot) && key==first+1 && slot==1);
         assert(cache.record_location(100,key,slot,true) && key==first && slot==0);
+        key = 0;
+        assert(!cache.seed_snapshot(100,key,snapshot_ids,copy.data(),200+worker_id,3) && key==first);
+        assert(!cache.seed_snapshot(100,key,snapshot_ids,copy.data(),900,2) && key==first);
         // Evict the first page. Its seed and child must leave this worker's index.
         const uint32_t third_members[]={400+worker_id};
         assert(cache.put(first+2,page.data()));
