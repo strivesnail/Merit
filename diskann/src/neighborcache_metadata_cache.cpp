@@ -580,6 +580,48 @@ void NeighborCacheMetadataCache::add_edge_heat_unlocked(Edge &edge, uint8_t incr
     edge.set_heat(static_cast<uint8_t>(next));
 }
 
+void NeighborCacheMetadataCache::copy_snapshot_edges_unlocked(const Shard &shard, uint32_t local_slot,
+                                                                  Snapshot &out, bool include_all_edges) const
+{
+    out.score = shard.scores[local_slot];
+    out.significant.clear();
+    const auto &edges = shard.edges_by_slot[local_slot];
+    out.significant.reserve(edges.size());
+    const uint8_t threshold = _sig_t.load(std::memory_order_relaxed);
+    for (const Edge &edge : edges)
+    {
+        const uint8_t heat = edge.heat();
+        if (include_all_edges || heat >= threshold)
+            out.significant.emplace_back(edge.child(), heat);
+    }
+}
+
+void NeighborCacheMetadataCache::sort_snapshot_edges(Snapshot &out)
+{
+    std::sort(out.significant.begin(), out.significant.end(), [](const auto &a, const auto &b) {
+        if (a.second != b.second)
+            return a.second > b.second;
+        return a.first < b.first;
+    });
+}
+
+bool NeighborCacheMetadataCache::snapshot_from_slot(uint32_t node_id, uint32_t slot_id, Snapshot &out,
+                                                    bool include_all_edges) const
+{
+    // A shared cache can recycle the hinted slot between heap selection and
+    // snapshot creation. In that case look up the node under the shard lock.
+    if (_shared || _shards.size() != 1)
+        return snapshot(node_id, out, include_all_edges);
+    const Shard &shard = *_shards.front();
+    const auto *occupant = shard.slot_to_node.find(slot_id);
+    if (node_id == kInvalid || occupant == nullptr || occupant->load(std::memory_order_relaxed) != node_id)
+        return false;
+    out.slot_id = slot_id;
+    copy_snapshot_edges_unlocked(shard, slot_id, out, include_all_edges);
+    sort_snapshot_edges(out);
+    return true;
+}
+
 bool NeighborCacheMetadataCache::snapshot(uint32_t node_id, Snapshot &out, bool include_all_edges) const
 {
     // Only a definite absence bypasses the shard lock. IDs beyond the bitmap
@@ -596,24 +638,9 @@ bool NeighborCacheMetadataCache::snapshot(uint32_t node_id, Snapshot &out, bool 
         const uint32_t slot_stride = _slot_stride.load(std::memory_order_relaxed);
         out.slot_id =
             static_cast<uint32_t>(static_cast<uint64_t>(shard_index(node_id)) * slot_stride + local_slot);
-        out.score = shard.scores[local_slot];
-        out.significant.clear();
-        const std::vector<Edge> &edges = shard.edges_by_slot[local_slot];
-        out.significant.reserve(edges.size());
-        const uint8_t sig_t = _sig_t.load(std::memory_order_relaxed);
-        for (const Edge &ed : edges)
-        {
-            const uint8_t heat = ed.heat();
-            if (include_all_edges || heat >= sig_t)
-                out.significant.emplace_back(ed.child(), heat);
-        }
+        copy_snapshot_edges_unlocked(shard, local_slot, out, include_all_edges);
     }
-    std::sort(out.significant.begin(), out.significant.end(),
-              [](const std::pair<uint32_t, uint8_t> &a, const std::pair<uint32_t, uint8_t> &b) {
-                  if (a.second != b.second)
-                      return a.second > b.second;
-                  return a.first < b.first;
-              });
+    sort_snapshot_edges(out);
     return true;
 }
 

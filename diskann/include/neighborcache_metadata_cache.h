@@ -105,6 +105,7 @@ class NeighborCacheMetadataCache
     uint64_t edge_saturations() const;
     bool edge_saturation_pending() const;
     bool snapshot(uint32_t node_id, Snapshot &out, bool include_all_edges = false) const;
+    bool snapshot_from_slot(uint32_t node_id, uint32_t slot_id, Snapshot &out, bool include_all_edges) const;
 
   private:
     class Edge
@@ -174,6 +175,9 @@ class NeighborCacheMetadataCache
     TouchResult touch_or_insert_unlocked(Shard &shard, size_t shard_id, uint32_t node_id, float score_delta);
     TouchResult touch_existing_unlocked(Shard &shard, size_t shard_id, uint32_t node_id,
                                        uint32_t local_slot, float score_delta);
+    void copy_snapshot_edges_unlocked(const Shard &shard, uint32_t local_slot, Snapshot &out,
+                                      bool include_all_edges) const;
+    static void sort_snapshot_edges(Snapshot &out);
     uint8_t edge_increment(float unit) const;
     void add_edge_heat_unlocked(Edge &edge, uint8_t increment);
 

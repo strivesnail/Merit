@@ -198,8 +198,25 @@ void stable_index_slots(diskann::NeighborCacheMetadataCache::Access access, size
 
     cache.init(shards, 2, nodes, /*index_ids_only=*/true, access);
     assert(!cache.has_stable_slots());
-    assert(cache.on_expand(0, unit).inserted);
-    assert(cache.on_expand(64, unit).evicted_id == 0);
+    const auto first = cache.on_expand(0, unit);
+    assert(first.inserted);
+    cache.on_real_io_edge(0, 17);
+    cache.on_real_io_edge(0, 17);
+    cache.on_real_io_edge(0, 3);
+    cache.on_real_io_edge(0, 9);
+    diskann::NeighborCacheMetadataCache::Snapshot by_id, by_slot;
+    for (const bool include_all_edges : {false, true})
+    {
+        assert(cache.snapshot(0, by_id, include_all_edges));
+        assert(cache.snapshot_from_slot(0, first.slot_id, by_slot, include_all_edges));
+        assert(by_slot.slot_id == by_id.slot_id && by_slot.score == by_id.score);
+        assert(by_slot.significant == by_id.significant);
+    }
+    const auto replacement = cache.on_expand(64, unit);
+    assert(replacement.evicted_id == 0 && replacement.slot_id == first.slot_id);
+    assert(!cache.snapshot_from_slot(0, first.slot_id, by_slot, true));
+    assert(cache.snapshot_from_slot(64, replacement.slot_id, by_slot, true));
+    assert(by_slot.significant.empty());
 }
 
 int main()

@@ -8990,8 +8990,16 @@ template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::neighborcac
             _neighborcache_mcache.node_at(cand_ins_slot) == cand_ins)
             neighborcache_dyn_heap_erase_unlocked(cand_ins_slot);
     };
-    NeighborCacheMetadataCache::Snapshot snap;
-    if (!_neighborcache_mcache.snapshot(cand_ins, snap, _neighborcache_ranked_readback_edges))
+    NeighborCacheMetadataCache::Snapshot local_snapshot;
+    const bool reuse_snapshot = _neighborcache_query_owns_metadata && _neighborcache_ranked_readback_edges;
+    thread_local NeighborCacheMetadataCache::Snapshot worker_snapshot;
+    auto &snap = reuse_snapshot ? worker_snapshot : local_snapshot;
+    if (reuse_snapshot)
+    {
+        if (!_neighborcache_mcache.snapshot_from_slot(cand_ins, cand_ins_slot, snap, true))
+            return;
+    }
+    else if (!_neighborcache_mcache.snapshot(cand_ins, snap, _neighborcache_ranked_readback_edges))
         return;
     if (_neighborcache_ranked_readback_edges)
     {
