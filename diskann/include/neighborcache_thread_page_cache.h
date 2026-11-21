@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cstring>
 #include <deque>
+#include <iterator>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -125,6 +126,27 @@ class NeighborCacheThreadPageCache {
             if(items.empty()) heads_.erase(it);
             else it.value()=encode(items.front());
             release(group);
+        }
+        void refresh(uint32_t id, RecordLocation loc) {
+            auto it = heads_.find(id);
+            if (it == heads_.end()) {
+                add(id, loc);
+                return;
+            }
+            const uint64_t entry = it.value();
+            if (uint32_t(entry) != none) {
+                if (entry != encode(loc))
+                    add(id, loc);
+                return;
+            }
+            auto &items = groups_[uint32_t(entry >> 32)];
+            const auto found = std::find_if(items.begin(), items.end(), [&](RecordLocation item) {
+                return item.page_slot == loc.page_slot && item.record_slot == loc.record_slot;
+            });
+            if (found == items.end())
+                items.push_back(loc);
+            else
+                std::rotate(found, std::next(found), items.end());
         }
         template<class Visitor> bool newest_first(uint32_t id,Visitor &&visit) const {
             auto it=heads_.find(id); if(it==heads_.end()) return false;
@@ -310,13 +332,29 @@ class NeighborCacheThreadPageCache {
         auto *l=local(false); if(!l) return;
         const uint32_t i=find(*l,key);
         if(i==none || !valid(l->slots[i])) return;
-        forget_records(*l,i);
-        if(!count) return;
         if(count>defaults::SECTOR_LEN) throw std::length_error("Too many records for a prefetch page");
         auto &s=l->slots[i];
+        if (single_owner_ && count) {
+            const auto retained = [&](size_t slot) {
+                return slot < s.members.size() && slot < count && s.members[slot] == ids[slot];
+            };
+            for (size_t slot = 0; slot < s.members.size(); ++slot) {
+                if (!retained(slot))
+                    l->records.remove_page(s.members[slot], i);
+            }
+            for (uint32_t slot = 0; slot < count; ++slot) {
+                if (retained(slot))
+                    l->records.refresh(ids[slot], {i, slot});
+                else
+                    l->records.add(ids[slot], {i, slot});
+            }
+        } else {
+            forget_records(*l,i);
+            if (!count) return;
+            for (uint32_t slot = 0; slot < count; ++slot)
+                l->records.add(ids[slot], {i, slot});
+        }
         s.members.assign(ids,ids+count);
-        for(uint32_t slot=0;slot<count;slot++)
-            l->records.add(ids[slot],{i,slot});
     }
     bool record_location(uint32_t id, uint32_t &key, uint32_t &record_slot, bool seed_only=false,
                          bool current_version=true) const {

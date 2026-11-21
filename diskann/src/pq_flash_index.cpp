@@ -2443,10 +2443,11 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
                         pref_hit = neighborcache_dyn_query_local_dcache_hit(nbr.id, query_scratch);
                     }
                     bool dc_hit = false;
+                    uint32_t resolved_sector = UINT32_MAX;
                     if (!pref_hit)
                     {
                         NeighborCacheDemandProbeScope probe_scope(demand_probe);
-                        dc_hit = neighborcache_disk_cache_lookup_hit(nbr.id, query_scratch);
+                        dc_hit = neighborcache_disk_cache_lookup_hit(nbr.id, query_scratch, &resolved_sector, true);
                     }
                     if (pref_hit)
                     {
@@ -2471,15 +2472,8 @@ void PQFlashIndex<T, LabelT>::cached_beam_search(const T *query1, const uint64_t
                         // First touch of this page in the query → seed hit; immediately expose
                         // siblings in the query-local prefetch map so same-hop co-members are
                         // counted as prefetch (IO still coalesced later).
-                        if (query_scratch != nullptr)
-                        {
-                            const auto lit = query_scratch->neighborcache_dcache_loc_cache.find(nbr.id);
-                            if (lit != query_scratch->neighborcache_dcache_loc_cache.end())
-                            {
-                                const uint32_t sector = static_cast<uint32_t>(lit->second >> 32);
-                                neighborcache_pack_dyn_page_into_query_prefetch(sector, query_scratch);
-                            }
-                        }
+                        if (resolved_sector != UINT32_MAX)
+                            neighborcache_pack_dyn_page_into_query_prefetch(resolved_sector, query_scratch);
                         if (stats != nullptr)
                             stats->n_neighborcache_dcache_seed_hits++;
                         neighborcache_frontier.push_back(nbr.id);
@@ -4459,6 +4453,36 @@ void PQFlashIndex<T, LabelT>::neighborcache_dyn_loc_add_unlocked(uint32_t node_i
 }
 
 template <typename T, typename LabelT>
+void PQFlashIndex<T, LabelT>::neighborcache_dyn_loc_refresh_unlocked(uint32_t node_id, const NeighborCacheDiskLoc &loc)
+{
+    assert(!_neighborcache_d_metadata_shared);
+    auto &locations = neighborcache_dyn_loc_shard(node_id).locations;
+    auto entry = locations.find(node_id);
+    if (entry != locations.end())
+    {
+        auto &replicas = entry.value();
+        const auto found = std::find_if(replicas.begin(), replicas.end(), [&](const NeighborCacheDiskLoc &replica) {
+            return replica.sector == loc.sector && replica.slot == loc.slot && replica.nsectors == loc.nsectors;
+        });
+        if (found != replicas.end())
+        {
+            if (replicas.size() > 1)
+            {
+                // Republish in the same order as erasing this location and adding it back.
+                if (neighborcache_dyn_loc_append_enabled())
+                    std::rotate(found, std::next(found), replicas.end());
+                else
+                    std::rotate(replicas.begin(), found, std::next(found));
+                neighborcache_canon_publish(node_id, loc);
+            }
+            return;
+        }
+    }
+    neighborcache_dyn_loc_erase_sector_unlocked(node_id, loc.sector);
+    neighborcache_dyn_loc_add_unlocked(node_id, loc);
+}
+
+template <typename T, typename LabelT>
 void PQFlashIndex<T, LabelT>::neighborcache_dyn_loc_erase_sector_unlocked(uint32_t node_id, uint32_t sector)
 {
     NeighborCacheDynLocShard &shard = neighborcache_dyn_loc_shard(node_id);
@@ -4943,6 +4967,7 @@ template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::neighborcac
 #endif
         }
         _neighborcache_dyn_writer_io_ns.fetch_add(neighborcache_lock_now_ns() - io_started_ns, std::memory_order_relaxed);
+        job->data.reset();
         _neighborcache_dyn_writer_completed.fetch_add(1, std::memory_order_relaxed);
         if (!ok)
             _neighborcache_dyn_writer_failed.fetch_add(1, std::memory_order_relaxed);
@@ -5007,6 +5032,8 @@ template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::start_neigh
 {
     if (_neighborcache_dyn_writer_started)
         return;
+    if (_neighborcache_query_owns_metadata && _neighborcache_seed_prefetch && !_neighborcache_write_buffers)
+        _neighborcache_write_buffers = std::make_shared<NeighborCacheWriteBuffers>();
     _neighborcache_dyn_writer_stop.store(false, std::memory_order_release);
     _neighborcache_dyn_writer_threads.clear();
     _neighborcache_dyn_writer_threads.reserve(_neighborcache_dyn_writer_thread_count);
@@ -5105,17 +5132,29 @@ PQFlashIndex<T, LabelT>::neighborcache_dyn_writer_submit(NeighborCacheDynWriteOp
     {
         if (data == nullptr || nbytes == 0)
             return nullptr;
-        void *aligned = nullptr;
+        if (nonblocking && nbytes == defaults::SECTOR_LEN && _neighborcache_write_buffers)
+        {
+            const size_t slot = _neighborcache_write_buffers->try_acquire();
+            if (slot != NeighborCacheWriteBuffers::capacity)
+            {
+                job->data.get_deleter() = {_neighborcache_write_buffers, slot};
+                job->data.reset(_neighborcache_write_buffers->pages[slot].bytes);
+            }
+        }
+        if (!job->data)
+        {
+            void *aligned = nullptr;
 #ifndef _WINDOWS
-        if (::posix_memalign(&aligned, defaults::SECTOR_LEN, nbytes) != 0)
-            return nullptr;
+            if (::posix_memalign(&aligned, defaults::SECTOR_LEN, nbytes) != 0)
+                return nullptr;
 #else
-        aligned = std::malloc(nbytes);
-        if (aligned == nullptr)
-            return nullptr;
+            aligned = std::malloc(nbytes);
+            if (aligned == nullptr)
+                return nullptr;
 #endif
-        std::memcpy(aligned, data, nbytes);
-        job->data.reset(static_cast<char *>(aligned));
+            job->data.reset(static_cast<char *>(aligned));
+        }
+        std::memcpy(job->data.get(), data, nbytes);
     }
 
     {
@@ -8203,20 +8242,28 @@ bool PQFlashIndex<T, LabelT>::neighborcache_seed_prefetch_admit_existing(
         neighborcache_dyn_bump_page_gen(page_idx);
         return false;
     }
+    uint32_t *const old_members = _neighborcache_dyn_page_members.ptr(begin);
     const size_t old_count = _neighborcache_dyn_page_member_count[page_idx];
+    const bool reuse_locations = !_neighborcache_d_metadata_shared && !defer_locations;
+    const auto same_location = [&](size_t i) {
+        return reuse_locations && i < old_count && i < ids.size() && old_members[i] == ids[i];
+    };
     for (size_t i = 0; i < old_count; ++i)
-        neighborcache_dyn_loc_erase_sector_unlocked(_neighborcache_dyn_page_members[begin + i], sector);
-    std::copy(ids.begin(), ids.end(), _neighborcache_dyn_page_members.ptr(begin));
-    _neighborcache_dyn_page_member_count[page_idx] = static_cast<uint16_t>(ids.size());
+    {
+        if (!same_location(i))
+            neighborcache_dyn_loc_erase_sector_unlocked(old_members[i], sector);
+    }
     for (size_t i = 0; i < ids.size(); ++i)
     {
         if (defer_locations && i != 0) continue;
-        NeighborCacheDiskLoc loc;
-        loc.sector = sector;
-        loc.slot = static_cast<uint16_t>(i);
-        loc.nsectors = 1;
-        neighborcache_dyn_loc_add_unlocked(ids[i], loc);
+        const NeighborCacheDiskLoc loc{sector, static_cast<uint16_t>(i), 1};
+        if (same_location(i))
+            neighborcache_dyn_loc_refresh_unlocked(ids[i], loc);
+        else
+            neighborcache_dyn_loc_add_unlocked(ids[i], loc);
     }
+    std::copy(ids.begin(), ids.end(), old_members);
+    _neighborcache_dyn_page_member_count[page_idx] = static_cast<uint16_t>(ids.size());
     neighborcache_dyn_bump_page_gen(page_idx);
     _neighborcache_shared_cache.register_private_records(sector, ids.data(), ids.size());
     return true;
@@ -8399,14 +8446,19 @@ bool PQFlashIndex<T, LabelT>::neighborcache_seed_prefetch_lookup(uint32_t node_i
     nbrs.clear();
     if (!_neighborcache_seed_prefetch || node_id == std::numeric_limits<uint32_t>::max())
         return false;
-    std::vector<char> spill(_max_node_len, 0);
     const char *node = nullptr;
+    std::vector<char> shared_spill;
     std::optional<NeighborCacheTimedSharedMutexGuard<std::shared_mutex>> page_lock;
     if (_neighborcache_shared_cache.thread_private())
     {
-        if (!_neighborcache_shared_cache.copy_private_record(node_id, _max_node_len, spill.data()))
+        // A hit overwrites the full record, and a miss never reads the buffer.
+        // Keep the spill for the next lookup on this worker.
+        thread_local std::vector<char> private_spill;
+        if (private_spill.size() < _max_node_len)
+            private_spill.resize(_max_node_len);
+        if (!_neighborcache_shared_cache.copy_private_record(node_id, _max_node_len, private_spill.data()))
             return false;
-        node = spill.data();
+        node = private_spill.data();
     }
     else
     {
@@ -8420,8 +8472,9 @@ bool PQFlashIndex<T, LabelT>::neighborcache_seed_prefetch_lookup(uint32_t node_i
             loc.slot >= _neighborcache_dyn_page_member_count[page] ||
             _neighborcache_dyn_page_members[static_cast<size_t>(page) * _neighborcache_dyn_members_per_page + loc.slot] != node_id)
             return false;
+        shared_spill.resize(_max_node_len);
         bool spilled = false;
-        node = neighborcache_shared_node_ptr(loc.sector, loc.slot, spill.data(), spilled);
+        node = neighborcache_shared_node_ptr(loc.sector, loc.slot, shared_spill.data(), spilled);
         if (node == nullptr)
             return false;
     }
@@ -14138,7 +14191,8 @@ void PQFlashIndex<T, LabelT>::neighborcache_pack_dyn_page_into_query_prefetch(ui
 
 template <typename T, typename LabelT>
 bool PQFlashIndex<T, LabelT>::neighborcache_disk_cache_lookup_hit(uint32_t node_id,
-                                                          SSDQueryScratch<T> *query_scratch) const
+                                                          SSDQueryScratch<T> *query_scratch,
+                                                          uint32_t *resolved_sector, bool local_cache_missed) const
 {
     if (_neighborcache_dyn_enabled)
     {
@@ -14149,7 +14203,7 @@ bool PQFlashIndex<T, LabelT>::neighborcache_disk_cache_lookup_hit(uint32_t node_
                    _neighborcache_dcache_gate_active.load(std::memory_order_acquire));
         if (!lookup_enabled)
             return false;
-        if (neighborcache_dyn_query_local_dcache_hit(node_id, query_scratch))
+        if (!local_cache_missed && neighborcache_dyn_query_local_dcache_hit(node_id, query_scratch))
             return true;
     }
     if (_neighborcache_dyn_enabled || _neighborcache_seed_first_lookup)
@@ -14164,6 +14218,8 @@ bool PQFlashIndex<T, LabelT>::neighborcache_disk_cache_lookup_hit(uint32_t node_
         NeighborCacheDiskLoc loc;
         if (!neighborcache_resolve_disk_cache_loc(node_id, query_scratch, loc))
             return false;
+        if (resolved_sector != nullptr)
+            *resolved_sector = loc.sector;
         if (query_scratch != nullptr)
         {
             const uint64_t packed =
@@ -14320,10 +14376,14 @@ void PQFlashIndex<T, LabelT>::prepare_neighborcache_disk_cache_io(
         uint16_t io_nsectors = 1;
         bool dynamic_page_pinned = false;
     };
-    std::vector<PendingChoice> choices;
+    // These buffers are consumed synchronously by this function. Retain
+    // their capacity across the small I/O batches of the search worker.
+    thread_local std::vector<PendingChoice> choices;
+    choices.clear();
     choices.reserve(neighborcache_ids.size());
     std::unordered_set<uint32_t> chosen_ids;
-    std::vector<uint32_t> unresolved;
+    thread_local std::vector<uint32_t> unresolved;
+    unresolved.clear();
     unresolved.reserve(neighborcache_ids.size());
 
     if (_neighborcache_seed_first_lookup &&

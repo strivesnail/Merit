@@ -695,12 +695,49 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
         Write = 0,
         Sync = 1
     };
+    // Single-page writeback borrows storage until pwrite returns. The owner
+    // never waits for a buffer and can fall back to the large-write path.
+    struct NeighborCacheWriteBuffers
+    {
+        static constexpr size_t capacity = 64;
+        struct alignas(defaults::SECTOR_LEN) Page
+        {
+            char bytes[defaults::SECTOR_LEN];
+        };
+        std::unique_ptr<Page[]> pages{new Page[capacity]};
+        std::array<std::atomic<bool>, capacity> in_use{};
+
+        size_t try_acquire()
+        {
+            for (size_t slot = 0; slot < capacity; ++slot)
+            {
+                if (!in_use[slot].load(std::memory_order_relaxed) &&
+                    !in_use[slot].exchange(true, std::memory_order_acquire))
+                    return slot;
+            }
+            return capacity;
+        }
+    };
+    struct NeighborCacheWriteBufferDeleter
+    {
+        std::shared_ptr<NeighborCacheWriteBuffers> pool;
+        size_t slot = 0;
+
+        void operator()(char *buffer) const noexcept
+        {
+            if (pool)
+                pool->in_use[slot].store(false, std::memory_order_release);
+            else
+                ::free(buffer);
+        }
+    };
+
     struct NeighborCacheDynWriteJob
     {
         NeighborCacheDynWriteOp op = NeighborCacheDynWriteOp::Write;
         off_t offset = 0;
         size_t nbytes = 0;
-        std::unique_ptr<char, void (*)(void *)> data{nullptr, ::free};
+        std::unique_ptr<char, NeighborCacheWriteBufferDeleter> data;
         uint64_t enqueued_ns = 0;
         uint32_t prefetch_page = std::numeric_limits<uint32_t>::max();
         uint64_t prefetch_version = 0;
@@ -714,6 +751,7 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
         bool done = false;
         bool ok = false;
     };
+    std::shared_ptr<NeighborCacheWriteBuffers> _neighborcache_write_buffers;
     std::vector<std::thread> _neighborcache_dyn_writer_threads;
     size_t _neighborcache_dyn_writer_thread_count = 1;
     std::mutex _neighborcache_dyn_write_q_mu;
@@ -760,6 +798,7 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
     }
     void neighborcache_dyn_loc_clear_unlocked();
     void neighborcache_dyn_loc_add_unlocked(uint32_t node_id, const NeighborCacheDiskLoc &loc, bool fresh_page = false);
+    void neighborcache_dyn_loc_refresh_unlocked(uint32_t node_id, const NeighborCacheDiskLoc &loc);
     void neighborcache_dyn_loc_erase_sector_unlocked(uint32_t node_id, uint32_t sector);
     // One atomic word per slot: tag in the low 32 bits, page/slot in the high bits.
     // Query threads load it directly. 1 = live loc, 0 = not in the D-cache, -1 = use the locked map.
@@ -1247,7 +1286,9 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
 
     void update_neighborcache_seed_first_lookup_flag();
 
-    bool neighborcache_disk_cache_lookup_hit(uint32_t node_id, SSDQueryScratch<T> *query_scratch) const;
+    bool neighborcache_disk_cache_lookup_hit(uint32_t node_id, SSDQueryScratch<T> *query_scratch,
+                                             uint32_t *resolved_sector = nullptr,
+                                             bool local_cache_missed = false) const;
     bool neighborcache_dyn_query_local_dcache_hit(uint32_t node_id, SSDQueryScratch<T> *query_scratch) const;
     // Register all members of a dyn page into the query-local prefetch map so
     // same-hop / later-hop co-members count as prefetch instead of another seed hit.
