@@ -20,6 +20,45 @@ class NeighborCacheAdapter {
         }
     }
 public:
+    static void run_query_prefetch_page_members()
+    {
+        std::shared_ptr<AlignedFileReader> reader;
+        Index idx(reader, Metric::L2);
+        idx._neighborcache_dyn_physical_cap = 2;
+        idx._neighborcache_dyn_members_per_page = 4;
+        idx._neighborcache_dyn_page_member_count.assign(2, 0);
+        idx._neighborcache_dyn_page_members.assign(8, Index::NEIGHBORCACHE_DYN_INVALID_PAGE);
+        idx._neighborcache_dyn_page_gen.assign(2);
+        idx._neighborcache_dyn_page_member_count[1] = 3;
+        idx._neighborcache_dyn_page_members[4] = 11;
+        idx._neighborcache_dyn_page_members[6] = 33;
+        idx._neighborcache_dyn_page_gen[1].store(2);
+        idx._neighborcache_dcache_query_patch = false;
+        const uint32_t sector = Index::NEIGHBORCACHE_DYN_SECTOR_BASE + 1;
+        const uint64_t packed = (uint64_t{sector} << 32) | (uint64_t{1} << 16);
+
+        SSDQueryScratch<uint8_t> scratch(128, 4096);
+        idx.neighborcache_pack_dyn_page_into_query_prefetch(sector, &scratch);
+        assert(scratch.neighborcache_dcache_member_packed_loc.size() == 2);
+        assert(scratch.neighborcache_dcache_member_packed_loc.at(11) == packed);
+        assert(scratch.neighborcache_dcache_member_packed_loc.at(33) == (packed | 2));
+        assert(scratch.neighborcache_prefetched_page_gen.at(1) == 2);
+        assert(scratch.neighborcache_dcache_seed_members.empty());
+
+        idx._neighborcache_dyn_page_members[5] = 22;
+        idx._neighborcache_dyn_page_gen[1].store(4);
+        idx.neighborcache_pack_dyn_page_into_query_prefetch(sector, &scratch);
+        assert(scratch.neighborcache_dcache_member_packed_loc.at(22) == (packed | 1));
+        assert(scratch.neighborcache_prefetched_page_gen.at(1) == 4);
+
+        SSDQueryScratch<uint8_t> patch_scratch(128, 4096);
+        idx._neighborcache_dcache_query_patch = true;
+        idx.neighborcache_pack_dyn_page_into_query_prefetch(sector, &patch_scratch);
+        const std::vector<uint32_t> expected_members{11, 22, 33};
+        assert(patch_scratch.neighborcache_dcache_seed_members.at(11) == expected_members);
+        assert(patch_scratch.neighborcache_dcache_member_to_seed.at(33) == 11);
+    }
+
     static void run_heat_saturation(bool single_owner)
     {
         using Metadata = NeighborCacheMetadataCache;
@@ -691,6 +730,7 @@ public:
 }
 int main()
 {
+    diskann::NeighborCacheAdapter::run_query_prefetch_page_members();
     diskann::NeighborCacheAdapter::run_heat_saturation(true);
     diskann::NeighborCacheAdapter::run_heat_saturation(false);
     diskann::NeighborCacheAdapter::run_storage_budget(false);

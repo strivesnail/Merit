@@ -14097,7 +14097,7 @@ void PQFlashIndex<T, LabelT>::neighborcache_pack_dyn_page_into_query_prefetch(ui
             return;
         members.assign(_neighborcache_dyn_page_members.ptr(begin), _neighborcache_dyn_page_members.ptr(begin) + count);
     };
-    auto pack_page = [&](uint32_t page, std::vector<uint32_t> &members) {
+    auto pack_page = [&](uint32_t page, std::vector<uint32_t> *members) {
         if (!neighborcache_dyn_page_live(page))
             return;
         const size_t begin = static_cast<size_t>(page) * _neighborcache_dyn_members_per_page;
@@ -14105,7 +14105,8 @@ void PQFlashIndex<T, LabelT>::neighborcache_pack_dyn_page_into_query_prefetch(ui
         if (count == 0 || begin + count > _neighborcache_dyn_page_members.size())
             return;
         const uint32_t page_sector = NEIGHBORCACHE_DYN_SECTOR_BASE + page;
-        members.reserve(count);
+        if (members != nullptr)
+            members->reserve(count);
         for (size_t mi = 0; mi < count; ++mi)
         {
             const uint32_t mid = _neighborcache_dyn_page_members[begin + mi];
@@ -14114,15 +14115,22 @@ void PQFlashIndex<T, LabelT>::neighborcache_pack_dyn_page_into_query_prefetch(ui
             const uint64_t packed = (static_cast<uint64_t>(page_sector) << 32) | (static_cast<uint64_t>(1) << 16) |
                                     static_cast<uint64_t>(mi);
             query_scratch->neighborcache_dcache_member_packed_loc[mid] = packed;
-            members.push_back(mid);
+            if (members != nullptr)
+                members->push_back(mid);
         }
     };
+    if (span == 1 && !_neighborcache_dcache_query_patch)
+    {
+        pack_page(page_idx, nullptr);
+        neighborcache_query_page_prefetch_remember(query_scratch, page_idx);
+        return;
+    }
     std::vector<std::vector<uint32_t>> packed(span);
     for (uint32_t i = 0; i < span; ++i)
     {
         if (full || base + i == page_idx)
         {
-            pack_page(base + i, packed[i]);
+            pack_page(base + i, &packed[i]);
             neighborcache_query_page_prefetch_remember(query_scratch, base + i);
         }
         else
