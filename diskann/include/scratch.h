@@ -194,7 +194,7 @@ template <typename T> class SSDQueryScratch : public AbstractScratch<T>
     std::vector<uint32_t> neighborcache_dyn_pinned_sectors;
     std::vector<uint32_t> neighborcache_heap_dirty_slots;
     std::vector<uint32_t> neighborcache_heap_dirty_nodes;
-    std::vector<float> neighborcache_heap_dirty_scores;
+    std::vector<uint32_t> neighborcache_heap_dirty_scores;
     std::vector<uint8_t> neighborcache_heap_dirty_eligible;
     tsl::robin_set<uint32_t> neighborcache_heap_dirty_set;
     bool neighborcache_dcache_lookup_enabled = false;

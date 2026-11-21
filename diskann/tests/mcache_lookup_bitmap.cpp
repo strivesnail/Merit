@@ -2,9 +2,12 @@
 #include <algorithm>
 #include <atomic>
 #include <cassert>
+#include <limits>
 #include <random>
 #include <thread>
 #include <unordered_map>
+
+using Heat = diskann::NeighborCacheMetadataCache::Heat;
 
 void reference_membership(bool bitmap)
 {
@@ -12,8 +15,8 @@ void reference_membership(bool bitmap)
     diskann::NeighborCacheMetadataCache cache;
     cache.init(128, 2, 2048);
     assert(cache.membership_bitmap_bytes() == (bitmap ? 256 : 0));
-    std::unordered_map<uint32_t, float> resident;
-    std::atomic<float> unit{1.0f};
+    std::unordered_map<uint32_t, Heat> resident;
+    std::atomic<Heat> unit{1};
     std::mt19937 rng(231731);
     for (unsigned i = 0; i < 15000; ++i)
     {
@@ -23,7 +26,7 @@ void reference_membership(bool bitmap)
         assert(tr.present);
         if (tr.evicted_id != cache.kInvalid)
             assert(resident.erase(tr.evicted_id) == 1);
-        resident[node] += 1.0f;
+        resident[node] += 1u;
         assert(tr.score == resident.at(node));
         for (unsigned j = 0; j < 5; ++j)
         {
@@ -32,7 +35,7 @@ void reference_membership(bool bitmap)
             assert(cache.contains(id) == present);
             const uint32_t slot = cache.slot_of(id);
             assert((slot != cache.kInvalid) == present);
-            assert(cache.score(id) == (present ? resident.at(id) : 0.0f));
+            assert(cache.score(id) == (present ? resident.at(id) : 0u));
             diskann::NeighborCacheMetadataCache::Snapshot snap;
             assert(cache.snapshot(id, snap) == present);
             if (present)
@@ -50,7 +53,7 @@ void concurrent_bits()
     setenv("NEIGHBORCACHE_MCACHE_LOOKUP_BITMAP", "1", 1);
     diskann::NeighborCacheMetadataCache cache;
     cache.init(128, 2, 4096);
-    std::atomic<float> unit{1.0f};
+    std::atomic<Heat> unit{1};
     for (uint32_t id = 1; id <= 32; ++id)
     {
         assert(cache.on_expand(id, unit).present);
@@ -68,7 +71,7 @@ void concurrent_bits()
             const uint32_t id = 1 + i % 32;
             assert(cache.contains(id));
             assert(cache.node_at(cache.slot_of(id)) == id);
-            assert(cache.score(id) == 1.0f);
+            assert(cache.score(id) == 1u);
         }
     };
     std::thread first(read), second(read);
@@ -78,7 +81,7 @@ void snapshot_sorting()
 {
     diskann::NeighborCacheMetadataCache cache;
     cache.init(128, 2, 4096);
-    std::atomic<float> unit{1.0f};
+    std::atomic<Heat> unit{1};
     cache.on_edge(1, 99, unit);
     cache.on_edge(1, 99, unit);
     diskann::NeighborCacheMetadataCache::Snapshot registered;
@@ -101,7 +104,7 @@ void snapshot_sorting()
 void lazy_edge_slots()
 {
     diskann::NeighborCacheMetadataCache cache;
-    std::atomic<float> unit{1.0f};
+    std::atomic<Heat> unit{1};
     setenv("NEIGHBORCACHE_MCACHE_EAGER_EDGE_SLOTS", "1", 1);
     cache.init(128,2,4096);
     const auto full_bytes=cache.edge_descriptor_capacity_bytes();
@@ -132,7 +135,7 @@ void concurrent_edge_slot_growth()
 {
     diskann::NeighborCacheMetadataCache cache;
     cache.init(524288,2,1000000);
-    std::atomic<float> unit{1.0f};
+    std::atomic<Heat> unit{1};
     assert(cache.on_expand(0,unit).present);
     cache.on_real_io_edge(0,1);cache.on_real_io_edge(0,1);
     diskann::NeighborCacheMetadataCache::Snapshot expected;
@@ -185,7 +188,7 @@ void lazy_slot_blocks()
 void stable_index_slots(diskann::NeighborCacheMetadataCache::Access access, size_t shards)
 {
     diskann::NeighborCacheMetadataCache cache;
-    std::atomic<float> unit{1.0f};
+    std::atomic<Heat> unit{1};
     constexpr uint32_t nodes = 129;
     cache.init(nodes, 2, nodes, /*index_ids_only=*/true, access);
     assert(cache.has_stable_slots());
@@ -200,7 +203,7 @@ void stable_index_slots(diskann::NeighborCacheMetadataCache::Access access, size
     assert(!cache.on_expand(nodes, unit).present);
     assert(cache.set_evictable(0, false));
     assert(cache.evictable_size() == nodes - 1);
-    assert(cache.on_expand(0, unit).score == 2.0f);
+    assert(cache.on_expand(0, unit).score == 2u);
     assert(cache.set_evictable(0, true));
     assert(cache.evictable_size() == nodes);
 
@@ -227,6 +230,31 @@ void stable_index_slots(diskann::NeighborCacheMetadataCache::Access access, size
     assert(by_slot.significant.empty());
 }
 
+void integer_heat()
+{
+    using Cache = diskann::NeighborCacheMetadataCache;
+    Cache cache;
+    cache.init(4, 2, 4, true, Cache::Access::SingleOwner);
+    std::atomic<Heat> unit{1u << 24};
+    const auto first = cache.on_expand(0, unit);
+    assert(first.score == (1u << 24));
+    unit.store(1);
+    assert(cache.on_expand(0, unit).score == (1u << 24) + 1);
+    const auto second = cache.on_expand(1, unit);
+    unit.store(std::numeric_limits<Heat>::max());
+    const auto max_heat = std::numeric_limits<Heat>::max();
+    assert(cache.on_expand(0, unit).score == max_heat);
+    unit.store(1);
+    assert(cache.on_expand(0, unit).score == max_heat);
+
+    cache.scale_scores(Cache::kDecayScale / 2, unit);
+    uint32_t node = Cache::kInvalid;
+    Heat score = 0;
+    assert(cache.node_score_at(first.slot_id, node, score));
+    assert(node == 0 && score == max_heat / 2);
+    assert(cache.score_at(second.slot_id) == 0 && unit.load() == 1);
+}
+
 int main()
 {
     using Access = diskann::NeighborCacheMetadataCache::Access;
@@ -240,4 +268,5 @@ int main()
     reference_membership(true);
     concurrent_bits();
     snapshot_sorting();
+    integer_heat();
 }

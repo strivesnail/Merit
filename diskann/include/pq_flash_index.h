@@ -839,9 +839,10 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
         for (size_t index = 0; index < it->second.size(); ++index)
             fn(it->second[index], index);
     }
+    using NeighborCacheHeat = NeighborCacheMetadataCache::Heat;
     struct NeighborCacheHeapEntry
     {
-        float score = 0;
+        NeighborCacheHeat score = 0;
         uint32_t slot_id = NeighborCacheMetadataCache::kInvalid;
     };
     enum class NeighborCacheHeapKind : uint8_t
@@ -886,10 +887,10 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
     std::atomic<bool> _neighborcache_refresh_needed{false};
     std::atomic<bool> _neighborcache_refresh_running{false};
     static constexpr size_t NEIGHBORCACHE_PENDING_PAIR_CAP_MAX = 65536;
-    std::atomic<float> _neighborcache_score_unit{1.0f};
+    std::atomic<NeighborCacheHeat> _neighborcache_score_unit{1};
     // Forward decay shared by node scores and edge heat: increments add
-    // unit = 2^(accesses_since_cycle_start / half_life). A cycle ends (everything divided by unit, unit back to 1)
-    // when unit reaches NEIGHBORCACHE_SCORE_UNIT_MAX, or early once unit >= 2 if an edge heat saturated.
+    // The increment is the nearest integer to 2^(accesses_since_cycle_start / half_life).
+    // At the end of the cycle, scale the counts down and reset the increment to 1.
     std::atomic<uint64_t> _neighborcache_decay_query_count{0};
     std::atomic<uint64_t> _neighborcache_decay_access_count{0};
     std::atomic<uint64_t> _neighborcache_decay_cycle_start{0};
@@ -1102,8 +1103,8 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
     NeighborCacheHeapKind neighborcache_dyn_heap_kind_unlocked(uint32_t slot_id) const;
     void neighborcache_dyn_set_heap_kind_unlocked(uint32_t slot_id, NeighborCacheHeapKind kind);
     void neighborcache_dyn_heap_erase_unlocked(uint32_t slot_id);
-    void neighborcache_dyn_heap_apply_unlocked(uint32_t slot_id, float score, NeighborCacheHeapKind desired);
-    void neighborcache_dyn_heap_upsert_unlocked(uint32_t slot_id, float score);
+    void neighborcache_dyn_heap_apply_unlocked(uint32_t slot_id, NeighborCacheHeat score, NeighborCacheHeapKind desired);
+    void neighborcache_dyn_heap_upsert_unlocked(uint32_t slot_id, NeighborCacheHeat score);
     void neighborcache_dyn_clean_heap_unlocked(NeighborCacheHeapShard &shard, NeighborCacheHeapKind kind);
     bool neighborcache_dyn_best_heap_entry(NeighborCacheHeapKind kind, NeighborCacheHeapEntry &entry, size_t &shard_index);
     void neighborcache_dyn_flush_dirty_heap(SSDQueryScratch<T> *query_scratch);

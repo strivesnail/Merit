@@ -31,10 +31,18 @@ class NeighborCacheMetadataCache
         SingleOwner
     };
 
+    using Heat = uint32_t;
+    static constexpr uint32_t kDecayScale = 1u << 16;
+
+    static constexpr Heat decay_heat(Heat heat, uint32_t multiplier)
+    {
+        return static_cast<Heat>(static_cast<uint64_t>(heat) * multiplier / kDecayScale);
+    }
+
     struct Snapshot
     {
         uint32_t slot_id = kInvalid;
-        float score = 0.0f;
+        Heat score = 0;
         std::vector<std::pair<uint32_t, uint8_t>> significant;
     };
 
@@ -42,7 +50,7 @@ class NeighborCacheMetadataCache
     {
         uint32_t node_id = kInvalid;
         uint32_t slot_id = kInvalid;
-        float score = 0.0f;
+        Heat score = 0;
         uint32_t evicted_id = kInvalid;
         uint32_t evicted_slot = kInvalid;
         bool present = false;
@@ -84,10 +92,9 @@ class NeighborCacheMetadataCache
         return _sig_t.load(std::memory_order_relaxed);
     }
 
-    TouchResult on_expand(uint32_t node_id, const std::atomic<float> &score_unit);
-    // Edge heat grows by the current forward-decay unit, rounded to an integer.
-    TouchResult on_edge(uint32_t parent, uint32_t child, float unit = 1.0f);
-    TouchResult on_real_io_edge(uint32_t parent, uint32_t child, size_t max_edges = 64, float unit = 1.0f);
+    TouchResult on_expand(uint32_t node_id, const std::atomic<Heat> &score_unit);
+    TouchResult on_edge(uint32_t parent, uint32_t child, Heat unit = 1);
+    TouchResult on_real_io_edge(uint32_t parent, uint32_t child, size_t max_edges = 64, Heat unit = 1);
     uint64_t membership_bitmap_bytes() const
     {
         return _membership_word_count * sizeof(uint64_t);
@@ -96,12 +103,12 @@ class NeighborCacheMetadataCache
     bool contains(uint32_t node_id) const;
     uint32_t slot_of(uint32_t node_id) const;
     uint32_t node_at(uint32_t slot_id) const;
-    bool node_score_at(uint32_t slot_id, uint32_t &node_id, float &score) const;
-    float score(uint32_t node_id) const;
-    float score_at(uint32_t slot_id) const;
+    bool node_score_at(uint32_t slot_id, uint32_t &node_id, Heat &score) const;
+    Heat score(uint32_t node_id) const;
+    Heat score_at(uint32_t slot_id) const;
     bool set_evictable(uint32_t node_id, bool evictable);
-    // Scales node scores and (unless NEIGHBORCACHE_EDGE_HEAT_DECAY=0) edge heat, dropping edges that reach zero.
-    void scale_scores(float factor, std::atomic<float> &score_unit, float next_score_unit);
+    // The multiplier is in units of 1/kDecayScale. Round scaled counts down.
+    void scale_scores(uint32_t multiplier, std::atomic<Heat> &score_unit);
     uint64_t edge_saturations() const;
     bool edge_saturation_pending() const;
     bool snapshot(uint32_t node_id, Snapshot &out, bool include_all_edges = false) const;
@@ -151,7 +158,7 @@ class NeighborCacheMetadataCache
     {
         mutable std::shared_mutex mu;
         uint64_t capacity = 0;
-        NeighborCacheLazyArray<float> scores;
+        NeighborCacheLazyArray<Heat> scores;
         NeighborCacheLazyArray<std::atomic<uint32_t>> slot_to_node;
         std::vector<std::vector<Edge>> edges_by_slot;
         NeighborCacheLazyArray<uint8_t> evictable;
@@ -172,13 +179,13 @@ class NeighborCacheMetadataCache
     void membership_clear(uint32_t node_id);
     uint32_t evict_one_unlocked(Shard &shard, size_t shard_id, uint32_t &evicted_slot,
                                 uint32_t &reclaimed_local_slot);
-    TouchResult touch_or_insert_unlocked(Shard &shard, size_t shard_id, uint32_t node_id, float score_delta);
+    TouchResult touch_or_insert_unlocked(Shard &shard, size_t shard_id, uint32_t node_id, Heat score_delta);
     TouchResult touch_existing_unlocked(Shard &shard, size_t shard_id, uint32_t node_id,
-                                       uint32_t local_slot, float score_delta);
+                                       uint32_t local_slot, Heat score_delta);
     void copy_snapshot_edges_unlocked(const Shard &shard, uint32_t local_slot, Snapshot &out,
                                       bool include_all_edges) const;
     static void sort_snapshot_edges(Snapshot &out);
-    uint8_t edge_increment(float unit) const;
+    uint8_t edge_increment(Heat unit) const;
     void add_edge_heat_unlocked(Edge &edge, uint8_t increment);
 
     std::vector<std::unique_ptr<Shard>> _shards;

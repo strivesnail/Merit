@@ -5496,7 +5496,7 @@ void PQFlashIndex<T, LabelT>::enable_neighborcache_dynamic_3cache(bool enable, c
         _neighborcache_query_epoch.store(0, std::memory_order_relaxed);
         _neighborcache_refresh_needed.store(false, std::memory_order_relaxed);
         _neighborcache_refresh_running.store(false, std::memory_order_relaxed);
-        _neighborcache_score_unit.store(1.0f);
+        _neighborcache_score_unit.store(1);
         _neighborcache_decay_query_count.store(0, std::memory_order_relaxed);
         _neighborcache_decay_access_count.store(0, std::memory_order_relaxed);
         _neighborcache_decay_cycle_start.store(0, std::memory_order_relaxed);
@@ -5735,7 +5735,7 @@ void PQFlashIndex<T, LabelT>::enable_neighborcache_dynamic_3cache(bool enable, c
                   << (unbounded_dcache ? std::string() : std::to_string(_neighborcache_dyn_page_cap))
                   << " (directory seed addresses=" << seed_address_slots << ", base pages=" << base_pages << ")"
                   << " file=" << _neighborcache_dyn_path << " physical_pages=" << _neighborcache_dyn_physical_cap
-                  << " score=float32 unit=1..16/100x1k-query"
+                  << " score=uint32 unit_max=" << NEIGHBORCACHE_SCORE_UNIT_MAX
                   << " mcache_shards=" << _neighborcache_mcache.shard_count()
                   << " heap_shards=" << _neighborcache_heap_shard_count
                   << " dcache_location_shards=" << _neighborcache_dyn_loc_shard_count
@@ -6650,14 +6650,14 @@ template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::print_neigh
                   << " miss_but_in_map=" << g_dyn_probe.miss_but_in_map << std::endl;
     uint32_t max_id = std::numeric_limits<uint32_t>::max();
     uint32_t min_id = std::numeric_limits<uint32_t>::max();
-    float max_c = 0.0f, min_c = 0.0f;
+    NeighborCacheHeat max_c = 0, min_c = 0;
     uint32_t ins = std::numeric_limits<uint32_t>::max();
     uint32_t del = std::numeric_limits<uint32_t>::max();
     uint64_t pair_n = 0;
     uint64_t writes = 0, deletes = 0, trig = 0, refresh = 0, max_n = 0, min_n = 0, heap_storage_bytes = 0;
     uint64_t decay_queries = 0, decay_accesses = 0, decay_cycles = 0, decay_early_cycles = 0;
     bool decay_started = false;
-    float score_unit = 1.0f;
+    NeighborCacheHeat score_unit = 1;
     bool have_max = false;
     bool have_min = false;
     NeighborCacheHeapEntry best_max;
@@ -7291,7 +7291,7 @@ void PQFlashIndex<T, LabelT>::neighborcache_dyn_heap_erase_unlocked(uint32_t slo
 }
 
 template <typename T, typename LabelT>
-void PQFlashIndex<T, LabelT>::neighborcache_dyn_heap_apply_unlocked(uint32_t slot_id, float score, NeighborCacheHeapKind desired)
+void PQFlashIndex<T, LabelT>::neighborcache_dyn_heap_apply_unlocked(uint32_t slot_id, NeighborCacheHeat score, NeighborCacheHeapKind desired)
 {
     if (slot_id >= _neighborcache_heap_position.size())
         return;
@@ -7321,7 +7321,7 @@ void PQFlashIndex<T, LabelT>::neighborcache_dyn_heap_apply_unlocked(uint32_t slo
 }
 
 template <typename T, typename LabelT>
-void PQFlashIndex<T, LabelT>::neighborcache_dyn_heap_upsert_unlocked(uint32_t slot_id, float score)
+void PQFlashIndex<T, LabelT>::neighborcache_dyn_heap_upsert_unlocked(uint32_t slot_id, NeighborCacheHeat score)
 {
     if (slot_id >= _neighborcache_heap_position.size())
         return;
@@ -7407,7 +7407,7 @@ void PQFlashIndex<T, LabelT>::neighborcache_dyn_flush_dirty_heap(SSDQueryScratch
             continue;
         }
         uint32_t node_id = NeighborCacheMetadataCache::kInvalid;
-        float score = 0.0f;
+        NeighborCacheHeat score = 0;
         if (!_neighborcache_mcache.node_score_at(slot_id, node_id, score))
         {
             query_scratch->neighborcache_heap_dirty_nodes[index] = NeighborCacheMetadataCache::kInvalid;
@@ -8995,7 +8995,7 @@ template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::neighborcac
         const bool now_full = committed_pages >= _neighborcache_dyn_page_cap;
         if (now_full != full)
             return;
-        float current_max_score = 0.0f;
+        NeighborCacheHeat current_max_score = 0;
         {
             NeighborCacheHeapShard &shard = _neighborcache_heap_shards[cand_ins_shard];
             NeighborCacheTimedMutexGuard hlock(shard.mu, NeighborCacheLockKind::Heap, !_neighborcache_query_owns_metadata);
@@ -9800,7 +9800,7 @@ template <typename T, typename LabelT> bool PQFlashIndex<T, LabelT>::neighborcac
             _neighborcache_commit_fail_why[1].fetch_add(1, std::memory_order_relaxed);
             return false;
         }
-        const float insertion_score = _neighborcache_mcache.score_at(candidate.insertion_slot);
+        const NeighborCacheHeat insertion_score = _neighborcache_mcache.score_at(candidate.insertion_slot);
         if (_neighborcache_mcache.node_at(candidate.insertion_slot) != candidate.insertion_id ||
             (candidate.deletion_id != std::numeric_limits<uint32_t>::max() &&
              _neighborcache_mcache.node_at(candidate.deletion_slot) != candidate.deletion_id))
@@ -9884,7 +9884,7 @@ template <typename T, typename LabelT> bool PQFlashIndex<T, LabelT>::neighborcac
         const uint32_t del = pair.deletion_id;
         const uint32_t ins_slot = pair.insertion_slot;
         const uint32_t del_slot = pair.deletion_slot;
-        const float insertion_score = _neighborcache_mcache.score_at(ins_slot);
+        const NeighborCacheHeat insertion_score = _neighborcache_mcache.score_at(ins_slot);
         neighborcache_dyn_clear_ready_pair_unlocked(ins_slot, false);
         if (del == std::numeric_limits<uint32_t>::max() && neighborcache_dyn_disk_is_full())
         {
@@ -11280,7 +11280,7 @@ void PQFlashIndex<T, LabelT>::neighborcache_dyn_record_real_io_coaccess(SSDQuery
     _neighborcache_real_io_nodes.fetch_add(nodes.size(), std::memory_order_relaxed);
     uint64_t recorded_pairs = 0, window_pairs = 0, adjacent_pairs = 0;
     bool touched = false;
-    const float unit = _neighborcache_score_unit.load(std::memory_order_relaxed);
+    const NeighborCacheHeat unit = _neighborcache_score_unit.load(std::memory_order_relaxed);
     const std::vector<uint32_t> &nbrs = query_scratch->neighborcache_storage_nbrs;
     const std::vector<uint32_t> &off = query_scratch->neighborcache_storage_nbr_off;
     const bool have_nbrs = off.size() == nodes.size() + 1;
@@ -11841,7 +11841,7 @@ void PQFlashIndex<T, LabelT>::neighborcache_dyn_repack_read_page(SSDQueryScratch
     on_page.reserve(members->size() * 2);
     for (uint32_t id : *members)
         on_page.insert(id);
-    tsl::robin_map<uint32_t, float> best;
+    tsl::robin_map<uint32_t, NeighborCacheHeat> best;
     for (const auto &nbrs : pf.member_nbrs)
     {
         for (uint32_t id : nbrs)
@@ -11850,7 +11850,7 @@ void PQFlashIndex<T, LabelT>::neighborcache_dyn_repack_read_page(SSDQueryScratch
                 continue;
             if (!_neighborcache_mem_pool->contains(id))
                 continue;
-            const float score = _neighborcache_mcache.active() ? _neighborcache_mcache.score(id) : 0.0f;
+            const NeighborCacheHeat score = _neighborcache_mcache.active() ? _neighborcache_mcache.score(id) : 0;
             const auto it = best.find(id);
             if (it == best.end() || score > it->second)
                 best[id] = score;
@@ -11858,14 +11858,15 @@ void PQFlashIndex<T, LabelT>::neighborcache_dyn_repack_read_page(SSDQueryScratch
     }
     if (best.empty())
         return;
-    std::vector<std::pair<float, uint32_t>> ranked;
+    using RankedNode = std::pair<NeighborCacheHeat, uint32_t>;
+    std::vector<RankedNode> ranked;
     ranked.reserve(best.size());
     for (const auto &kv : best)
         ranked.emplace_back(kv.second, kv.first);
     const size_t room = static_cast<size_t>(_nnodes_per_sector) - pf.member_ids.size();
     const size_t take = std::min(room, ranked.size());
     std::partial_sort(ranked.begin(), ranked.begin() + static_cast<std::ptrdiff_t>(take), ranked.end(),
-                      [](const std::pair<float, uint32_t> &a, const std::pair<float, uint32_t> &b) {
+                      [](const RankedNode &a, const RankedNode &b) {
                           if (a.first != b.first)
                               return a.first > b.first;
                           return a.second < b.second;
@@ -12278,7 +12279,7 @@ template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::neighborcac
     const bool saturated = _neighborcache_mcache.edge_saturation_pending();
     if (unit < NEIGHBORCACHE_SCORE_UNIT_MAX && !(saturated && unit >= 2.0f))
     {
-        _neighborcache_score_unit.store(unit, std::memory_order_release);
+        _neighborcache_score_unit.store(static_cast<NeighborCacheHeat>(std::round(unit)), std::memory_order_release);
         return;
     }
 
@@ -12293,20 +12294,26 @@ template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::neighborcac
         static_cast<float>(std::exp2(static_cast<double>(now - cycle_start) / _neighborcache_decay_half_life_accesses)));
     if (divisor < 2.0f)
         return;
-    const float factor = 1.0f / divisor;
+    const uint32_t multiplier = static_cast<uint32_t>(NeighborCacheMetadataCache::kDecayScale / divisor);
     std::vector<std::unique_ptr<NeighborCacheTimedMutexGuard>> heap_locks;
     heap_locks.reserve(_neighborcache_heap_shard_count);
     for (size_t shard_index = 0; shard_index < _neighborcache_heap_shard_count; ++shard_index)
         heap_locks.emplace_back(
             std::make_unique<NeighborCacheTimedMutexGuard>(_neighborcache_heap_shards[shard_index].mu, NeighborCacheLockKind::Heap, !_neighborcache_query_owns_metadata));
-    _neighborcache_mcache.scale_scores(factor, _neighborcache_score_unit, 1.0f);
+    _neighborcache_mcache.scale_scores(multiplier, _neighborcache_score_unit);
+    const auto decay_heap = [&](std::vector<NeighborCacheHeapEntry> &heap, NeighborCacheHeapKind kind) {
+        for (NeighborCacheHeapEntry &entry : heap)
+            entry.score = NeighborCacheMetadataCache::decay_heat(entry.score, multiplier);
+        // Integer rounding can tie scores that were previously ordered by heat.
+        // Restore the slot-ID tie order and update the reverse heap positions.
+        for (size_t parent = heap.size() / 2; parent > 0; --parent)
+            neighborcache_dyn_heap_sift_down_unlocked(heap, parent - 1, kind);
+    };
     for (size_t shard_index = 0; shard_index < _neighborcache_heap_shard_count; ++shard_index)
     {
         NeighborCacheHeapShard &shard = _neighborcache_heap_shards[shard_index];
-        for (NeighborCacheHeapEntry &entry : shard.max_heap)
-            entry.score *= factor;
-        for (NeighborCacheHeapEntry &entry : shard.min_heap)
-            entry.score *= factor;
+        decay_heap(shard.max_heap, NeighborCacheHeapKind::Max);
+        decay_heap(shard.min_heap, NeighborCacheHeapKind::Min);
     }
     _neighborcache_decay_cycle_start.store(now, std::memory_order_release);
     _neighborcache_decay_cycles.fetch_add(1, std::memory_order_relaxed);
