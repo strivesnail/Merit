@@ -103,6 +103,7 @@ void NeighborCacheMetadataCache::init(uint64_t capacity, uint8_t sig_threshold, 
     {
         Shard &shard = *_shards[shard_id];
         shard.capacity = base_capacity + (shard_id < extra_shards ? 1 : 0);
+        shard.node_to_slot.max_load_factor(access == Access::SingleOwner ? 0.65f : 0.5f);
         shard.scores.assign(static_cast<size_t>(shard.capacity), 0);
         shard.slot_to_node.assign(static_cast<size_t>(shard.capacity), kInvalid);
         if (eager_edge_slots)
