@@ -17,7 +17,34 @@ public:
   for(unsigned i=0;i<5;i++){typename PQFlashIndex<uint8_t>::NeighborCacheDiskLoc loc;loc.sector=base+i;loc.slot=0;loc.nsectors=1;idx.neighborcache_dyn_loc_add_unlocked(7,loc);idx.neighborcache_dyn_loc_add_unlocked(7,loc);}
   assert(idx.neighborcache_dc_loc_count_unlocked(7)==5);
   auto verify=[&](const std::vector<unsigned>&want){std::vector<unsigned> got;idx.neighborcache_dc_for_each_loc_unlocked(7,[&](const auto &loc,size_t i){assert(i==got.size());got.push_back(loc.sector-base);});assert(got==want);for(size_t i=0;i<want.size();i++){typename PQFlashIndex<uint8_t>::NeighborCacheDiskLoc loc;assert(idx.neighborcache_dc_loc_at_unlocked(7,i,loc));assert(loc.sector==base+want[i]);}uint32_t seed=99;assert(idx.neighborcache_dyn_seed_page_unlocked(7,seed));assert(seed==want.front());typename PQFlashIndex<uint8_t>::NeighborCacheDiskLoc canon;assert(idx.neighborcache_canon_lookup(7,canon)==1);assert(canon.sector==base+want.front());};
-  verify({4,3,2,1,0});typename PQFlashIndex<uint8_t>::NeighborCacheDiskLoc fresh;fresh.sector=base+5;fresh.slot=0;fresh.nsectors=1;idx.neighborcache_dyn_loc_add_unlocked(7,fresh,true);verify({5,4,3,2,1,0});idx.neighborcache_dyn_loc_erase_sector_unlocked(7,base+5);verify({4,3,2,1,0});idx.neighborcache_dyn_loc_erase_sector_unlocked(7,base+4);verify({3,2,1,0});idx.neighborcache_dyn_loc_erase_sector_unlocked(7,base+2);verify({3,1,0});idx.neighborcache_dyn_loc_clear_unlocked();assert(idx.neighborcache_dc_loc_count_unlocked(7)==0);idx._neighborcache_dyn_enabled=false;
+  verify({4,3,2,1,0});typename PQFlashIndex<uint8_t>::NeighborCacheDiskLoc fresh;fresh.sector=base+5;fresh.slot=0;fresh.nsectors=1;idx.neighborcache_dyn_loc_add_unlocked(7,fresh,true);verify({5,4,3,2,1,0});idx.neighborcache_dyn_loc_erase_sector_unlocked(7,base+5);verify({4,3,2,1,0});idx.neighborcache_dyn_loc_erase_sector_unlocked(7,base+4);verify({3,2,1,0});idx.neighborcache_dyn_loc_erase_sector_unlocked(7,base+2);verify({3,1,0});
+  auto &locations = idx.neighborcache_dyn_loc_shard(7).locations;
+  locations.reserve(64);
+  verify({3, 1, 0});
+  idx.neighborcache_dyn_loc_erase_sector_unlocked(7, base + 1);
+  idx.neighborcache_dyn_loc_erase_sector_unlocked(7, base + 3);
+  verify({0});
+  assert(locations.at(7).heap_capacity() == 0);
+  idx.neighborcache_dyn_loc_add_unlocked(7, fresh, true);
+  verify({5, 0});
+  idx.neighborcache_dyn_loc_erase_sector_unlocked(7, base);
+  verify({5});
+  // Erasing node 7 moves the last value in the segmented array.
+  fresh.sector = base + 6;
+  idx.neighborcache_dyn_loc_add_unlocked(12, fresh, true);
+  fresh.sector = base + 7;
+  idx.neighborcache_dyn_loc_add_unlocked(12, fresh, true);
+  idx.neighborcache_dyn_loc_erase_sector_unlocked(7, base + 5);
+  assert(idx.neighborcache_dc_loc_count_unlocked(7) == 0);
+  assert(idx.neighborcache_dc_loc_count_unlocked(12) == 2);
+  typename PQFlashIndex<uint8_t>::NeighborCacheDiskLoc moved;
+  assert(idx.neighborcache_dc_loc_at_unlocked(12, 0, moved) && moved.sector == base + 7);
+  assert(idx.neighborcache_dc_loc_at_unlocked(12, 1, moved) && moved.sector == base + 6);
+  idx.neighborcache_dyn_loc_add_unlocked(7, fresh);
+  idx.neighborcache_dyn_loc_clear_unlocked();
+  assert(idx.neighborcache_dc_loc_count_unlocked(7) == 0);
+  assert(idx.neighborcache_dc_loc_count_unlocked(12) == 0);
+  idx._neighborcache_dyn_enabled = false;
  }
  template<class T> static void pages(bool concurrent) {
   std::shared_ptr<AlignedFileReader> reader;PQFlashIndex<T> idx(reader,Metric::L2);

@@ -3,6 +3,7 @@
 
 #pragma once
 #include "common_includes.h"
+#include <algorithm>
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
@@ -16,10 +17,13 @@
 #include <queue>
 #include <set>
 #include <shared_mutex>
+#include <stdexcept>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "aligned_file_reader.h"
+#include "ankerl/unordered_dense.h"
 #include "concurrent_queue.h"
 #include "neighbor.h"
 #include "parameters.h"
@@ -308,6 +312,110 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
         uint16_t nsectors = 1;
     };
 
+    // Store the common single location directly in the directory value.
+    // For replicas, keep the locations contiguous in their original order.
+    class NeighborCacheDiskLocations
+    {
+      public:
+        NeighborCacheDiskLocations() = default;
+        NeighborCacheDiskLocations(const NeighborCacheDiskLocations &) = delete;
+        NeighborCacheDiskLocations &operator=(const NeighborCacheDiskLocations &) = delete;
+
+        NeighborCacheDiskLocations(NeighborCacheDiskLocations &&other) noexcept
+            : _storage(other._storage), _size(std::exchange(other._size, 0)),
+              _capacity(std::exchange(other._capacity, 1))
+        {
+            other._storage = Storage{NeighborCacheDiskLoc{}};
+        }
+
+        NeighborCacheDiskLocations &operator=(NeighborCacheDiskLocations &&other) noexcept
+        {
+            if (this != &other)
+            {
+                release_replicas();
+                _storage = other._storage;
+                _size = std::exchange(other._size, 0);
+                _capacity = std::exchange(other._capacity, 1);
+                other._storage = Storage{NeighborCacheDiskLoc{}};
+            }
+            return *this;
+        }
+
+        ~NeighborCacheDiskLocations() { release_replicas(); }
+
+        size_t size() const { return _size; }
+        bool empty() const { return _size == 0; }
+        uint32_t heap_capacity() const { return _capacity == 1 ? 0 : _capacity; }
+
+        NeighborCacheDiskLoc *begin() { return _capacity == 1 ? &_storage.single : _storage.replicas; }
+        const NeighborCacheDiskLoc *begin() const
+        {
+            return _capacity == 1 ? &_storage.single : _storage.replicas;
+        }
+        NeighborCacheDiskLoc *end() { return begin() + _size; }
+        const NeighborCacheDiskLoc *end() const { return begin() + _size; }
+        const NeighborCacheDiskLoc &operator[](size_t index) const { return begin()[index]; }
+        const NeighborCacheDiskLoc &front() const { return (*this)[0]; }
+        const NeighborCacheDiskLoc &back() const { return (*this)[_size - 1]; }
+
+        void add(NeighborCacheDiskLoc location, bool append)
+        {
+            if (_size == _capacity)
+                grow();
+            auto *locations = begin();
+            if (!append)
+                std::move_backward(locations, locations + _size, locations + _size + 1);
+            locations[append ? _size : 0] = location;
+            ++_size;
+        }
+
+        void erase_sector(uint32_t sector)
+        {
+            auto *locations = begin();
+            const auto *last = std::remove_if(locations, locations + _size,
+                [sector](const NeighborCacheDiskLoc &location) { return location.sector == sector; });
+            _size = static_cast<uint32_t>(last - locations);
+            if (_capacity > 1 && _size <= 1)
+            {
+                const NeighborCacheDiskLoc remaining = _size == 0 ? NeighborCacheDiskLoc{} : locations[0];
+                release_replicas();
+                _storage = Storage{remaining};
+                _capacity = 1;
+            }
+        }
+
+      private:
+        union Storage
+        {
+            NeighborCacheDiskLoc single;
+            NeighborCacheDiskLoc *replicas;
+        };
+
+        void release_replicas() noexcept
+        {
+            if (_capacity > 1)
+                delete[] _storage.replicas;
+        }
+
+        void grow()
+        {
+            constexpr auto limit = std::numeric_limits<uint32_t>::max();
+            if (_capacity == limit)
+                throw std::length_error("Too many D-cache locations for one node");
+            const uint32_t capacity = _capacity <= limit / 2 ? _capacity * 2 : limit;
+            auto locations = std::make_unique<NeighborCacheDiskLoc[]>(capacity);
+            std::copy_n(begin(), _size, locations.get());
+            release_replicas();
+            _storage.replicas = locations.release();
+            _capacity = capacity;
+        }
+
+        Storage _storage{NeighborCacheDiskLoc{}};
+        uint32_t _size = 0;
+        uint32_t _capacity = 1;
+    };
+    static_assert(sizeof(NeighborCacheDiskLocations) == 16, "Keep D-cache directory entries compact");
+
     struct NeighborCacheReadPending
     {
         uint32_t id = 0;
@@ -448,7 +556,8 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
     struct NeighborCacheDynLocShard
     {
         mutable std::shared_mutex mu;
-        tsl::robin_map<uint32_t, std::vector<NeighborCacheDiskLoc>> locations;
+        // Keep location lists in blocks and store only their indexes in the hash buckets.
+        ankerl::unordered_dense::segmented_map<uint32_t, NeighborCacheDiskLocations> locations;
     };
 
     enum class NeighborCacheNodeState : uint8_t
@@ -826,10 +935,10 @@ template <typename T, typename LabelT = uint32_t> class PQFlashIndex
                 return;
             size_t index = 0;
             if (neighborcache_dyn_loc_append_enabled())
-                for (auto loc = it.value().rbegin(); loc != it.value().rend(); ++loc)
-                    fn(*loc, index++);
+                for (const auto *loc = it->second.end(); loc != it->second.begin();)
+                    fn(*--loc, index++);
             else
-                for (const NeighborCacheDiskLoc &loc : it.value())
+                for (const NeighborCacheDiskLoc &loc : it->second)
                     fn(loc, index++);
             return;
         }

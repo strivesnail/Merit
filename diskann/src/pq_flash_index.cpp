@@ -4410,10 +4410,7 @@ void PQFlashIndex<T, LabelT>::neighborcache_dyn_loc_add_unlocked(uint32_t node_i
             if (candidate.sector == loc.sector && candidate.slot == loc.slot)
                 return;
     // Lookup takes the first live location; newest pages carry the current co-access group.
-    if (neighborcache_dyn_loc_append_enabled())
-        locations.push_back(loc);
-    else
-        locations.insert(locations.begin(), loc);
+    locations.add(loc, neighborcache_dyn_loc_append_enabled());
     neighborcache_canon_publish(node_id, loc);
 }
 
@@ -4425,7 +4422,7 @@ void PQFlashIndex<T, LabelT>::neighborcache_dyn_loc_refresh_unlocked(uint32_t no
     auto entry = locations.find(node_id);
     if (entry != locations.end())
     {
-        auto &replicas = entry.value();
+        auto &replicas = entry->second;
         const auto found = std::find_if(replicas.begin(), replicas.end(), [&](const NeighborCacheDiskLoc &replica) {
             return replica.sector == loc.sector && replica.slot == loc.slot && replica.nsectors == loc.nsectors;
         });
@@ -4456,10 +4453,8 @@ void PQFlashIndex<T, LabelT>::neighborcache_dyn_loc_erase_sector_unlocked(uint32
     auto it = shard.locations.find(node_id);
     if (it == shard.locations.end())
         return;
-    auto &locations = it.value();
-    locations.erase(std::remove_if(locations.begin(), locations.end(),
-                                   [sector](const NeighborCacheDiskLoc &loc) { return loc.sector == sector; }),
-                    locations.end());
+    auto &locations = it->second;
+    locations.erase_sector(sector);
     if (locations.empty())
     {
         shard.locations.erase(it);
@@ -4661,7 +4656,7 @@ bool PQFlashIndex<T, LabelT>::neighborcache_dyn_seed_page_unlocked(uint32_t seed
     const auto it = shard.locations.find(seed_id);
     if (it == shard.locations.end())
         return false;
-    const auto &locations = it.value();
+    const auto &locations = it->second;
     for (size_t i = 0; i < locations.size(); ++i)
     {
         const NeighborCacheDiskLoc &loc = locations[neighborcache_dyn_loc_append_enabled() ? locations.size() - 1 - i : i];
@@ -4689,7 +4684,7 @@ size_t PQFlashIndex<T, LabelT>::neighborcache_dc_loc_count_unlocked(uint32_t nod
         NeighborCacheTimedSharedMutexGuard lock(shard.mu, NeighborCacheLockKind::DynamicShared, false,
                                                     _neighborcache_d_metadata_shared);
         const auto it = shard.locations.find(node_id);
-        return it == shard.locations.end() ? 0 : it.value().size();
+        return it == shard.locations.end() ? 0 : it->second.size();
     }
     const auto it = _neighborcache_dc_map.find(node_id);
     return it == _neighborcache_dc_map.end() ? 0 : it->second.size();
@@ -4704,9 +4699,9 @@ bool PQFlashIndex<T, LabelT>::neighborcache_dc_loc_at_unlocked(uint32_t node_id,
         NeighborCacheTimedSharedMutexGuard lock(shard.mu, NeighborCacheLockKind::DynamicShared, false,
                                                     _neighborcache_d_metadata_shared);
         const auto it = shard.locations.find(node_id);
-        if (it == shard.locations.end() || index >= it.value().size())
+        if (it == shard.locations.end() || index >= it->second.size())
             return false;
-        loc = it.value()[neighborcache_dyn_loc_append_enabled() ? it.value().size() - 1 - index : index];
+        loc = it->second[neighborcache_dyn_loc_append_enabled() ? it->second.size() - 1 - index : index];
         return true;
     }
     const auto it = _neighborcache_dc_map.find(node_id);
@@ -6215,6 +6210,8 @@ template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::print_neigh
     uint64_t dynamic_loc_entries = 0;
     uint64_t dynamic_locs = 0;
     uint64_t dynamic_loc_capacity = 0;
+    uint64_t dynamic_loc_buckets = 0;
+    uint64_t dynamic_loc_inline = 0;
     uint64_t seed_dir_entries = 0;
     uint64_t seed_dir_members = 0;
     {
@@ -6227,10 +6224,12 @@ template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::print_neigh
             NeighborCacheTimedSharedMutexGuard shard_lock(shard.mu, NeighborCacheLockKind::DynamicShared, false,
                                                     _neighborcache_d_metadata_shared);
             dynamic_loc_entries += shard.locations.size();
+            dynamic_loc_buckets += shard.locations.bucket_count();
             for (const auto &kv : shard.locations)
             {
                 dynamic_locs += kv.second.size();
-                dynamic_loc_capacity += kv.second.capacity();
+                dynamic_loc_capacity += kv.second.heap_capacity();
+                dynamic_loc_inline += kv.second.size() == 1;
             }
         }
         seed_dir_entries = _neighborcache_dyn_committed_pages;
@@ -6362,7 +6361,8 @@ template <typename T, typename LabelT> void PQFlashIndex<T, LabelT>::print_neigh
     diskann::cout << "NEIGHBORCACHE dcache_locations: shards=" << _neighborcache_dyn_loc_shard_count
                   << " entries=" << dynamic_loc_entries << " locations=" << dynamic_locs
                   << " vector_capacity=" << dynamic_loc_capacity
-                  << " loc_bytes=" << sizeof(NeighborCacheDiskLoc) << std::endl;
+                  << " loc_bytes=" << sizeof(NeighborCacheDiskLoc)
+                  << " buckets=" << dynamic_loc_buckets << " inline_entries=" << dynamic_loc_inline << std::endl;
     diskann::cout << "NEIGHBORCACHE seed_directory: entries=" << seed_dir_entries << " members=" << seed_dir_members
                   << " member_arena_slots=" << _neighborcache_dyn_page_members.capacity()
                   << " member_arena_bytes=" << _neighborcache_dyn_page_members.capacity() * sizeof(uint32_t)
