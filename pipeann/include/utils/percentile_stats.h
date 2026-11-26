@@ -10,6 +10,8 @@ namespace pipeann {
   struct QueryStats {
     double total_us = 0;        // total time to process query in micros
     double n_ios = 0;           // total # of IOs issued
+    uint32_t n_read_lookups = 0; // node fetch attempts, including memory hits
+    uint32_t n_nc_disk_pages = 0; // 4 KiB units submitted to NeighborCache
     double n_ncache = 0;        // N-cache hits (no base IO)
     double n_pref = 0;          // prefetch-page hits
     double n_dcache = 0;        // D-cache hits

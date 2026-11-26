@@ -188,13 +188,20 @@ public:
     struct Query {
         std::vector<Record> records;
         std::unordered_map<uint32_t,size_t> index;
-        void add(uint32_t node,uint32_t parent,const char* coords,unsigned dim,const uint32_t* nbr,unsigned n,unsigned width){
+        Record& add_expansion(uint32_t node, uint32_t parent) {
             auto it=index.find(parent);
             if(parent!=UINT32_MAX&&it==index.end())throw std::runtime_error("unobserved path parent");
             unsigned depth=it==index.end()?0:records[it->second].depth+1;
-            if(dim+4+n*4>width)throw std::runtime_error("oversized node record");
             index.emplace(node,records.size());records.push_back({node,parent,depth,{}});
-            if(depth<3)return;
+            return records.back();
+        }
+        void add_raw(uint32_t node,uint32_t parent,const char* raw,unsigned width) {
+            auto& record=add_expansion(node,parent);
+            if(record.depth>=3) record.data.assign(raw,raw+width);
+        }
+        void add(uint32_t node,uint32_t parent,const char* coords,unsigned dim,const uint32_t* nbr,unsigned n,unsigned width){
+            if(dim+4+n*4>width)throw std::runtime_error("oversized node record");
+            if(add_expansion(node,parent).depth<3)return;
             auto& data=records.back().data;data.resize(width);
             memcpy(data.data(),coords,dim);memcpy(data.data()+dim,&n,4);
             if(n)memcpy(data.data()+dim+4,nbr,n*4);
@@ -233,9 +240,9 @@ public:
     }
     ~PathSeedCache(){
         finish_writes();
-        auto drain_ns=std::max<int64_t>(0,last_completion_ns.load()-residual::query_end_ns.load());
+        const auto end_ns=residual::query_end_ns.load();
         std::cout<<"peak_queued_pages="<<peak_queued<<std::endl;
-        std::cout<<"after_query_drain_ns="<<drain_ns<<std::endl;
+        if(end_ns) std::cout<<"after_query_drain_ns="<<std::max<int64_t>(0,last_completion_ns.load()-end_ns)<<std::endl;
         // The measured query loop has already finished; audit the drained state.
         uint64_t checked=0;
         std::array<uint64_t,4> by_owners{}, filled_slots{};
@@ -278,6 +285,23 @@ public:
         return disk;
     }
     const char* record(const Location& l)const{return l.image.bytes->data+width*l.slot;}
+    // Host I/O tickets carry an immutable slot prefix. A later append cannot
+    // make a slot outside that prefix safe to consume from an older read.
+    void prepare_external(Location& loc,int worker,int& fd,uint64_t& offset) {
+        loc.image={std::make_shared<Bytes>(),loc.p->readable.load(std::memory_order_acquire),worker};
+        fd=page_file(loc.p->pos);
+        offset=page_offset(loc.p->pos);
+    }
+    bool share_external(const Location& primary,Location& other) {
+        if(primary.p!=other.p || other.slot>=primary.image.count) return false;
+        other.image=primary.image;
+        return true;
+    }
+    void publish_external(const Location& loc,int worker) {
+        cache(loc.p->owner,worker).put(loc.p,loc.image);
+    }
+    uint64_t page_count() const { return allocated.load(); }
+    uint64_t write_count() const { return writes.load(); }
     unsigned fetch(std::vector<Request>& req,int worker,io_context_t ctx, AlignedFileReader& reader, std::vector<FdAlignedRead>& combined){
         struct Load {std::shared_ptr<std::promise<Image>> promise;std::shared_future<Image> future;Image image;uint32_t owner;};
         std::unordered_map<Page*,Load> loads;std::vector<Op> ops;

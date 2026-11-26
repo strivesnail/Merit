@@ -72,6 +72,19 @@ payload capacities, not whole-process RSS budgets. Both accept explicit
 `NEIGHBORCACHE_NCACHE_CAP_NODES` and `NEIGHBORCACHE_SHARED_PAGE_CACHE_PAGES`.
 Optional `*_PROFILE` retains the u64 point count + u32 per-node expansion counts.
 
+For a cold, node-only LRU in the PipeANN benchmark, set `PIPEANN_NMD=1`,
+`NEIGHBORCACHE_NCACHE_ONLY=1`, and `NEIGHBORCACHE_NCACHE_CAP_NODES`.
+Use search mode 2 (pipelined search). The benchmark passes its query thread
+count to the backend. The DiskANN benchmark supports the same node capacity
+with `NEIGHBORCACHE_NCACHE_ONLY=1` and `NEIGHBORCACHE_NCACHE_COLD=1` and
+`--num_nodes_to_cache 0`. Use `NEIGHBORCACHE_NCACHE_ADMISSION=mru` and
+`NEIGHBORCACHE_NCACHE_CLOCK=0` for LRU. For either host, a single query worker
+uses one partition and multiple workers share the capacity over synchronized
+LRU partitions. The multi-worker default is 64 partitions. The counting Bloom
+filter skips shard locking on definite misses by default.
+`NEIGHBORCACHE_NCACHE_SHARDS` can select another power of two up to 128 for
+multiple workers, and `NEIGHBORCACHE_NCACHE_FAST_MISS=0` disables the filter. N-only uses the base index for misses.
+
 Starling/MARGO: `NEIGHBORCACHE_NCACHE_CAP_NODES`,
 `NEIGHBORCACHE_SHARED_PAGE_CACHE_PAGES`, `NEIGHBORCACHE_DCACHE_PREFILL=0`.
 Set N capacity to zero to disable their adapter. PipeANN/AiSAQ use their enable
@@ -389,3 +402,22 @@ Rebuild native DiskANN separately. Profiling stays enabled by default.
 The measured configuration, two-run results, validation scope and host checking
 script are saved in
 [`experiments/neighborcache_alignment/compact_memory`](../experiments/neighborcache_alignment/compact_memory/README.md).
+
+### PipeANN online path pages
+
+For PipeANN's pipelined search (mode 2), set `PIPEANN_NMD=1` and
+`MERIT_PATH_SEED=shared`. Set `NEIGHBORCACHE_BACKEND_LIBRARY` to the
+matching built library and `PIPEANN_NMD_PATH` to a fresh cache prefix.
+The file is created as `<prefix>_pathseed.data`. For two D stripes, also set
+`MERIT_D_ODD` to a fresh file on the second SSD. The base graph follows
+PipeANN's index layout. The shared prefetch capacity is set in pages by
+`NEIGHBORCACHE_SHARED_PAGE_CACHE_PAGES` (at least 64); set
+`NEIGHBORCACHE_DCACHE_WRITER_THREADS=4` to use four background writers.
+
+At query end the backend groups the actual expansion path using the same
+three-seed packer as DiskANN. Both N-cache and D-cache preserve the full
+PipeANN record, including the two 16-bit degree fields. Pending requests
+for different slots on the same page can share one physical read on PipeANN's
+I/O queue when its captured prefix covers both slots. A short read falls back
+to the base graph. PipeANN expands ready candidates, so cache hits can change
+expansion order and approximate top-k results.

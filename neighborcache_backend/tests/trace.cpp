@@ -22,7 +22,9 @@ int main(int argc,char **argv){
  setenv("NEIGHBORCACHE_REAL_IO_SAMPLE_QUERIES","1",1);
  setenv("NEIGHBORCACHE_DCACHE_COMMIT_INLINE","1",1);
  std::string path=(std::filesystem::temp_directory_path() / ("nc_trace_"+std::to_string(getpid())+"_"+std::to_string(bytes)+"_"+std::to_string(count))).string();
- Client c;NCConfig cfg{NC_BACKEND_ABI,count,2048,bytes,vector_bytes,32,4096/bytes,128,4,4,path.c_str()};c.init(cfg);
+ const bool n_only = neighborcache::env("NEIGHBORCACHE_NCACHE_ONLY", 0) != 0;
+ if (n_only) setenv("NEIGHBORCACHE_NCACHE_SHARDS", "4", 1);
+ Client c;NCConfig cfg{NC_BACKEND_ABI,count,2048,bytes,vector_bytes,32,4096/bytes,128,n_only ? 0u : 4u,4,path.c_str()};c.init(cfg);
  std::atomic<unsigned> checked{0},extras_checked{0};
  auto work=[&](unsigned t){
   for(unsigned q=0;q<100;++q){Client::QueryGuard guard(c);
@@ -44,7 +46,15 @@ int main(int argc,char **argv){
   }
  };
  std::vector<std::thread> threads;for(unsigned t=0;t<4;++t)threads.emplace_back(work,t);for(auto&t:threads)t.join();
- auto s=c.stats();c.print();assert(checked>0);assert(s.n_hits>0);assert(s.m_entries>0);assert(s.seeds<=s.capacity);assert(s.opens>0);assert(s.d_reads>0);assert(s.prefetch_hits>0);assert(s.writes>0);
+ auto s=c.stats();c.print();assert(checked>0);assert(s.n_hits>0);
+ if (n_only) {
+  assert(s.n_hits == checked && s.n_hits + s.base_misses == 4u*100u*96u);
+  assert(s.m_entries == 0 && s.seeds == 0 && s.opens == 0 && s.d_attempts == 0);
+  assert(s.d_reads == 0 && s.prefetch_hits == 0 && s.writes == 0);
+  assert(!std::filesystem::exists(path + "_neighborcache_dc.dyn.data"));
+ } else {
+  assert(s.m_entries>0);assert(s.seeds<=s.capacity);assert(s.opens>0);assert(s.d_reads>0);assert(s.prefetch_hits>0);assert(s.writes>0);
+ }
  std::cout<<"PASS checked="<<checked<<" bytes="<<bytes<<" count="<<count<<"\n";
  if(c.expands_prefetch_page()) assert(extras_checked>0);
 }

@@ -43,6 +43,13 @@ int search_disk_index(int argc, char **argv) {
   int search_mode = std::atoi(argv[index++]);
   uint32_t mem_L = std::atoi(argv[index++]);
 
+  if (num_threads == 0) {
+    std::cerr << "Search requires at least one query thread." << std::endl;
+    return -1;
+  }
+  if (neighborcache::env("PIPEANN_NMD", 0))
+    setenv("NEIGHBORCACHE_THREADS", std::to_string(num_threads).c_str(), 1);
+
   pipeann::Metric m = pipeann::get_metric(dist_metric);
 
   std::string disk_index_tag_file = index_prefix_path + "_disk.index.tags";
@@ -184,6 +191,19 @@ int search_disk_index(int argc, char **argv) {
     float mean_dcache = (float) pipeann::get_mean_stats(
         stats, query_num, [](const pipeann::QueryStats &stats) { return stats.n_dcache; });
 
+    if (output && search_mode == SearchMode::PIPE_SEARCH) {
+      uint64_t lookups = 0, base_reads = 0, dcache_reads = 0, n_hits = 0, prefetch_hits = 0;
+      for (size_t i = 0; i < query_num; ++i) {
+        lookups += stats[i].n_read_lookups;
+        base_reads += static_cast<uint64_t>(stats[i].n_ios);
+        dcache_reads += stats[i].n_nc_disk_pages;
+        n_hits += static_cast<uint64_t>(stats[i].n_ncache);
+        prefetch_hits += static_cast<uint64_t>(stats[i].n_pref);
+      }
+      std::cout << "PipeANN read counts L=" << L << " lookups=" << lookups
+                << " base_pages=" << base_reads << " dcache_pages=" << dcache_reads
+                << " n_hits=" << n_hits << " prefetch_hits=" << prefetch_hits << std::endl;
+    }
     delete[] stats;
 
     if (output) {

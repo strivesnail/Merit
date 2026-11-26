@@ -300,16 +300,21 @@ namespace pipeann {
     std::deque<std::vector<char>> nmd_hit_bufs;
     std::vector<char> nmd_tmp;
     std::unordered_map<uint32_t, NMDCache::PendingDRead> nc_pending;
+    using JoinedRead = std::pair<Neighbor, NMDCache::PendingDRead>;
+    std::unordered_map<uint32_t, std::vector<JoinedRead>> joined_reads;
     std::unordered_set<uint32_t> nc_failed;
     if (this->nmd_.enabled()) {
       nmd_tmp.resize(this->meta_.max_node_len);
     }
 
+    const bool nc_enabled = this->nmd_.enabled();
     bool nmd_sq_pending = false;
     auto *nmd_reader = static_cast<LinuxAlignedFileReader *>(reader.get());
 
     auto send_read_req = [&](Neighbor &item) -> bool {
-      if (this->nmd_.enabled() && !nc_failed.count(item.id)) {
+      const bool retry = nc_enabled && !nc_failed.empty() && nc_failed.count(item.id) != 0;
+      if (stats != nullptr && !retry) ++stats->n_read_lookups;
+      if (nc_enabled && !retry) {
         NMDCache::PendingDRead pending;
         int kind = this->nmd_.resolve(item.id, nmd_tmp.data(), pending, item.nc_parent);
         if (kind == 1 || kind == 2 || (kind == 3 && pending.fd < 0)) {
@@ -335,6 +340,15 @@ namespace pipeann {
         // ring as the base index and let the beam submit once.
         if (kind == 3 && pending.fd >= 0 && pending.len > 0 && pending.len <= 128 * SECTOR_LEN) {
           item.flag = false;
+          if (this->nmd_.has_path_pages()) {
+            for (const auto &primary : nc_pending) {
+              if (pending.fd == primary.second.fd && pending.offset == primary.second.offset &&
+                  this->nmd_.share_path_read(primary.second, pending)) {
+                joined_reads[primary.first].emplace_back(item, pending);
+                return true;
+              }
+            }
+          }
           uint64_t &cur_buf_idx = query_buf->sector_idx;
           auto buf = pending.buffer;
           nc_pending[item.id] = pending;
@@ -348,6 +362,7 @@ namespace pipeann {
           req.finished = false;
           req.io_res = 0;
           nmd_reader->enqueue_io(req, ctx, false);
+          if (stats != nullptr) stats->n_nc_disk_pages += pending.len / SECTOR_LEN;
           nmd_sq_pending = true;
           io_t io{item, 0, 0, &req, UINT32_MAX};
           io.from_d = true;
@@ -394,21 +409,30 @@ namespace pipeann {
         if (io.from_d) {
           auto pi = nc_pending.find(io.nbr.id);
           if (pi == nc_pending.end()) throw std::runtime_error("Missing NeighborCache IO ticket");
-          nmd_hit_bufs.emplace_back(this->nmd_.node_len());
-          bool ok = this->nmd_.complete(pi->second, io.read_req->io_res, nmd_hit_bufs.back().data());
+          const auto result = io.read_req->io_res;
+          const auto primary = io.nbr;
+          auto ticket = pi->second;
           nc_pending.erase(pi);
-          if (!ok) {
-            Neighbor retry = io.nbr;
-            on_flight_ios.pop();
-            nc_failed.insert(retry.id);
-            send_read_req(retry);
-            continue;
-          }
-          id_buf_map.erase(io.nbr.id);
-          id_buf_map.emplace(io.nbr.id, DiskNode<T>(nmd_hit_bufs.back().data(), 0, this->meta_));
-          if (stats != nullptr) stats->n_dcache += 1;
-          io.nbr.distance <= pool.worst().distance ? ++n_in : ++n_out;
           on_flight_ios.pop();
+          auto finish_node = [&](Neighbor item, NMDCache::PendingDRead &read) {
+            nmd_hit_bufs.emplace_back(this->nmd_.node_len());
+            if (!this->nmd_.complete(read, result, nmd_hit_bufs.back().data())) {
+              nmd_hit_bufs.pop_back();
+              nc_failed.insert(item.id);
+              send_read_req(item);
+              return;
+            }
+            id_buf_map.erase(item.id);
+            id_buf_map.emplace(item.id, DiskNode<T>(nmd_hit_bufs.back().data(), 0, this->meta_));
+            if (stats != nullptr) ++stats->n_dcache;
+            item.distance <= pool.worst().distance ? ++n_in : ++n_out;
+          };
+          finish_node(primary,ticket);
+          auto joined = joined_reads.find(primary.id);
+          if (joined != joined_reads.end()) {
+            for (auto &entry : joined->second) finish_node(entry.first,entry.second);
+            joined_reads.erase(joined);
+          }
           continue;
         }
         id_buf_map.insert(std::make_pair(io.nbr.id, node_from_page((char *) io.read_req->buf, io.loc)));

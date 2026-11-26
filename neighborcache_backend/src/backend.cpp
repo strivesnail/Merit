@@ -12,11 +12,13 @@ class NeighborCacheAdapter {
     std::shared_ptr<AlignedFileReader> reader;
     Index index;
     size_t coords_bytes, tail_offset;
+    const bool ncache_only;
     std::vector<uint32_t> prefill_seeds;
     std::vector<std::pair<uint32_t, uint8_t>> prefill_spans;
     std::atomic<uint64_t> acquired_records{0}, recorded_parents{0};
     std::atomic<uint64_t> d_read_bytes{0};
     bool expand_prefetch_page = false;
+    static constexpr int prefetch_page_member = 5;
     std::atomic<uint64_t> expanded_page_hits{0}, delivered_page_members{0};
     std::atomic<uint64_t> nh{0}, ph{0}, da{0}, dh{0}, dr{0}, bm{0};
   public:
@@ -26,7 +28,9 @@ class NeighborCacheAdapter {
         char *buffer = nullptr;
         uint32_t id;
         uint64_t used = 0;
-        explicit Ticket(uint32_t n) : id(n) {
+        PathSeedCache::Location path_location;
+        explicit Ticket(uint32_t n, bool legacy=true) : id(n) {
+            if(!legacy) return;
             alloc_aligned(reinterpret_cast<void **>(&buffer), 128 * 4096, 4096);
         }
         ~Ticket() { aligned_free(buffer); }
@@ -41,10 +45,16 @@ class NeighborCacheAdapter {
         std::vector<uint32_t> snapshot_ids;
         std::vector<char> snapshot_records;
         uint64_t page_hits = 0, page_members = 0;
+        std::vector<uint8_t> coords;
+        std::vector<uint32_t> neighbors;
+        std::vector<char> canonical;
+        PathSeedCache::Query path;
+        int worker=0;
         std::unordered_map<uint32_t, int> source;
         std::unordered_set<Ticket *> tickets;
-        explicit Query(Index &i) : scratch(i._aligned_dim, 4096) {}
-        void reset(Index &i) {
+        explicit Query(Index &i) : scratch(i._aligned_dim, 4096), canonical(i._max_node_len) {}
+        void reset(Index &i, bool ncache_only) {
+            if (ncache_only) return;
             section = std::make_unique<NeighborCacheSharedPageCache::ReadSection>(i._neighborcache_shared_cache);
             scratch.reset();
             i.neighborcache_dyn_prepare_query(&scratch);
@@ -53,10 +63,12 @@ class NeighborCacheAdapter {
     };
 
     explicit NeighborCacheAdapter(const NCConfig &c)
-        : config(c), reader(std::make_shared<LinuxAlignedFileReader>()), index(reader, Metric::L2) {
+        : config(c), reader(std::make_shared<LinuxAlignedFileReader>()), index(reader, Metric::L2),
+          ncache_only(neighborcache_env_u64("NEIGHBORCACHE_NCACHE_ONLY", 0) != 0) {
         if (c.abi != NC_BACKEND_ABI || !c.points || !c.degree || !c.path ||
             (c.count_bytes != 2 && c.count_bytes != 4) || c.record_bytes > 4096 ||
-            c.record_bytes < c.vector_bytes + 4 + 4 * c.degree || !c.n_capacity || !c.prefetch_pages)
+            c.record_bytes < c.vector_bytes + 4 + 4 * c.degree || !c.n_capacity ||
+            (!ncache_only && !c.prefetch_pages))
             throw std::runtime_error("Invalid NeighborCache online configuration or record layout");
         // Move AiSAQ's opaque inline-PQ tail into the coordinate payload. Both
         // directions preserve it verbatim; the graph still has its original degree.
@@ -77,9 +89,35 @@ class NeighborCacheAdapter {
             index._medoids = new uint32_t[c.medoid_count];
             std::copy(c.medoids, c.medoids + c.medoid_count, index._medoids);
         }
+        const char* path_mode=ncache_only ? nullptr : std::getenv("MERIT_PATH_SEED");
+        if(path_mode) {
+            if(std::string(path_mode)!="shared")
+                throw std::invalid_argument("PipeANN path pages require MERIT_PATH_SEED=shared");
+            // N stores the complete host record, including the high degree bits,
+            // attributes and padding. Reserve an aligned empty NC adjacency list.
+            index._disk_bytes_per_point=(c.record_bytes+3)&~uint64_t(3);
+            index._data_dim=index._disk_bytes_per_point;
+            index._aligned_dim=(index._data_dim+7)&~uint64_t(7);
+            index._max_node_len=index._disk_bytes_per_point+4;
+            index._max_degree=0;
+        }
         index._neighborcache_mem_pool = std::make_unique<NeighborCacheMemoryPool<uint8_t>>();
-        index._neighborcache_mem_pool->init(c.n_capacity, index._aligned_dim, c.degree, c.points, index._max_nthreads);
+        index._neighborcache_mem_pool->init(c.n_capacity, index._aligned_dim, index._max_degree, c.points, index._max_nthreads);
         index._neighborcache_mem_pool->commit_initial_load({}, {});
+        if (ncache_only) {
+            index._neighborcache_mem_pool->set_single_owner(index._max_nthreads == 1);
+            index.enable_neighborcache_memory_runtime_admit(true);
+            std::fprintf(stderr, "NeighborCache N-cache only: cold start, capacity %lu nodes, shards=%zu\n",
+                c.n_capacity, index._neighborcache_mem_pool->shard_count());
+            return;
+        }
+        if(path_mode) {
+            index.enable_neighborcache_memory_runtime_admit(true);
+            index._path_cache=std::make_unique<PathSeedCache>(
+                std::string(c.path)+"_pathseed.data",c.record_bytes,c.prefetch_pages,index._max_nthreads,
+                true,neighborcache_pin_background_thread);
+            return;
+        }
         index._query_sector_cache_enabled = true;
         if (!index._neighborcache_shared_cache.init(c.prefetch_pages, c.threads))
             throw std::runtime_error("Cannot initialize NeighborCache prefetch");
@@ -204,26 +242,38 @@ class NeighborCacheAdapter {
         std::memcpy(raw + config.vector_bytes + 4, canonical + coords_bytes + 4, degree * 4);
     }
     void unpack(const std::vector<uint8_t> &coords, const std::vector<uint32_t> &nbrs, char *raw) const {
-        std::vector<char> canonical(config.record_bytes, 0);
-        std::memcpy(canonical.data(), coords.data(), coords_bytes);
-        uint32_t degree = nbrs.size();
-        std::memcpy(canonical.data() + coords_bytes, &degree, 4);
-        std::memcpy(canonical.data() + coords_bytes + 4, nbrs.data(), degree * 4);
-        decode(canonical.data(), raw);
+        std::memset(raw, 0, config.record_bytes);
+        std::memcpy(raw, coords.data(), config.vector_bytes);
+        std::memcpy(raw + tail_offset, coords.data() + config.vector_bytes, config.record_bytes - tail_offset);
+        const uint32_t degree = static_cast<uint32_t>(nbrs.size());
+        std::memcpy(raw + config.vector_bytes, &degree, config.count_bytes);
+        if (degree) std::memcpy(raw + config.vector_bytes + 4, nbrs.data(), degree * sizeof(uint32_t));
     }
-    std::mutex pool_mu;
-    std::vector<std::unique_ptr<Query>> free_queries;
-    std::unordered_set<std::thread::id> registered;
+    struct alignas(64) QueryPoolShard {
+        std::mutex mu;
+        std::vector<std::unique_ptr<Query>> free_queries;
+        std::unordered_set<std::thread::id> registered;
+    };
+    std::array<QueryPoolShard, 16> query_pools;
+    QueryPoolShard &query_pool() {
+        const size_t worker_hash = std::hash<std::thread::id>{}(std::this_thread::get_id());
+        return query_pools[(worker_hash ^ (worker_hash >> 12)) % query_pools.size()];
+    }
     Query *begin() {
         std::unique_ptr<Query> q;
         {
-            std::lock_guard<std::mutex> lock(pool_mu);
-            if (registered.insert(std::this_thread::get_id()).second)
+            auto &pool = query_pool();
+            std::lock_guard<std::mutex> lock(pool.mu);
+            if (!ncache_only && !index._path_cache && pool.registered.insert(std::this_thread::get_id()).second)
                 index._neighborcache_dyn_reader->register_thread();
-            if (!free_queries.empty()) { q = std::move(free_queries.back()); free_queries.pop_back(); }
+            if (!pool.free_queries.empty()) {
+                q = std::move(pool.free_queries.back());
+                pool.free_queries.pop_back();
+            }
         }
         if (!q) q = std::make_unique<Query>(index);
-        q->reset(index);
+        q->reset(index, ncache_only || index._path_cache);
+        q->worker=omp_get_thread_num();
         return q.release();
     }
     void end(Query *q) {
@@ -231,7 +281,11 @@ class NeighborCacheAdapter {
         for (uint32_t s : q->scratch.neighborcache_dyn_pinned_sectors)
             index.neighborcache_dyn_release_page_pin(s);
         q->scratch.neighborcache_dyn_pinned_sectors.clear();
-        index.neighborcache_dyn_on_query_end(&q->stats, &q->scratch);
+        if(index._path_cache) {
+            index._path_cache->commit(q->path,q->worker);
+            q->path.records.clear();
+            q->path.index.clear();
+        } else if (!ncache_only) index.neighborcache_dyn_on_query_end(&q->stats, &q->scratch);
         index._neighborcache_mem_pool->on_query_end(q->stats.n_disk_reads, q->stats.io_us);
         q->section.reset();
         q->source.clear();
@@ -244,8 +298,9 @@ class NeighborCacheAdapter {
         q->page_hits = q->page_members = 0;
         q->snapshot_ids.clear(); q->snapshot_records.clear(); q->snapshot_target = UINT32_MAX;
         q->acquired = q->parents = 0;
-        std::lock_guard<std::mutex> lock(pool_mu);
-        free_queries.emplace_back(q);
+        auto &pool = query_pool();
+        std::lock_guard<std::mutex> lock(pool.mu);
+        pool.free_queries.emplace_back(q);
     }
     void visit(Query *q, uint32_t parent, uint32_t child) {
         q->scratch.neighborcache_candidate_id = child;
@@ -363,7 +418,7 @@ class NeighborCacheAdapter {
         if (capacity<n || !ids || !records) throw std::runtime_error("Prefetch snapshot output buffer too small");
         std::copy(q->snapshot_ids.begin(),q->snapshot_ids.end(),ids);
         if (n) std::memcpy(records,q->snapshot_records.data(),n*config.record_bytes);
-        for (uint32_t id:q->snapshot_ids) q->source[id]=2;
+        for (uint32_t id:q->snapshot_ids) q->source[id]=prefetch_page_member;
         ++q->page_hits; q->page_members+=n;
         q->snapshot_ids.clear();q->snapshot_records.clear();q->snapshot_target=UINT32_MAX;
         return static_cast<int>(n);
@@ -371,15 +426,42 @@ class NeighborCacheAdapter {
     int resolve(Query *q, uint32_t id, char *raw, NCRead *out) {
         q->snapshot_ids.clear();q->snapshot_records.clear();q->snapshot_target=UINT32_MAX;
         *out = NCRead{-1, 0, 0, nullptr, nullptr, id};
-        std::vector<uint8_t> coords;
-        std::vector<uint32_t> nbrs;
+        auto &coords = q->coords;
+        auto &nbrs = q->neighbors;
         uint8_t *ptr = nullptr;
         std::pair<uint32_t, uint32_t *> hood;
         int kind = 0;
         bool frontier = false;
         // Copies occur while holding the reference N shard lock.
         if (index._neighborcache_mem_pool->lookup(id, ptr, hood, true, &coords, &nbrs)) {
-            unpack(coords, nbrs, raw); ++nh; kind = 1;
+            if(index._path_cache) std::memcpy(raw,coords.data(),config.record_bytes);
+            else unpack(coords, nbrs, raw);
+            nh.fetch_add(1, std::memory_order_relaxed); kind = 1;
+        } else if (ncache_only) {
+            bm.fetch_add(1, std::memory_order_relaxed);
+            return 0;
+        } else if(index._path_cache) {
+            const uint32_t parent=q->scratch.neighborcache_candidate_id==id
+                ? q->scratch.neighborcache_candidate_parent : UINT32_MAX;
+            auto loc=index._path_cache->lookup(id,parent,q->worker);
+            if(loc.image.bytes) {
+                std::memcpy(raw,index._path_cache->record(loc),config.record_bytes);
+                ++ph;
+                kind=2;
+            } else if(loc.p) {
+                auto ticket=std::make_unique<Ticket>(id,false);
+                index._path_cache->prepare_external(loc,q->worker,out->fd,out->offset);
+                out->bytes=4096;
+                out->buffer=loc.image.bytes->data;
+                ticket->path_location=std::move(loc);
+                q->tickets.insert(ticket.get());
+                out->ticket=ticket.release();
+                q->d_bytes+=out->bytes;
+                ++dr;
+                ++dh;
+                kind=3;
+            } else ++bm;
+            ++da;
         } else if (expand_prefetch_page && expanded_prefetch_lookup(q,id,raw)) {
             ++ph;kind=2;
         } else if (!expand_prefetch_page && index.neighborcache_seed_page_lookup(id, coords, nbrs)) {
@@ -425,26 +507,67 @@ class NeighborCacheAdapter {
         q->source[id] = kind == 2 && frontier ? 4 : kind;
         return kind;
     }
+    int share_path_read(Query *q, const NCRead &primary, NCRead &other) {
+        auto first=static_cast<Ticket*>(primary.ticket);
+        auto second=static_cast<Ticket*>(other.ticket);
+        if(!index._path_cache || !q->tickets.count(first) || !q->tickets.count(second) ||
+           first==second || !index._path_cache->share_external(first->path_location,second->path_location))
+            return 0;
+        other.buffer=second->path_location.image.bytes->data;
+        --dr;
+        q->d_bytes-=other.bytes;
+        return 1;
+    }
     int complete(Query *q, NCRead *r, int64_t got, char *raw) {
         auto *t = static_cast<Ticket *>(r->ticket);
         if (!t || !q->tickets.erase(t)) throw std::runtime_error("Invalid or duplicate D IO completion");
         std::unique_ptr<Ticket> owned(t);
         r->ticket = nullptr;
         if (got != int64_t(r->bytes)) { q->source[t->id] = 0; ++bm; return 0; }
+        if(index._path_cache) {
+            index._path_cache->publish_external(t->path_location,q->worker);
+            std::memcpy(raw,index._path_cache->record(t->path_location),config.record_bytes);
+            return 1;
+        }
         return finish(q, *t, raw);
     }
     void expand(Query *q, uint32_t id, const char *raw, uint32_t hop) {
+        if(index._path_cache) {
+            const uint32_t parent=q->scratch.neighborcache_candidate_id==id
+                ? q->scratch.neighborcache_candidate_parent : UINT32_MAX;
+            if(q->path.index.count(id)) return;
+            q->path.add_raw(id,parent,raw,config.record_bytes);
+            ++q->acquired;
+            q->parents+=parent!=UINT32_MAX;
+            auto source=q->source.find(id);
+            if(source==q->source.end() || (source->second!=1 && source->second!=2)) {
+                std::memcpy(q->canonical.data(),raw,config.record_bytes);
+                index.neighborcache_dyn_admit_node(id,parent,q->canonical.data(),&q->stats,nullptr,
+                                                   q->path.records.back().depth,true);
+            }
+            return;
+        }
+        if (ncache_only) {
+            if (q->source.find(id) != q->source.end()) return;
+            encode(raw, q->canonical.data());
+            index.neighborcache_dyn_admit_node(id, UINT32_MAX, q->canonical.data(), &q->stats,
+                                              nullptr, hop, /*ncache_miss_known=*/true);
+            return;
+        }
         acquired_parent(q, id);
         // Starling also expands other nodes from a page it already fetched.
         const bool heap_dirty = selected(q, id);
-        auto src = q->source.find(id);
-        if (src == q->source.end()) { q->source[id] = 0; src = q->source.find(id); }
-        if (src->second == 1 || src->second == 2) {
-            uint8_t *coords = nullptr; std::pair<uint32_t, uint32_t *> hood;
-            index._neighborcache_mem_pool->lookup(id, coords, hood);
+        auto src = q->source.try_emplace(id, 0).first;
+        // Resolve already served this access, including its N-cache lookup.
+        if (src->second == 1 || src->second == 2)
+            return;
+        if (src->second == prefetch_page_member) {
+            uint8_t *coords = nullptr;
+            std::pair<uint32_t, uint32_t *> neighbors;
+            index._neighborcache_mem_pool->lookup(id, coords, neighbors);
             return;
         }
-        std::vector<char> canonical(config.record_bytes);
+        auto &canonical = q->canonical;
         encode(raw, canonical.data());
         uint32_t parent = UINT32_MAX;
         auto p = q->scratch.profile_parent.find(id);
@@ -462,6 +585,10 @@ class NeighborCacheAdapter {
             index._neighborcache_seed_page_appends.load(), index._neighborcache_seed_page_replaces.load(),
             index._neighborcache_seed_page_written.load(),
             acquired_records.load(), recorded_parents.load()};
+        if(index._path_cache) {
+            s->seeds=index._path_cache->page_count();
+            s->writes=index._path_cache->write_count();
+        }
     }
     void base_reads(Query *q, uint32_t n, double us) {
         q->stats.n_disk_reads += n;
@@ -498,4 +625,9 @@ extern "C" __attribute__((visibility("default"))) const NCBackend *nc_backend_ap
 extern "C" __attribute__((visibility("default"))) int nc_prefetch_page_members(
     void *cache,void *query,uint32_t target,uint32_t *ids,char *records,uint32_t capacity) {
     return checked([&] { return static_cast<Adapter *>(cache)->prefetch_members(static_cast<Query *>(query),target,ids,records,capacity); });
+}
+
+extern "C" __attribute__((visibility("default"))) int nc_share_path_read(
+    void *cache,void *query,const NCRead *primary,NCRead *other) {
+    return checked([&]{return static_cast<Adapter*>(cache)->share_path_read(static_cast<Query*>(query),*primary,*other);});
 }
