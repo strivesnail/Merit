@@ -138,21 +138,18 @@ void NeighborCacheMemoryPool<T>::init(uint64_t capacity, uint64_t aligned_dim, u
     const char *spin_lock = std::getenv("NEIGHBORCACHE_NCACHE_SPIN");
     _spin_lock_enabled = spin_lock == nullptr || std::strtoull(spin_lock, nullptr, 10) != 0;
     const char *shard_count = std::getenv("NEIGHBORCACHE_NCACHE_SHARDS");
-    _shard_count = query_threads == 1 ? 1 : kDefaultShardCount;
-    const uint64_t requested_shards =
-        query_threads == 1 || shard_count == nullptr ? _shard_count : std::strtoull(shard_count, nullptr, 10);
-    for (size_t candidate = 1; candidate <= kMaxShardCount; candidate <<= 1)
+    _shard_count = 1;
+    if (query_threads > 1)
     {
-        if (requested_shards == candidate)
-        {
-            _shard_count = candidate;
-            break;
-        }
+        _shard_count = kDefaultShardCount;
+        const uint64_t requested = shard_count == nullptr ? 0 : std::strtoull(shard_count, nullptr, 10);
+        if (requested > 0 && requested <= kMaxShardCount && (requested & (requested - 1)) == 0)
+            _shard_count = static_cast<size_t>(requested);
     }
     for (Shard &shard : _shards)
         shard.mu.set_spin(_spin_lock_enabled);
     const char *fast_miss = std::getenv("NEIGHBORCACHE_NCACHE_FAST_MISS");
-    _fast_miss_enabled = fast_miss != nullptr && std::strtoull(fast_miss, nullptr, 10) != 0;
+    _fast_miss_enabled = fast_miss == nullptr || std::strtoull(fast_miss, nullptr, 10) != 0;
     const char *ghost_stats = std::getenv("NEIGHBORCACHE_NCACHE_GHOST_STATS");
     _ghost_stats_enabled =
         ghost_stats != nullptr && std::strtoull(ghost_stats, nullptr, 10) != 0;
@@ -207,11 +204,11 @@ void NeighborCacheMemoryPool<T>::init(uint64_t capacity, uint64_t aligned_dim, u
     _adaptive_min_hop_threshold =
         std::min(_adaptive_min_hop_threshold, _adaptive_initial_hop_threshold);
     const char *half_life_queries = std::getenv("NEIGHBORCACHE_NCACHE_ADAPT_HALF_LIFE_QUERIES");
-    _adaptive_half_life_queries =
-        half_life_queries == nullptr ? 25000 : std::max<uint64_t>(1000, std::strtoull(half_life_queries, nullptr, 10));
+    _adaptive_half_life_queries.reset(
+        half_life_queries == nullptr ? 25000 : std::max<uint64_t>(1000, std::strtoull(half_life_queries, nullptr, 10)));
     const char *bip_period = std::getenv("NEIGHBORCACHE_NCACHE_BIP_PERIOD");
-    _bip_period = bip_period == nullptr ? 32u : static_cast<uint32_t>(std::strtoul(bip_period, nullptr, 10));
-    _bip_period = std::max<uint32_t>(_bip_period, 1);
+    const uint32_t period = bip_period == nullptr ? 32u : static_cast<uint32_t>(std::strtoul(bip_period, nullptr, 10));
+    _bip_period.reset(std::max<uint32_t>(period, 1));
     const char *ghost_percent = std::getenv("NEIGHBORCACHE_NCACHE_GHOST_PERCENT");
     _ghost_percent =
         ghost_percent == nullptr ? 10u : static_cast<uint32_t>(std::strtoul(ghost_percent, nullptr, 10));
@@ -530,7 +527,7 @@ bool NeighborCacheMemoryPool<T>::low_priority_insert_unlocked(Shard &shard, uint
     if (!use_bip)
         return false;
     shard.bip_counter++;
-    return shard.bip_counter % _bip_period != 0;
+    return !_bip_period.matches(shard.bip_counter);
 }
 
 template <typename T>
@@ -621,7 +618,8 @@ void NeighborCacheMemoryPool<T>::shadow_model_access(ShadowModel &model, uint32_
             entry.node_id = node_id;
             entry.token = model.ghost_sequence;
             model.ghost_tokens[node_id] = entry.token;
-            model.ghost_cursor = (model.ghost_cursor + 1) % model.ghost_ring.size();
+            if (++model.ghost_cursor == model.ghost_ring.size())
+                model.ghost_cursor = 0;
             model.rejections++;
             return;
         }
@@ -642,8 +640,8 @@ void NeighborCacheMemoryPool<T>::shadow_model_access(ShadowModel &model, uint32_
         for (size_t attempt = 0; attempt < scan_budget; ++attempt)
         {
             const uint32_t candidate = model.clock_hand;
-            model.clock_hand =
-                static_cast<uint32_t>((model.clock_hand + 1) % model.slots.size());
+            if (++model.clock_hand == model.slots.size())
+                model.clock_hand = 0;
             ShadowSlot &candidate_slot = model.slots[candidate];
             if (candidate_slot.recently_accessed != 0)
             {
@@ -1174,7 +1172,8 @@ bool NeighborCacheMemoryPool<T>::should_admit(uint32_t node_id, uint32_t search_
     entry.node_id = node_id;
     entry.token = shard.ghost_sequence;
     shard.ghost_tokens[node_id] = entry.token;
-    shard.ghost_cursor = (shard.ghost_cursor + 1) % shard.ghost_ring.size();
+    if (++shard.ghost_cursor == shard.ghost_ring.size())
+        shard.ghost_cursor = 0;
     _admission_rejections.fetch_add(1, std::memory_order_relaxed);
     return false;
 }
@@ -1194,7 +1193,7 @@ template <typename T> void NeighborCacheMemoryPool<T>::on_query_end(uint32_t dis
     const uint64_t query_count = _adaptive_query_count.fetch_add(1, std::memory_order_relaxed) + 1;
     if (_shadow_control_enabled)
     {
-        if (query_count % _adaptive_half_life_queries == 0)
+        if (_adaptive_half_life_queries.matches(query_count))
             shadow_evaluate_controller(query_count);
         return;
     }
@@ -1235,7 +1234,7 @@ template <typename T> void NeighborCacheMemoryPool<T>::on_query_end(uint32_t dis
         static_cast<double>(eviction_delta) / static_cast<double>(_adaptive_stage_queries);
     const double decay =
         std::pow(0.5, static_cast<double>(_adaptive_stage_queries) /
-                          static_cast<double>(_adaptive_half_life_queries));
+                          static_cast<double>(_adaptive_half_life_queries.value()));
     if (!_adaptive_ewma_initialized)
     {
         _adaptive_ewma_hit_rate = hit_rate;
@@ -1269,7 +1268,7 @@ template <typename T> void NeighborCacheMemoryPool<T>::on_query_end(uint32_t dis
     _adaptive_high_stages = high_locality ? _adaptive_high_stages + 1 : 0;
 
     const uint32_t half_life_stages = static_cast<uint32_t>(
-        std::max<uint64_t>(1, (_adaptive_half_life_queries + _adaptive_stage_queries - 1) /
+        std::max<uint64_t>(1, (_adaptive_half_life_queries.value() + _adaptive_stage_queries - 1) /
                                   _adaptive_stage_queries));
     const uint32_t recovery_stages = std::max<uint32_t>(1, half_life_stages / 4);
     const uint32_t current_threshold = _admission_hop_threshold.load(std::memory_order_relaxed);
@@ -1555,7 +1554,7 @@ template <typename T> uint64_t NeighborCacheMemoryPool<T>::adaptive_query_count(
 
 template <typename T> uint64_t NeighborCacheMemoryPool<T>::adaptive_half_life_queries() const
 {
-    return _adaptive_half_life_queries;
+    return _adaptive_half_life_queries.value();
 }
 
 template <typename T> bool NeighborCacheMemoryPool<T>::adaptive_reject_enabled() const

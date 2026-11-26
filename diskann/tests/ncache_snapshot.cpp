@@ -100,8 +100,16 @@ int main()
         }
     }
     borrow_from_single_owner_lru();
+    unsetenv("NEIGHBORCACHE_NCACHE_CLOCK");
+    unsetenv("NEIGHBORCACHE_NCACHE_FAST_MISS");
+    unsetenv("NEIGHBORCACHE_NCACHE_ADMISSION");
     diskann::NeighborCacheMemoryPool<uint8_t> shared;
-    shared.init(0, 128, 2, 16, 2);
-    assert(shared.shard_count() == 128 && !shared.single_owner());
+    for (unsigned workers : {2u, 10u, 20u}) {
+        shared.init(8, 128, 2, 16, workers);
+        assert(shared.shard_count() == 64 && !shared.single_owner());
+        assert(!shared.clock_enabled() && std::string(shared.admission_policy_name()) == "mru");
+        assert(shared.fast_miss_enabled() && shared.fast_miss_bitmap_bytes() > 0);
+    }
+    shared.clear();
     std::cout << "N-cache slot reuse: raw pointers replaced; acquired snapshots preserved (LRU/clock, uint8/float)\n";
 }

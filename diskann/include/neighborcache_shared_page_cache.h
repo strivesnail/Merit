@@ -83,7 +83,7 @@ class NeighborCacheSharedPageCache
                                   frozen && std::strcmp(frozen,"1")==0);
         }
         uint64_t nshards = 256;
-        while (nshards > 1 && capacity_pages / nshards < 64)
+        while (nshards > 1 && capacity_pages < 64 * nshards)
             nshards >>= 1;
         const uint64_t per_shard = (capacity_pages + nshards - 1) / nshards;
         // One spare generation so a new page can be published before an evicted
@@ -138,9 +138,14 @@ class NeighborCacheSharedPageCache
         if (_private)
             _private->set_single_owner(enabled);
     }
-    void register_private_records(uint32_t key, const uint32_t *ids, size_t count)
+    void set_private_seed_only_lookup(bool enabled)
     {
-        if (_private) _private->register_records(key, ids, count);
+        if (_private)
+            _private->set_seed_only_lookup(enabled);
+    }
+    void register_private_records(uint32_t key, const uint32_t *ids, size_t count, bool require_current_version = true)
+    {
+        if (_private) _private->register_records(key, ids, count, require_current_version);
     }
     bool private_record_location(uint32_t id, uint32_t &key, uint32_t &slot, bool seed_only = false,
                                  bool current_version = true) const
@@ -148,9 +153,24 @@ class NeighborCacheSharedPageCache
         return _private && _private->record_location(id, key, slot, seed_only, current_version);
     }
     bool private_seed_snapshot(uint32_t seed, uint32_t &key, std::vector<uint32_t> &ids, char *dst,
-                               uint32_t missing_record=UINT32_MAX, size_t append_capacity=0)
+                               uint32_t missing_record=UINT32_MAX, size_t append_capacity=0,
+                               uint32_t known_sector=UINT32_MAX, uint64_t *page_version=nullptr)
     {
-        return _private && _private->seed_snapshot(seed, key, ids, dst, missing_record, append_capacity);
+        return _private &&
+            _private->seed_snapshot(seed, key, ids, dst, missing_record, append_capacity, known_sector, page_version);
+    }
+    bool private_version_matches(uint32_t sector, uint64_t version) const
+    {
+        return _private && _private->version_matches(sector, version);
+    }
+    bool private_contains_seed(uint32_t sector, uint32_t seed) const
+    {
+        return _private && _private->contains_seed(sector, seed);
+    }
+    bool copy_private_record_from_seed(uint32_t sector, uint32_t seed, uint32_t member,
+                                       size_t record_bytes, char *dst)
+    {
+        return _private && _private->copy_record_from_seed(sector, seed, member, record_bytes, dst);
     }
     bool private_worker_active() const { return _private && _private->current_worker_active(); }
     void set_private_member_evict_hook(bool (*hook)(void *, uint32_t, const char *, bool, const uint32_t *, size_t))
@@ -185,6 +205,11 @@ class NeighborCacheSharedPageCache
                 return false;
         }
         return true;
+    }
+
+    bool get_private_page_slice(uint32_t key, size_t offset, size_t bytes, char *dst)
+    {
+        return _private && _private->get_page_slice(key, offset, bytes, dst);
     }
 
     // All-or-nothing copy of sectors [base, base+n) into dst.
@@ -436,7 +461,8 @@ class NeighborCacheSharedPageCache
         while (sh.nretired > 0 && sh.retired_epoch[sh.retired_head] < min_epoch)
         {
             const uint32_t slot = sh.retired_slot[sh.retired_head];
-            sh.retired_head = (sh.retired_head + 1) % sh.phys;
+            if (++sh.retired_head == sh.phys)
+                sh.retired_head = 0;
             sh.nretired--;
             sh.retired_flag[slot] = 0;
             sh.free_slot[sh.nfree++] = slot;
@@ -566,7 +592,8 @@ class NeighborCacheSharedPageCache
         if (sh.retired_flag[s])
             return;
         const uint64_t e = _epoch.fetch_add(1, std::memory_order_seq_cst);
-        const uint32_t tail = (sh.retired_head + sh.nretired) % sh.phys;
+        const uint32_t until_wrap = sh.phys - sh.retired_head;
+        const uint32_t tail = sh.nretired >= until_wrap ? sh.nretired - until_wrap : sh.retired_head + sh.nretired;
         sh.retired_slot[tail] = s;
         sh.retired_epoch[tail] = e;
         sh.nretired++;
@@ -663,7 +690,9 @@ class NeighborCacheSharedPageCache
 
     Shard &shard(uint32_t key) const
     {
-        return _shards[(static_cast<uint64_t>(key) * 0x9E3779B97F4A7C15ull >> 32) % _nshards];
+        // init() halves a power of two to choose the number of shards.
+        const uint32_t hash = static_cast<uint32_t>((uint64_t{key} * 0x9E3779B97F4A7C15ull) >> 32);
+        return _shards[hash & (_nshards - 1)];
     }
 
     // Optimistic index lookup; returns the slot or kNoKey (miss, or persistent writer contention).

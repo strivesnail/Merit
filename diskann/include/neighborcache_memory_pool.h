@@ -1,5 +1,6 @@
 #pragma once
 
+#include "neighborcache_period.h"
 #include "tsl/robin_map.h"
 #include "tsl/robin_set.h"
 
@@ -397,7 +398,7 @@ template <typename T> class NeighborCacheMemoryPool
         uint64_t clock_second_chances = 0;
     };
 
-    static constexpr size_t kDefaultShardCount = 128;
+    static constexpr size_t kDefaultShardCount = 64;
     static constexpr size_t kMaxShardCount = 128;
 
     struct alignas(64) Shard
@@ -500,12 +501,12 @@ template <typename T> class NeighborCacheMemoryPool
     std::atomic<uint64_t> _ghost_zero_hit_evictions{0};
     AdmissionPolicy _admission_policy = AdmissionPolicy::Mru;
     std::atomic<uint32_t> _admission_hop_threshold{8};
-    uint32_t _bip_period = 32;
+    NeighborCachePeriod _bip_period{32};
     uint32_t _ghost_percent = 10;
     uint32_t _adaptive_initial_hop_threshold = 12;
     uint32_t _adaptive_min_hop_threshold = 8;
-    uint64_t _adaptive_half_life_queries = 25000;
-    uint64_t _adaptive_stage_queries = 1000;
+    NeighborCachePeriod _adaptive_half_life_queries{25000};
+    static constexpr uint64_t _adaptive_stage_queries = 1000;
     double _adaptive_low_hit_rate = 0.40;
     double _adaptive_high_hit_rate = 0.60;
     double _adaptive_low_reuse_rate = 0.02;

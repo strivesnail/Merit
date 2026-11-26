@@ -219,6 +219,9 @@ template <typename T> class SSDQueryScratch : public AbstractScratch<T>
         std::vector<T> coords;
         std::vector<uint32_t> neighbors;
     };
+    // A shared N-cache slot may be reused by another search worker after
+    // lookup. Keep the copied record in scratch through expansion.
+    std::vector<PrefetchRecord> neighborcache_ncache_records;
     std::deque<PrefetchRecord> neighborcache_prefetch_records;
 
     SSDQueryScratch(size_t aligned_dim, size_t visited_reserve);

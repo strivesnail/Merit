@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cassert>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <stdexcept>
 
@@ -33,7 +34,7 @@ template <typename T> struct NeighborCacheArrayValue<std::atomic<T>>
     }
 };
 
-template <typename T> class NeighborCacheLazyArray
+template <typename T, bool FixedBlocks = false> class NeighborCacheLazyArray
 {
   public:
     using Value = typename NeighborCacheArrayValue<T>::Type;
@@ -60,6 +61,8 @@ template <typename T> class NeighborCacheLazyArray
     {
         clear();
         assert(block_size != 0);
+        if (FixedBlocks && block_size != kBlockSize)
+            throw std::invalid_argument("Fixed NeighborCache blocks require the default block size");
         const size_t blocks = size / block_size + (size % block_size != 0);
         if (blocks != 0)
         {
@@ -72,6 +75,10 @@ template <typename T> class NeighborCacheLazyArray
         _size = size;
         _block_count = blocks;
         _block_size = block_size;
+#if defined(__SIZEOF_INT128__)
+        if (!FixedBlocks && block_size != kBlockSize)
+            _block_reciprocal = UINT64_MAX / block_size;
+#endif
     }
 
     size_t size() const { return _size; }
@@ -144,9 +151,18 @@ template <typename T> class NeighborCacheLazyArray
     {
         // Use compile-time division for the ordinary metadata blocks. The
         // D-cache member array can still choose a block that fits whole pages.
-        if (_block_size == kBlockSize)
+        if (FixedBlocks || _block_size == kBlockSize)
             return {index / kBlockSize, index % kBlockSize};
+#if defined(__SIZEOF_INT128__)
+        // The rounded-down multiplier can underestimate the quotient by one.
+        const size_t quotient = static_cast<size_t>((static_cast<__uint128_t>(index) * _block_reciprocal) >> 64);
+        const size_t remainder = index - quotient * _block_size;
+        if (remainder >= _block_size)
+            return {quotient + 1, remainder - _block_size};
+        return {quotient, remainder};
+#else
         return {index / _block_size, index % _block_size};
+#endif
     }
 
     size_t block_length(size_t block) const
@@ -159,6 +175,9 @@ template <typename T> class NeighborCacheLazyArray
     size_t _size = 0;
     size_t _block_count = 0;
     size_t _block_size = kBlockSize;
+#if defined(__SIZEOF_INT128__)
+    uint64_t _block_reciprocal = 0;
+#endif
 };
 
 } // namespace diskann

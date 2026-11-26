@@ -1,6 +1,7 @@
 #pragma once
 
 #include "neighborcache_lazy_array.h"
+#include "neighborcache_spin_lock.h"
 #include "tsl/robin_map.h"
 
 #include <array>
@@ -8,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <deque>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -21,6 +23,7 @@ class NeighborCacheMetadataCache
 {
   public:
     static constexpr size_t kShardCount = 64;
+    static constexpr size_t kMaxSeedPageMembers = 10;
     static constexpr uint8_t kDefaultSigT = 2;
     static constexpr uint32_t kInvalid = std::numeric_limits<uint32_t>::max();
 
@@ -89,7 +92,7 @@ class NeighborCacheMetadataCache
         return _sig_t.load(std::memory_order_relaxed);
     }
 
-    TouchResult on_expand(uint32_t node_id);
+    TouchResult on_expand(uint32_t node_id, uint8_t heat_increment = 1);
     TouchResult on_edge(uint32_t parent, uint32_t child);
     TouchResult on_real_io_edge(uint32_t parent, uint32_t child, size_t max_edges = 64);
     uint64_t membership_bitmap_bytes() const
@@ -104,11 +107,15 @@ class NeighborCacheMetadataCache
     Heat score(uint32_t node_id) const;
     Heat score_at(uint32_t slot_id) const;
     bool set_evictable(uint32_t node_id, bool evictable);
+    bool set_evictable_from_slot(uint32_t node_id, uint32_t slot_id, bool evictable);
     void halve_heat();
     bool heat_decay_pending() const { return _heat_decay_pending.load(std::memory_order_acquire); }
     uint64_t edge_saturations() const;
     bool snapshot(uint32_t node_id, Snapshot &out, bool include_all_edges = false) const;
     bool snapshot_from_slot(uint32_t node_id, uint32_t slot_id, Snapshot &out, bool include_all_edges) const;
+
+    bool seed_member_slot(uint32_t seed_id, uint32_t page, uint32_t node_id, uint16_t &slot) const;
+    void set_seed_members(uint32_t seed_id, uint32_t page, const uint32_t *ids, size_t count);
 
   private:
     class Edge
@@ -143,23 +150,39 @@ class NeighborCacheMetadataCache
     };
     static_assert(sizeof(Edge) == sizeof(uint32_t) + sizeof(uint8_t), "Edge must remain tightly packed");
 
+    struct SeedMembers
+    {
+        uint32_t page = kInvalid;
+        uint8_t count = 0;
+        // Ordered by record slot. Zero heat retains membership through decay.
+        std::array<Edge, kMaxSeedPageMembers> edges{};
+    };
+
+    template <typename T> using SlotArray = NeighborCacheLazyArray<T, true>;
+
     struct Shard
     {
         mutable std::shared_mutex mu;
         uint64_t capacity = 0;
-        NeighborCacheLazyArray<Heat> scores;
-        NeighborCacheLazyArray<std::atomic<uint32_t>> slot_to_node;
-        std::vector<std::vector<Edge>> edges_by_slot;
-        NeighborCacheLazyArray<uint8_t> evictable;
+        SlotArray<Heat> scores;
+        SlotArray<std::atomic<uint32_t>> slot_to_node;
+        std::vector<std::vector<Edge>> edges_by_slot; // Tracked neighbors outside the seed page.
+        tsl::robin_map<uint32_t, SeedMembers> seed_members_by_slot;
+        SlotArray<uint8_t> evictable;
+        // The shard lock protects slot lifetime. Edge writers and snapshot readers
+        // sharing that lock additionally serialize per slot, always shard first.
+        mutable std::deque<NeighborCacheSpinLock> edge_locks;
         uint32_t next_unused_slot = 0;
-        NeighborCacheLazyArray<uint32_t> nonseed_prev;
-        NeighborCacheLazyArray<uint32_t> nonseed_next;
+        SlotArray<uint32_t> nonseed_prev;
+        SlotArray<uint32_t> nonseed_next;
         uint32_t nonseed_head = kInvalid;
         uint32_t nonseed_tail = kInvalid;
         tsl::robin_map<uint32_t, uint32_t> node_to_slot;
     };
 
+    std::pair<uint32_t, uint32_t> split_slot(uint32_t slot_id, uint32_t stride) const;
     size_t shard_index(uint32_t node_id) const;
+    uint32_t local_slot_hint(const Shard &shard, size_t shard_id, uint32_t node_id, uint32_t slot_id) const;
     static void nonseed_unlink_unlocked(Shard &shard, uint32_t local_slot);
     static void nonseed_push_front_unlocked(Shard &shard, uint32_t local_slot);
     void touch_unlocked(Shard &shard, uint32_t local_slot);
@@ -168,12 +191,13 @@ class NeighborCacheMetadataCache
     void membership_clear(uint32_t node_id);
     uint32_t evict_one_unlocked(Shard &shard, size_t shard_id, uint32_t &evicted_slot,
                                 uint32_t &reclaimed_local_slot);
-    TouchResult touch_or_insert_unlocked(Shard &shard, size_t shard_id, uint32_t node_id, bool count_expand);
+    TouchResult insert_unlocked(Shard &shard, size_t shard_id, uint32_t node_id, uint8_t heat_increment);
     TouchResult touch_existing_unlocked(Shard &shard, size_t shard_id, uint32_t node_id,
-                                       uint32_t local_slot, bool count_expand);
+                                       uint32_t local_slot, uint8_t heat_increment);
     void copy_snapshot_edges_unlocked(const Shard &shard, uint32_t local_slot, Snapshot &out,
                                       bool include_all_edges) const;
     static void sort_snapshot_edges(Snapshot &out);
+    void update_edge_unlocked(Shard &shard, uint32_t local_slot, uint32_t child, size_t max_edges);
     void count_edge_unlocked(Edge &edge);
 
     std::vector<std::unique_ptr<Shard>> _shards;
@@ -183,6 +207,7 @@ class NeighborCacheMetadataCache
     std::atomic<uint64_t> _total_edges{0};
     std::atomic<uint64_t> _total_evictable{0};
     std::atomic<uint32_t> _slot_stride{0};
+    uint64_t _slot_reciprocal = 0;
     std::atomic<uint8_t> _sig_t{kDefaultSigT};
     bool _edge_heat_decay = true;
     size_t _max_edges = 64;

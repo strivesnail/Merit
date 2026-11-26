@@ -181,6 +181,7 @@ class NeighborCacheThreadPageCache {
     uint64_t capacity_ = 0;
     bool reset_ = false, immutable_ = true, trim_zero_tail_ = true;
     bool single_owner_ = false;
+    bool seed_only_lookup_ = false;
     mutable bool owner_bound_ = false;
     uint32_t dynamic_base_ = 0;
     uint64_t dynamic_count_ = 0;
@@ -259,10 +260,25 @@ class NeighborCacheThreadPageCache {
         return entry == nullptr ? 0 : entry->load(std::memory_order_acquire);
     }
     bool valid(const Slot &s) const { return s.version==version(s.key); }
-    static void forget_records(Local &l, uint32_t page_slot) {
+    bool copy_page(Local &worker, uint32_t key, char *destination, size_t offset = 0,
+                   size_t bytes = defaults::SECTOR_LEN) {
+        const auto slot = find(worker, key);
+        if (slot != none && valid(worker.slots[slot])) {
+            worker.slots[slot].bytes.copy_to(destination, offset, bytes);
+            if (valid(worker.slots[slot])) {
+                touch(worker, slot);
+                worker.hits.fetch_add(1, std::memory_order_relaxed);
+                return true;
+            }
+        }
+        worker.misses.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+    void forget_records(Local &l, uint32_t page_slot) {
 
         auto &page=l.slots[page_slot];
-        for(uint32_t id:page.members) l.records.remove_page(id,page_slot);
+        if (!seed_only_lookup_)
+            for (uint32_t id : page.members) l.records.remove_page(id, page_slot);
         page.members.clear();
     }
     bool remove(Local &l, uint32_t i, bool discard=false) {
@@ -305,6 +321,12 @@ class NeighborCacheThreadPageCache {
         });
         return location;
     }
+    static bool records_fit(size_t count, size_t record_bytes) {
+        // Bound both factors before multiplying, including for malformed sizes.
+        return record_bytes != 0 && record_bytes <= defaults::SECTOR_LEN &&
+               count <= defaults::SECTOR_LEN && count * record_bytes <= defaults::SECTOR_LEN;
+    }
+
   public:
     bool init(uint64_t pages,size_t threads,bool reset=false,bool immutable=true) {
         if(locals_ || !threads || pages<threads || pages>=none)
@@ -336,36 +358,40 @@ class NeighborCacheThreadPageCache {
         single_owner_ = enabled && threads_ == 1;
         owner_bound_ = false;
     }
+    void set_seed_only_lookup(bool enabled) { seed_only_lookup_ = enabled; }
     bool current_worker_active() const { return local(false) != nullptr; }
     bool enabled() const { return bool(locals_); }
     uint64_t capacity_pages() const { return capacity_; }
     // Called after the page payload and its membership have been published.
     // No query worker can add entries to another worker's directory.
-    void register_records(uint32_t key, const uint32_t *ids, size_t count) {
+    // A publisher with IDs from its own page image can register them even if
+    // another worker has installed a newer version of the same seed.
+    void register_records(uint32_t key, const uint32_t *ids, size_t count, bool require_current_version = true) {
 
         auto *l=local(false); if(!l) return;
         const uint32_t i=find(*l,key);
-        if(i==none || !valid(l->slots[i])) return;
+        if(i==none || (require_current_version && !valid(l->slots[i]))) return;
         if(count>defaults::SECTOR_LEN) throw std::length_error("Too many records for a prefetch page");
         auto &s=l->slots[i];
-        if (single_owner_ && count) {
-            const auto retained = [&](size_t slot) {
-                return slot < s.members.size() && slot < count && s.members[slot] == ids[slot];
-            };
-            for (size_t slot = 0; slot < s.members.size(); ++slot) {
-                if (!retained(slot))
-                    l->records.remove_page(s.members[slot], i);
-            }
-            for (uint32_t slot = 0; slot < count; ++slot) {
-                if (retained(slot))
-                    l->records.refresh(ids[slot], {i, slot});
-                else
-                    l->records.add(ids[slot], {i, slot});
-            }
-        } else {
-            forget_records(*l,i);
-            if (!count) return;
-            for (uint32_t slot = 0; slot < count; ++slot)
+        if (!count) {
+            forget_records(*l, i);
+            return;
+        }
+        if (seed_only_lookup_) {
+            s.members.assign(ids, ids + count);
+            return;
+        }
+        const auto retained = [&](size_t slot) {
+            return slot < s.members.size() && slot < count && s.members[slot] == ids[slot];
+        };
+        for (size_t slot = 0; slot < s.members.size(); ++slot) {
+            if (!retained(slot))
+                l->records.remove_page(s.members[slot], i);
+        }
+        for (uint32_t slot = 0; slot < count; ++slot) {
+            if (retained(slot))
+                l->records.refresh(ids[slot], {i, slot});
+            else
                 l->records.add(ids[slot], {i, slot});
         }
         s.members.assign(ids,ids+count);
@@ -380,13 +406,46 @@ class NeighborCacheThreadPageCache {
         record_slot = location.record_slot;
         return true;
     }
-    bool seed_snapshot(uint32_t seed, uint32_t &key, std::vector<uint32_t> &ids, char *dst,
-                       uint32_t missing_record=none, size_t append_capacity=0) {
+    bool contains_seed(uint32_t key, uint32_t seed) const {
+        const auto *worker = local(false);
+        if (!worker || key == none) return false;
+        const auto slot = find(*worker, key);
+        if (slot == none) return false;
+        const auto &members = worker->slots[slot].members;
+        return !members.empty() && members.front() == seed;
+    }
+    bool copy_record_from_seed(uint32_t key, uint32_t seed, uint32_t id, size_t record_bytes, char *dst) {
         auto *worker = local(false);
-        if (!worker) return false;
-        const auto location = find_record_location(*worker, seed, true, false);
-        if (location.page_slot == none) return false;
-        const auto &page = worker->slots[location.page_slot];
+        if (!worker || key == none) return false;
+        const auto slot = find(*worker, key);
+        if (slot != none) {
+            const auto &page = worker->slots[slot];
+            const auto &members = page.members;
+            if (!members.empty() && members.front() == seed) {
+                const auto member = std::find(members.begin(), members.end(), id);
+                if (member != members.end() && records_fit(size_t(member - members.begin()) + 1, record_bytes)) {
+                    // These record bytes are immutable within this worker's snapshot.
+                    page.bytes.copy_to(dst, size_t(member - members.begin()) * record_bytes, record_bytes);
+                    touch(*worker, slot);
+                    worker->hits.fetch_add(1, std::memory_order_relaxed);
+                    return true;
+                }
+            }
+        }
+        worker->misses.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+    bool version_matches(uint32_t key, uint64_t expected) const { return version(key) == expected; }
+    bool seed_snapshot(uint32_t seed, uint32_t &key, std::vector<uint32_t> &ids, char *dst,
+                       uint32_t missing_record=none, size_t append_capacity=0, uint32_t known_sector=none,
+                       uint64_t *page_version=nullptr) {
+        auto *worker = local(false);
+        if (!worker || (seed_only_lookup_ && known_sector == none)) return false;
+        const uint32_t page_slot = seed_only_lookup_ ? find(*worker, known_sector)
+                                                                        : find_record_location(*worker, seed, true, false).page_slot;
+        if (page_slot == none) return false;
+        const auto &page = worker->slots[page_slot];
+        if (page.members.empty() || page.members[0] != seed) return false;
         key = page.key;
         if (append_capacity && page.members.size() >= append_capacity)
             return false;
@@ -394,11 +453,13 @@ class NeighborCacheThreadPageCache {
             std::find(page.members.begin(), page.members.end(), missing_record) != page.members.end();
         // Replacement updates also touch the page when the member is present.
         if (!append_capacity || !already_present)
-            touch(*worker, location.page_slot);
+            touch(*worker, page_slot);
         if (already_present)
             return false;
         ids = page.members;
         page.bytes.copy_to(dst);
+        if (page_version != nullptr)
+            *page_version = page.version;
         return true;
     }
     // The base-index records are immutable. Repacking a shared D page changes
@@ -431,7 +492,7 @@ class NeighborCacheThreadPageCache {
         const bool found=l->records.newest_first(id,[&](RecordLocation loc) {
             const auto &s=l->slots[loc.page_slot];
             if(s.key==none || loc.record_slot>=s.members.size() || s.members[loc.record_slot]!=id ||
-               s.members.size()>defaults::SECTOR_LEN/record_bytes) return false;
+               !records_fit(s.members.size(), record_bytes)) return false;
             record_slot=loc.record_slot;
             ids=s.members;
             s.bytes.copy_to(dst);
@@ -457,8 +518,14 @@ class NeighborCacheThreadPageCache {
         for(uint16_t k=0;k<n;k++) { auto i=find(*l,base+k); if(i==none || !valid(l->slots[i])) return false; }
         return true;
     }
+    bool get_page_slice(uint32_t key, size_t offset, size_t bytes, char *dst) {
+        if (offset > defaults::SECTOR_LEN || bytes > defaults::SECTOR_LEN - offset) return false;
+        auto *worker = local(immutable_);
+        return worker && copy_page(*worker, key, dst, offset, bytes);
+    }
     bool get_range(uint32_t base,uint16_t n,char *dst) {
         auto *l=local(immutable_); if(!l) return false;
+        if (n == 1) return copy_page(*l, base, dst);
         for(uint16_t k=0;k<n;k++) {
             auto i=find(*l,base+k);
             if(i==none || !valid(l->slots[i])) { l->misses.fetch_add(1,std::memory_order_relaxed); return false; }
@@ -475,7 +542,7 @@ class NeighborCacheThreadPageCache {
         auto *l=local(false); if(!l || !l->depth) return nullptr;
         if(l->pins_used==l->pins.size()) l->pins.emplace_back();
         auto &copy=l->pins[l->pins_used];
-        if(!get_range(key,1,copy.data())) return nullptr;
+        if(!copy_page(*l,key,copy.data())) return nullptr;
         ++l->pins_used; return copy.data();
     }
     void erase(uint32_t key) {

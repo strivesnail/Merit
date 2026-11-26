@@ -60,7 +60,31 @@ public:
    std::array<char,defaults::SECTOR_LEN> p{};std::vector<uint32_t> ids;uint32_t slot=99;assert(idx._neighborcache_shared_cache.private_record_page_snapshot(seed,idx._max_node_len,slot,ids,p.data()));assert(ids.front()==seed);if(!concurrent)assert((ids==std::vector<uint32_t>{seed,3,4,5}));
    for(size_t k=0;k<ids.size();k++){T first;memcpy(&first,p.data()+k*idx._max_node_len,sizeof(T));assert(first==T(ids[k]%19));}assert(std::find(ids.begin(),ids.end(),4)!=ids.end());assert(std::find(ids.begin(),ids.end(),5)!=ids.end());
   }
-  stop=true;if(writer.joinable())writer.join();{std::lock_guard<std::mutex> lock(idx._neighborcache_stash_mu);idx._neighborcache_payload_stash.clear();}
+  stop=true;if(writer.joinable())writer.join();
+  if (!concurrent)
+  {
+      const auto unrelated = make(6, false);
+      idx._neighborcache_mem_pool->try_admit(6, unrelated.data(), idx._disk_bytes_per_point, idx._max_node_len, 0);
+      assert(idx._neighborcache_mem_pool->contains(6));
+      for (const uint32_t seed : {90u, 91u})
+      {
+          const auto record = make(seed, true);
+          idx._neighborcache_mem_pool->try_admit(seed, record.data(), idx._disk_bytes_per_point, idx._max_node_len, 0);
+          NeighborCacheMetadataCache::Snapshot ranking;
+          if (seed == 90)
+              ranking.significant = {{6, 10}, {4, 3}};
+          assert(idx.neighborcache_seed_page_open(seed, &ranking) == PQFlashIndex<T>::NeighborCacheSeedOpen::Published);
+          std::array<char, defaults::SECTOR_LEN> payload{};
+          std::vector<uint32_t> ids;
+          uint32_t slot = UINT32_MAX;
+          assert(idx._neighborcache_shared_cache.private_record_page_snapshot(
+              seed, idx._max_node_len, slot, ids, payload.data()));
+          const std::vector<uint32_t> expected = seed == 90 ? std::vector<uint32_t>{seed, 4, 3}
+                                                           : std::vector<uint32_t>{seed, 3, 4};
+          assert(ids == expected);
+      }
+  }
+  {std::lock_guard<std::mutex> lock(idx._neighborcache_stash_mu);idx._neighborcache_payload_stash.clear();}
   section.reset();idx.enable_neighborcache_dynamic_3cache(false);unlink((std::string(prefix)+"_neighborcache_dc.dyn.data").c_str());
  }
 };}

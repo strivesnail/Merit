@@ -239,7 +239,24 @@ int search_disk_index(diskann::Metric &metric, const std::string &index_path_pre
                              std::strcmp(std::getenv("NEIGHBORCACHE_DYNAMIC_3CACHE"), "0") != 0);
     const bool ncache_only = (std::getenv("NEIGHBORCACHE_NCACHE_ONLY") != nullptr &&
                               std::strcmp(std::getenv("NEIGHBORCACHE_NCACHE_ONLY"), "0") != 0);
-    if (neighborcache_memory_gb > 0.0)
+    const char *ncache_cold_env = std::getenv("NEIGHBORCACHE_NCACHE_COLD");
+    const char *ncache_nodes_env = std::getenv("NEIGHBORCACHE_NCACHE_CAP_NODES");
+    const bool cold_lru = ncache_only && !dyn3_cache && ncache_cold_env != nullptr &&
+                          std::strcmp(ncache_cold_env, "0") != 0;
+    if (cold_lru && ncache_nodes_env != nullptr)
+    {
+        const auto capacity = std::stoull(ncache_nodes_env);
+        if (capacity == 0 || capacity >= std::numeric_limits<uint32_t>::max() ||
+            num_nodes_to_cache != 0 || neighborcache_disk_cache_ratio > 0.0)
+        {
+            diskann::cerr << "Cold N-cache-only mode requires a positive node capacity and no BFS or D-cache."
+                          << std::endl;
+            return -1;
+        }
+        _pFlashIndex->init_neighborcache_memory_pool_cold(capacity);
+        _pFlashIndex->enable_neighborcache_memory_runtime_admit(true);
+    }
+    else if (neighborcache_memory_gb > 0.0)
     {
         uint64_t max_nodes = 0;
         std::string budget_report;

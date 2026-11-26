@@ -37,13 +37,19 @@ void reference_membership(bool bitmap)
             assert(cache.score(id) == (present ? resident.at(id) : 0u));
             diskann::NeighborCacheMetadataCache::Snapshot snap;
             assert(cache.snapshot(id, snap) == present);
+            diskann::NeighborCacheMetadataCache::Snapshot hinted;
+            assert(cache.snapshot_from_slot(id, tr.slot_id, hinted, false) == present);
             if (present)
             {
                 assert(cache.node_at(slot) == id && snap.slot_id == slot);
                 assert(snap.score == resident.at(id));
+                assert(hinted.slot_id == slot && hinted.score == snap.score);
             }
-            assert(cache.set_evictable(id, false) == present);
+            const auto previous = cache.evictable_size();
+            assert(cache.set_evictable_from_slot(id, tr.slot_id, false) == present);
+            assert(cache.evictable_size() == previous - present);
             assert(cache.set_evictable(id, true) == present);
+            assert(cache.evictable_size() == previous);
         }
     }
 }
@@ -147,6 +153,67 @@ void concurrent_edge_slot_growth()
     }
     writer.join();assert(cache.size()==5001 && cache.capacity()==524288);
 }
+void edge_hits_preserve_victim_order(diskann::NeighborCacheMetadataCache::Access mode)
+{
+    using Cache = diskann::NeighborCacheMetadataCache;
+    Cache cache;
+    cache.init(mode == Cache::Access::Sharded ? 128 : 2, 2, 1024, true, mode);
+    assert(cache.on_expand(42).inserted);
+    assert(cache.on_expand(106).inserted);
+    auto edge = cache.on_edge(42, 57);
+    assert(edge.present && !edge.inserted && edge.score == 1);
+    auto inserted = cache.on_edge(170, 57);
+    assert(inserted.inserted && inserted.score == 0 && inserted.evicted_id == 42);
+    assert(cache.set_evictable(106, false) && cache.set_evictable(170, false));
+    assert(!cache.on_expand(234).present);
+    assert(cache.set_evictable(170, true));
+    assert(cache.on_expand(234).evicted_id == 170 && cache.contains(106));
+}
+
+void concurrent_parent_edges()
+{
+    using Cache = diskann::NeighborCacheMetadataCache;
+    Cache cache;
+    cache.init(128, 2, 128, true);
+    constexpr unsigned writers = 6, updates = 160;
+    std::atomic<bool> start{false};
+    std::atomic<unsigned> inserted{0}, done{0};
+    std::vector<std::thread> threads;
+    for (unsigned i = 0; i < writers; ++i)
+        threads.emplace_back([&, i] {
+            while (!start.load()) std::this_thread::yield();
+            for (unsigned j = 0; j < updates; ++j)
+                for (const auto parent : {0u,64u})
+                {
+                    auto r = cache.on_edge(parent, i + 1);
+                    assert(r.present && r.score == 0);
+                    if (r.inserted) ++inserted;
+                }
+            ++done;
+        });
+    start.store(true);
+    uint32_t members[]{0,1};
+    while (done.load() != writers)
+    {
+        Cache::Snapshot snapshot;
+        if (cache.snapshot(0, snapshot, true))
+        {
+            cache.set_seed_members(0, 7, members, 2);
+            assert(cache.snapshot_from_slot(0, snapshot.slot_id, snapshot, true));
+            assert(snapshot.significant.size() <= writers);
+        }
+    }
+    for (auto &t : threads) t.join();
+    assert(inserted.load() == 2 && cache.edge_count() == 2 * writers);
+    for (const auto parent : {0u,64u})
+    {
+        Cache::Snapshot snapshot;
+        assert(cache.snapshot(parent, snapshot, true) && snapshot.significant.size() == writers);
+        for (unsigned i = 0; i < writers; ++i)
+            assert(snapshot.significant[i].first == i + 1 && snapshot.significant[i].second == updates);
+    }
+}
+
 void lazy_slot_blocks()
 {
     using Slot = std::atomic<uint32_t>;
@@ -258,9 +325,91 @@ void integer_heat()
     assert(cache.edge_count() == 1);
 }
 
+void seed_membership_preserves_heat()
+{
+    using Cache = diskann::NeighborCacheMetadataCache;
+    setenv("NEIGHBORCACHE_EDGE_HEAT_DECAY", "1", 1);
+    Cache cache;
+    cache.init(128, 2, 64, /*index_ids_only=*/true);
+    cache.on_real_io_edge(1, 2);
+    cache.on_real_io_edge(1, 2);
+    cache.on_real_io_edge(1, 3);
+    const uint32_t first[] = {1, 2, 4};
+    cache.set_seed_members(1, 0, first, 3);
+
+    uint16_t slot = 0;
+    assert(cache.seed_member_slot(1, 0, 2, slot) && slot == 1);
+    assert(cache.seed_member_slot(1, 0, 4, slot) && slot == 2);
+    assert(!cache.seed_member_slot(1, 0, 3, slot));
+    assert(!cache.seed_member_slot(1, 1, 2, slot));
+    assert(cache.edge_count() == 2);
+    cache.on_expand(5);
+    const uint32_t another_seed[] = {5, 2};
+    cache.set_seed_members(5, 1, another_seed, 2);
+
+    cache.on_real_io_edge(1, 2);
+    cache.on_real_io_edge(1, 4);
+    const uint32_t replacement[] = {1, 4, 3};
+    cache.set_seed_members(1, 0, replacement, 3);
+    assert(!cache.seed_member_slot(1, 0, 2, slot));
+    assert(cache.seed_member_slot(5, 1, 2, slot) && slot == 1);
+    assert(cache.seed_member_slot(1, 0, 3, slot) && slot == 2);
+    assert(cache.seed_member_slot(1, 0, 4, slot) && slot == 1);
+    Cache::Snapshot snapshot;
+    assert(cache.snapshot(1, snapshot, true));
+    const std::vector<std::pair<uint32_t, uint8_t>> expected = {{2, 3}, {3, 1}, {4, 1}};
+    assert(snapshot.significant == expected && cache.edge_count() == expected.size());
+
+    cache.halve_heat();
+    assert(cache.seed_member_slot(1, 0, 4, slot));
+    assert(cache.edge_count() == 1);
+    cache.on_real_io_edge(1, 4);
+    cache.set_seed_members(1, 0, nullptr, 0);
+    assert(!cache.seed_member_slot(1, 0, 4, slot));
+    const std::vector<std::pair<uint32_t, uint8_t>> after_retirement = {{2, 1}, {4, 1}};
+    assert(cache.snapshot(1, snapshot, true));
+    assert(snapshot.significant == after_retirement && cache.edge_count() == after_retirement.size());
+}
+
+void slot_boundaries()
+{
+    using Cache = diskann::NeighborCacheMetadataCache;
+    Cache cache;
+    for (const uint32_t capacity : {0u, 1u, 63u, 64u, 65u, 385u, 4097u, 64001u})
+    {
+        cache.init(capacity);
+        const uint32_t stride = (capacity + 63) / 64;
+        std::vector<uint32_t> expected(64 * stride, Cache::kInvalid);
+        for (uint32_t id = 0; id < capacity; ++id)
+        {
+            const uint32_t slot = (id % 64) * stride + id / 64;
+            assert(cache.on_expand(id).slot_id == slot);
+            expected[slot] = id;
+        }
+        auto check = [&](uint32_t slot, uint32_t expected_id) {
+            uint32_t node;
+            Heat score;
+            const bool present = expected_id != Cache::kInvalid;
+            assert(cache.node_at(slot) == expected_id);
+            assert(cache.node_score_at(slot, node, score) == present);
+            assert(node == expected_id && score == (present ? 1 : 0));
+            assert(cache.score_at(slot) == score);
+        };
+        for (uint32_t slot = 0; slot < expected.size(); ++slot)
+            check(slot, expected[slot]);
+        check(expected.size(), Cache::kInvalid);
+        check(UINT32_MAX - 1, Cache::kInvalid);
+        check(Cache::kInvalid, Cache::kInvalid);
+    }
+}
+
 int main()
 {
+    slot_boundaries();
     using Access = diskann::NeighborCacheMetadataCache::Access;
+    for (auto mode : {Access::Sharded, Access::SingleShard, Access::SingleOwner})
+        edge_hits_preserve_victim_order(mode);
+    concurrent_parent_edges();
     stable_index_slots(Access::Sharded, 64);
     stable_index_slots(Access::SingleShard, 1);
     stable_index_slots(Access::SingleOwner, 1);
@@ -272,4 +421,5 @@ int main()
     concurrent_bits();
     snapshot_sorting();
     integer_heat();
+    seed_membership_preserves_heat();
 }

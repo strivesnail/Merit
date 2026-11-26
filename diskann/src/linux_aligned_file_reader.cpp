@@ -19,6 +19,18 @@
 
 namespace
 {
+// This benchmark uses one 4 KiB graph and may open additional, unstriped files.
+void prepare_page_read(struct iocb *cb, int fd, const AlignedRead &read, int graph_even, int graph_odd) {
+    auto offset = read.offset;
+    if (fd == graph_even && graph_odd >= 0) {
+        if (read.len != 4096 || (offset & 4095))
+            throw std::runtime_error("two-disk graph benchmark expects one aligned 4 KiB sector");
+        const uint64_t page = offset >> 12;
+        fd = (page & 1) ? graph_odd : graph_even;
+        offset = (page >> 1) * 4096;
+    }
+    io_prep_pread(cb, fd, read.buf, read.len, offset);
+}
 typedef struct io_event io_event_t;
 typedef struct iocb iocb_t;
 
@@ -133,7 +145,7 @@ int64_t wait_for_events(io_context_t ctx, uint64_t n_ops, std::vector<io_event_t
     return static_cast<int64_t>(done);
 }
 
-void execute_io(io_context_t ctx, int fd, std::vector<AlignedRead> &read_reqs, uint64_t n_retries = 0)
+void execute_io(io_context_t ctx, int fd, std::vector<AlignedRead> &read_reqs, int odd_fd, uint64_t n_retries = 0)
 {
 #ifdef DEBUG
     for (auto &req : read_reqs)
@@ -156,8 +168,7 @@ void execute_io(io_context_t ctx, int fd, std::vector<AlignedRead> &read_reqs, u
         std::vector<struct iocb> cb(n_ops);
         for (uint64_t j = 0; j < n_ops; j++)
         {
-            io_prep_pread(cb.data() + j, fd, read_reqs[j + iter * MAX_EVENTS].buf, read_reqs[j + iter * MAX_EVENTS].len,
-                          read_reqs[j + iter * MAX_EVENTS].offset);
+            prepare_page_read(cb.data() + j, fd, read_reqs[j + iter * MAX_EVENTS], fd, odd_fd);
         }
 
         // initialize `cbs` using `cb` array
@@ -213,7 +224,7 @@ void execute_io(io_context_t ctx, int fd, std::vector<AlignedRead> &read_reqs, u
     }
 }
 
-void execute_io_multi(io_context_t ctx, std::vector<FdAlignedRead> &read_reqs, uint64_t n_retries = 0)
+void execute_io_multi(io_context_t ctx, std::vector<FdAlignedRead> &read_reqs, int graph_fd, int odd_fd, uint64_t n_retries = 0)
 {
     if (read_reqs.empty())
         return;
@@ -227,7 +238,7 @@ void execute_io_multi(io_context_t ctx, std::vector<FdAlignedRead> &read_reqs, u
         for (uint64_t j = 0; j < n_ops; j++)
         {
             const FdAlignedRead &fr = read_reqs[j + iter * MAX_EVENTS];
-            io_prep_pread(cb.data() + j, fr.fd, fr.read.buf, fr.read.len, fr.read.offset);
+            prepare_page_read(cb.data() + j, fr.fd, fr.read, graph_fd, odd_fd);
         }
         for (uint64_t i = 0; i < n_ops; i++)
             cbs[i] = cb.data() + i;
@@ -265,24 +276,7 @@ LinuxAlignedFileReader::LinuxAlignedFileReader()
 
 LinuxAlignedFileReader::~LinuxAlignedFileReader()
 {
-    int64_t ret;
-    // check to make sure file_desc is closed
-    ret = ::fcntl(this->file_desc, F_GETFD);
-    if (ret == -1)
-    {
-        if (errno != EBADF)
-        {
-            std::cerr << "close() not called" << std::endl;
-            // close file desc
-            ret = ::close(this->file_desc);
-            // error checks
-            if (ret == -1)
-            {
-                std::cerr << "close() failed; returned " << ret << ", errno=" << errno << ":" << ::strerror(errno)
-                          << std::endl;
-            }
-        }
-    }
+    close();
 }
 
 io_context_t &LinuxAlignedFileReader::get_ctx()
@@ -366,7 +360,22 @@ void LinuxAlignedFileReader::deregister_all_threads()
 void LinuxAlignedFileReader::open(const std::string &fname)
 {
     int flags = O_DIRECT | O_RDONLY | O_LARGEFILE;
-    this->file_desc = ::open(fname.c_str(), flags);
+    const char* logical = std::getenv("MERIT_GRAPH_LOGICAL");
+    if (logical && fname == logical) {
+        const char* even = std::getenv("MERIT_GRAPH_EVEN");
+        const char* odd = std::getenv("MERIT_GRAPH_ODD");
+        if (!even || !odd) throw std::invalid_argument("Both graph stripe paths are required");
+        file_desc = ::open(even, flags);
+        if (file_desc < 0) throw std::runtime_error("Cannot open even graph stripe");
+        odd_fd = ::open(odd, flags);
+        if (odd_fd < 0) {
+            close();
+            throw std::runtime_error("Cannot open odd graph stripe");
+        }
+        std::cerr << "Serving direct graph reads from even/odd stripes" << std::endl;
+    } else {
+        this->file_desc = ::open(fname.c_str(), flags);
+    }
     // error checks
     assert(this->file_desc != -1);
     std::cerr << "Opened file : " << fname << std::endl;
@@ -374,14 +383,9 @@ void LinuxAlignedFileReader::open(const std::string &fname)
 
 void LinuxAlignedFileReader::close()
 {
-    //  int64_t ret;
-
-    // check to make sure file_desc is closed
-    ::fcntl(this->file_desc, F_GETFD);
-    //  assert(ret != -1);
-
-    ::close(this->file_desc);
-    //  assert(ret != -1);
+    if (odd_fd >= 0) ::close(odd_fd);
+    if (file_desc >= 0) ::close(file_desc);
+    odd_fd = file_desc = -1;
 }
 
 void LinuxAlignedFileReader::read(std::vector<AlignedRead> &read_reqs, io_context_t &ctx, bool async)
@@ -391,14 +395,14 @@ void LinuxAlignedFileReader::read(std::vector<AlignedRead> &read_reqs, io_contex
         diskann::cout << "Async currently not supported in linux." << std::endl;
     }
     assert(this->file_desc != -1);
-    execute_io(ctx, this->file_desc, read_reqs);
+    execute_io(ctx, this->file_desc, read_reqs, odd_fd);
 }
 
 void LinuxAlignedFileReader::read_multi(std::vector<FdAlignedRead> &read_reqs, io_context_t &ctx)
 {
     if (read_reqs.empty())
         return;
-    execute_io_multi(ctx, read_reqs);
+    execute_io_multi(ctx, read_reqs, file_desc, odd_fd);
 }
 
 void neighborcache_io_latency_report()

@@ -2,6 +2,7 @@
 #include <cassert>
 #include <cstdlib>
 #include <cstring>
+#include <random>
 #include <thread>
 #include <vector>
 
@@ -41,7 +42,35 @@ template<typename T> void check_admission() {
     std::vector<uint32_t> nbrs;
     assert(pool.copy_payload(2,owned,nbrs) && owned[0]==T{7});
 }
+void check_periods() {
+    std::mt19937_64 rng(451);
+    const uint64_t periods[] = {0, 1, 2, 7, 32, 1000, 25000, UINT32_MAX,
+                                uint64_t{1} << 63, UINT64_MAX - 1, UINT64_MAX};
+    diskann::NeighborCachePeriod schedule(0);
+    auto check = [&](uint64_t period) {
+        schedule.reset(period);
+        auto verify = [&](uint64_t n) {
+            assert(schedule.matches(n) == (period != 0 && n % period == 0));
+        };
+        verify(0);
+        verify(UINT64_MAX);
+        for (unsigned i = 0; i < 16; ++i) {
+            const uint64_t n = rng();
+            verify(n);
+            if (period) {
+                const uint64_t multiple = n - n % period;
+                verify(multiple - 1);
+                verify(multiple);
+                verify(multiple + 1);
+            }
+        }
+    };
+    for (auto period : periods) check(period);
+    for (unsigned i = 0; i < 4096; ++i) check(rng());
+}
+
 int main() {
+    check_periods();
     setenv("NEIGHBORCACHE_NCACHE_SHARDS","1",1);
     for(const char *spin:{"0","1"}) for(const char *clock:{"0","1"}) {
         setenv("NEIGHBORCACHE_NCACHE_SPIN",spin,1);

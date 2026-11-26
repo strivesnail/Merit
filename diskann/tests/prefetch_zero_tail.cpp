@@ -1,6 +1,7 @@
 #include "neighborcache_thread_page_cache.h"
 #include <cassert>
 #include <cstring>
+#include <thread>
 #include <unordered_map>
 
 using Bytes = std::array<char, diskann::defaults::SECTOR_LEN>;
@@ -42,6 +43,11 @@ void roundtrips(bool trim)
         Bytes output;
         output.fill(99);
         assert(cache.get_range(key, 1, output.data()) && output == image);
+        std::array<char, 128> slice;
+        slice.fill(99);
+        assert(cache.get_page_slice(key, 496, slice.size(), slice.data()));
+        assert(std::memcmp(slice.data(), image.data() + 496, slice.size()) == 0);
+        assert(!cache.get_page_slice(key, image.size() - 1, slice.size(), slice.data()));
         uint32_t seed_key = 0;
         std::vector<uint32_t> members;
         output.fill(99);
@@ -52,6 +58,11 @@ void roundtrips(bool trim)
         assert(std::memcmp(record.data(), image.data() + 128, record.size()) == 0);
     }
     assert(writes.seen >= 38);
+    // Invalidation by another worker leaves this worker's old payload resident.
+    std::thread invalidate([&] { cache.erase(1003); });
+    invalidate.join();
+    std::array<char, 128> stale_record{};
+    assert(!cache.get_page_slice(1003, 128, stale_record.size(), stale_record.data()));
     cache.exit();
     // Static immutable snapshots compare the whole reconstructed image.
     diskann::NeighborCacheThreadPageCache immutable;
