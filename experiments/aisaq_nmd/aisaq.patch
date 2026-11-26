@@ -1,3 +1,52 @@
+diff --git a/include/aligned_file_reader.h b/include/aligned_file_reader.h
+index f39d5da..c1021d5 100644
+--- a/include/aligned_file_reader.h
++++ b/include/aligned_file_reader.h
+@@ -76,6 +76,10 @@ struct AlignedRead
+     uint64_t offset; // where to read from
+     uint64_t len;    // how much to read
+     void *buf;       // where to read into
++    // Linux: optional buffered-file descriptor; -1 uses the reader's direct-I/O fd.
++    int fd_override = -1;
++    int64_t result = -1; // completed bytes, or negative errno (Linux)
++
+ 
+     AlignedRead() : offset(0), len(0), buf(nullptr)
+     {
+diff --git a/include/neighbor.h b/include/neighbor.h
+index db2f42f..7b7b030 100644
+--- a/include/neighbor.h
++++ b/include/neighbor.h
+@@ -14,6 +14,7 @@ namespace diskann
+ struct Neighbor
+ {
+     unsigned id;
++    uint32_t nc_parent = UINT32_MAX;
+     unsigned rid;       /* aisaq: used with rearranged index */
+     float distance;
+     bool expanded;
+@@ -88,7 +89,8 @@ class NeighborPriorityQueue
+         {
+             std::memmove(&_data[lo + 1], &_data[lo], (_size - lo) * sizeof(Neighbor));
+         }
+-        _data[lo] = {nbr.id, nbr.distance};
++        _data[lo] = nbr;
++        _data[lo].expanded = false;
+         if (_size < _capacity)
+         {
+             _size++;
+@@ -131,7 +133,8 @@ class NeighborPriorityQueue
+         if (lo < _capacity) {
+             std::memmove(&_data[lo + 1], &_data[lo], (_size - lo) * sizeof(Neighbor));
+         }
+-        _data[lo] = {nbr.id, nbr.distance};
++        _data[lo] = nbr;
++        _data[lo].expanded = false;
+         if (_size < _capacity) {
+             _size++;
+         }
+diff --git a/include/pq_flash_index.h b/include/pq_flash_index.h
+index 70cfd8a..45c7aed 100644
 --- a/include/pq_flash_index.h
 +++ b/include/pq_flash_index.h
 @@ -3,6 +3,7 @@
@@ -8,7 +57,7 @@
  
  #include "aligned_file_reader.h"
  #include "concurrent_queue.h"
-@@ -23,6 +24,9 @@
+@@ -23,6 +24,9 @@ namespace diskann
  
  template <typename T, typename LabelT = uint32_t> class PQFlashIndex
  {
@@ -18,9 +67,146 @@
    public:
      DISKANN_DLLEXPORT PQFlashIndex(std::shared_ptr<AlignedFileReader> &fileReader,
                                     diskann::Metric metric = diskann::Metric::L2);
+diff --git a/src/linux_aligned_file_reader.cpp b/src/linux_aligned_file_reader.cpp
+index 7b2b90e..82c912e 100644
+--- a/src/linux_aligned_file_reader.cpp
++++ b/src/linux_aligned_file_reader.cpp
+@@ -15,83 +15,61 @@ namespace
+ typedef struct io_event io_event_t;
+ typedef struct iocb iocb_t;
+ 
+-void execute_io(io_context_t ctx, int fd, std::vector<AlignedRead> &read_reqs, uint64_t n_retries = 0)
++void execute_io(io_context_t ctx, int fd, std::vector<AlignedRead> &read_reqs, uint64_t = 0)
+ {
+-#ifdef DEBUG
+-    for (auto &req : read_reqs)
+-    {
+-        assert(IS_ALIGNED(req.len, 512));
+-        // std::cout << "request:"<<req.offset<<":"<<req.len << std::endl;
+-        assert(IS_ALIGNED(req.offset, 512));
+-        assert(IS_ALIGNED(req.buf, 512));
+-        // assert(malloc_usable_size(req.buf) >= req.len);
+-    }
+-#endif
+-
+-    // break-up requests into chunks of size MAX_EVENTS each
+-    uint64_t n_iters = ROUND_UP(read_reqs.size(), MAX_EVENTS) / MAX_EVENTS;
+-    for (uint64_t iter = 0; iter < n_iters; iter++)
+-    {
+-        uint64_t n_ops = std::min((uint64_t)read_reqs.size() - (iter * MAX_EVENTS), (uint64_t)MAX_EVENTS);
+-        std::vector<iocb_t *> cbs(n_ops, nullptr);
+-        std::vector<io_event_t> evts(n_ops);
+-        std::vector<struct iocb> cb(n_ops);
+-        for (uint64_t j = 0; j < n_ops; j++)
+-        {
+-            io_prep_pread(cb.data() + j, fd, read_reqs[j + iter * MAX_EVENTS].buf, read_reqs[j + iter * MAX_EVENTS].len,
+-                          read_reqs[j + iter * MAX_EVENTS].offset);
+-        }
+-
+-        // initialize `cbs` using `cb` array
+-        //
+-
+-        for (uint64_t i = 0; i < n_ops; i++)
+-        {
+-            cbs[i] = cb.data() + i;
++    for (size_t start = 0; start < read_reqs.size(); start += MAX_EVENTS) {
++        const size_t count = std::min(read_reqs.size() - start, (size_t)MAX_EVENTS);
++        std::vector<iocb_t> cb(count);
++        std::vector<iocb_t *> cbs(count);
++        std::vector<io_event_t> events(count);
++        for (size_t j = 0; j < count; ++j) {
++            auto &req = read_reqs[start + j];
++            if (req.fd_override < 0) {
++                assert(IS_ALIGNED(req.len, 512));
++                assert(IS_ALIGNED(req.offset, 512));
++                assert(IS_ALIGNED(req.buf, 512));
++            }
++            req.result = -EIO;
++            io_prep_pread(&cb[j], req.fd_override >= 0 ? req.fd_override : fd,
++                          req.buf, req.len, req.offset);
++            cb[j].data = &req;
++            cbs[j] = &cb[j];
+         }
+-
+-        uint64_t n_tries = 0;
+-        while (n_tries <= n_retries)
+-        {
+-            // issue reads
+-            int64_t ret = io_submit(ctx, (int64_t)n_ops, cbs.data());
+-            // if requests didn't get accepted
+-            if (ret != (int64_t)n_ops)
+-            {
+-                std::cerr << "io_submit() failed; returned " << ret << ", expected=" << n_ops << ", ernno=" << errno
+-                          << "=" << ::strerror(-ret) << ", try #" << n_tries + 1;
+-                std::cout << "ctx: " << ctx << "\n";
+-                exit(-1);
++        size_t submitted = 0, completed = 0;
++        while (submitted < count || completed < submitted) {
++            if (submitted < count) {
++                const long n = io_submit(ctx, count - submitted, cbs.data() + submitted);
++                if (n > 0) submitted += n;
++                else if (n == -EINTR) continue;
++                else if (n != -EAGAIN || submitted == completed) {
++                    // Retain the error for this request; drain accepted requests safely.
++                    read_reqs[start + submitted].result = n < 0 ? n : -EIO;
++                    ++submitted;
++                    ++completed;
++                }
+             }
+-            else
+-            {
+-                // wait on io_getevents
+-                uint32_t remaining = n_ops;
+-                do {
+-                    ret = io_getevents(ctx, (int64_t)remaining, (int64_t)remaining, evts.data(), nullptr);
+-                    // if requests didn't complete
+-                    if (ret <= 0) {
+-                        if (ret == -EINTR){
+-                            continue;
+-                        }
+-                        std::cerr << "io_getevents() failed; returned " << ret << ", expected=" << remaining
+-                                  << ", ertor=" << ::strerror(-ret) << ", try #" << n_tries + 1 << std::endl;
+-                        exit(-1);
+-                    }
+-                    remaining-= ret;
+-                } while (remaining > 0);
+-                break;
++            if (completed < submitted) {
++                const long n = io_getevents(ctx, 1, submitted - completed, events.data(), nullptr);
++                if (n == -EINTR) continue;
++                if (n <= 0) {
++                    std::cerr << "io_getevents failed: " << n << std::endl;
++                    std::abort(); // Outstanding buffers cannot safely be released.
++                }
++                for (long j = 0; j < n; ++j) {
++                    auto *req = static_cast<AlignedRead *>(events[j].data);
++                    req->result = events[j].res2 ? -EIO : (int64_t)events[j].res;
++                }
++                completed += n;
+             }
+         }
+-        // disabled since req.buf could be an offset into another buf
+-        /*
+-        for (auto &req : read_reqs) {
+-          // corruption check
+-          assert(malloc_usable_size(req.buf) >= req.len);
++        for (size_t j = 0; j < count; ++j) {
++            const auto &req = read_reqs[start + j];
++            if (req.fd_override < 0 && req.result != (int64_t)req.len)
++                throw std::runtime_error("Base-index read failed or was short");
+         }
+-        */
+     }
+ }
++
+ } // namespace
+ 
+ LinuxAlignedFileReader::LinuxAlignedFileReader()
+diff --git a/src/pq_flash_index.cpp b/src/pq_flash_index.cpp
+index 0eced9a..a7a9272 100644
 --- a/src/pq_flash_index.cpp
 +++ b/src/pq_flash_index.cpp
-@@ -59,6 +59,7 @@
+@@ -59,6 +59,7 @@ PQFlashIndex<T, LabelT>::PQFlashIndex(std::shared_ptr<AlignedFileReader> &fileRe
  }
  
  template <typename T, typename LabelT> PQFlashIndex<T, LabelT>::~PQFlashIndex() {
@@ -28,7 +214,7 @@
  #ifndef EXEC_ENV_OLS
      if (data != nullptr)
      {
-@@ -1709,6 +1710,14 @@
+@@ -1709,6 +1710,14 @@ int PQFlashIndex<T, LabelT>::load_from_separate_paths(uint32_t num_threads, cons
          diskann::cout << "Setting re-scaling factor of base vectors to " << this->_max_base_norm << std::endl;
          delete[] norm_val;
      }
@@ -43,7 +229,7 @@
      diskann::cout << "done.." << std::endl;
      return 0;
  }
-@@ -2284,6 +2293,7 @@
+@@ -2284,6 +2293,7 @@ void PQFlashIndex<T, LabelT>::aisaq_cached_beam_search(const T *query1, const ui
  
      // reset query scratch
      query_scratch->reset();
@@ -51,7 +237,7 @@
      // copy query to thread specific aligned and allocated memory (for distance
      // calculations we need aligned data)
      float query_norm = 0;
-@@ -2473,6 +2483,8 @@
+@@ -2473,6 +2483,8 @@ void PQFlashIndex<T, LabelT>::aisaq_cached_beam_search(const T *query1, const ui
      cached_nhoods.reserve(2 * beam_width);
  
      struct aisaq_node_placement np[bv];
@@ -60,7 +246,7 @@
      uint32_t bv_count;
      tsl::robin_map<uint32_t, char *> frontier_items;
      T *node_fp_coords;
-@@ -2482,12 +2494,14 @@
+@@ -2482,12 +2494,14 @@ void PQFlashIndex<T, LabelT>::aisaq_cached_beam_search(const T *query1, const ui
      uint32_t agg_nnbrs_inline;
      uint32_t agg_node_nbrs[bv * _max_degree];
      uint32_t agg_node_nbrs_inline[bv * _max_degree];
@@ -75,7 +261,7 @@
  #endif /* AISAQ_SEARCH_AGGREGATE_CACHED_PQ_VECTORS */
  
      float cur_expanded_dist;
-@@ -2498,10 +2512,11 @@
+@@ -2498,10 +2512,11 @@ void PQFlashIndex<T, LabelT>::aisaq_cached_beam_search(const T *query1, const ui
      struct {
          uint32_t *nbrs_list;
          float *dist_list;
@@ -89,7 +275,7 @@
      };
      /* initialize free nodes pool */
      cpu_timer.reset();
-@@ -2519,6 +2534,7 @@
+@@ -2519,6 +2534,7 @@ void PQFlashIndex<T, LabelT>::aisaq_cached_beam_search(const T *query1, const ui
                      if (bv_count < bv) {
                          /* Add entry to Bv_list with _nhood_cache placement & node */
                          np[bv_count].id = id;
@@ -97,7 +283,7 @@
                          np[bv_count].is_in_cache = true;
                          np[bv_count].pq_dist = retset[position].distance;
                          np[bv_count].ptr = (char*)(&(iter.value()));
-@@ -2537,6 +2553,8 @@
+@@ -2537,6 +2553,8 @@ void PQFlashIndex<T, LabelT>::aisaq_cached_beam_search(const T *query1, const ui
                                         -1, __FUNCSIG__, __FILE__, __LINE__);
                          }
                          buf = sector_scratch + data->aisaq_scratch_mem_offset.back();
@@ -106,7 +292,7 @@
                          frontier_read_reqs.emplace_back(get_node_sector((size_t)id) * defaults::SECTOR_LEN,
                                                          num_sectors_per_node * defaults::SECTOR_LEN, buf);
                          /* Add to frontier buffer */
-@@ -2549,6 +2567,7 @@
+@@ -2549,6 +2567,7 @@ void PQFlashIndex<T, LabelT>::aisaq_cached_beam_search(const T *query1, const ui
                      if (bv_count < bv) {
                          /* Add entry to Bv_list with frontier_nhood placement data ptr = null*/
                          np[bv_count].id = id;
@@ -114,7 +300,7 @@
                          np[bv_count].is_in_cache = false;
                          np[bv_count].pq_dist = retset[position].distance;
                          np[bv_count].ptr = buf;
-@@ -2574,7 +2593,80 @@
+@@ -2574,7 +2593,86 @@ void PQFlashIndex<T, LabelT>::aisaq_cached_beam_search(const T *query1, const ui
          /* If frontier_read_req is not empty */
          if (!frontier_read_reqs.empty()) {
              io_timer.reset();
@@ -125,7 +311,6 @@
 +                    uint32_t id;
 +                    char *record;
 +                    aisaq_nmd::NMDCache::PendingDRead pending;
-+                    std::vector<char> page;
 +                    size_t request_index;
 +                    AlignedRead fallback;
 +                };
@@ -160,17 +345,24 @@
 +                    if (kind == 0) {
 +                        batch.push_back(req);
 +                        base_reads.push_back(req);
-+                    } else if (kind == 3 && pending.fd >= 0) {
-+                        dreads.push_back({nid, record, pending, std::vector<char>(pending.len), batch.size(), req});
-+                        AlignedRead dreq;
-+                        dreq.fd_override = pending.fd;
-+                        dreq.offset = pending.offset;
-+                        dreq.len = pending.len;
-+                        dreq.buf = pending.buffer;
-+                        batch.push_back(dreq);
-+                        _nmd.count_d_read();
++                    } else if (kind == 3) {
++                        auto primary = std::find_if(dreads.begin(), dreads.end(), [&](const DRead &read) {
++                            return read.pending.fd == pending.fd && read.pending.offset == pending.offset &&
++                                   _nmd.share_path_read(read.pending, pending);
++                        });
++                        size_t request_index = batch.size();
++                        if (primary == dreads.end()) {
++                            AlignedRead dreq;
++                            dreq.fd_override = pending.fd;
++                            dreq.offset = pending.offset;
++                            dreq.len = pending.bytes;
++                            dreq.buf = pending.buffer;
++                            batch.push_back(dreq);
++                        } else {
++                            request_index = primary->request_index;
++                        }
++                        dreads.push_back({nid, record, pending, request_index, req});
 +                    } else {
-+                        if (kind == 3) _nmd.count_d_hit(record, pending.cov, pending.cov_count);
 +                        verify(nid, record);
 +                    }
 +                }
@@ -196,7 +388,7 @@
              if (stats != nullptr) {
                  stats->io_us += (float)io_timer.elapsed();
                  stats->n_hops++;
-@@ -2628,6 +2720,7 @@
+@@ -2628,6 +2726,7 @@ void PQFlashIndex<T, LabelT>::aisaq_cached_beam_search(const T *query1, const ui
                  if (_aisaq_rearranged_index) {
                      rid = *(nhood_buf + _max_degree + 1);
                  }
@@ -204,7 +396,7 @@
                  free_ids.push_back(id);
              }
              if (!_use_disk_index_pq) {
-@@ -2675,10 +2768,12 @@
+@@ -2675,10 +2774,12 @@ void PQFlashIndex<T, LabelT>::aisaq_cached_beam_search(const T *query1, const ui
                          /* already visited */
                          continue;
                      }
@@ -218,7 +410,7 @@
                      agg_dist_scratch_inline[agg_nnbrs_inline + __iv_count] = agg_dist_scratch_inline[agg_nnbrs_inline + m];
                      __iv_count++;
                  }
-@@ -2690,6 +2785,7 @@
+@@ -2690,6 +2791,7 @@ void PQFlashIndex<T, LabelT>::aisaq_cached_beam_search(const T *query1, const ui
                      /* already visited */
                      continue;
                  }
@@ -226,7 +418,7 @@
                  if (should_ignore_point(idn, use_filter, filter_label)) {
                      continue;
                  }
-@@ -2699,15 +2795,18 @@
+@@ -2699,15 +2801,18 @@ void PQFlashIndex<T, LabelT>::aisaq_cached_beam_search(const T *query1, const ui
                      /* vector is in cache */
  #ifdef AISAQ_SEARCH_AGGREGATE_CACHED_PQ_VECTORS
                      agg_node_nbrs_pq_cache.push_back(std::make_pair(idn, pqvb));
@@ -245,7 +437,7 @@
                  agg_nnbrs++;
              }
          }
-@@ -2720,12 +2819,14 @@
+@@ -2720,12 +2825,14 @@ void PQFlashIndex<T, LabelT>::aisaq_cached_beam_search(const T *query1, const ui
                  memcpy(pq_coord_scratch + (ci * _n_chunks * sizeof(uint8_t)), item.second,
                         _n_chunks * sizeof(uint8_t));
                  agg_node_nbrs_inline[agg_nnbrs_inline + ci] = item.first;
@@ -260,7 +452,7 @@
          }
  #endif /* AISAQ_SEARCH_AGGREGATE_CACHED_PQ_VECTORS */
          if (stats != nullptr) {
-@@ -2755,6 +2856,7 @@
+@@ -2755,6 +2862,7 @@ void PQFlashIndex<T, LabelT>::aisaq_cached_beam_search(const T *query1, const ui
                  uint32_t idn = agg_nbrs_lists[nl].nbrs_list[m];
                  float dist = agg_nbrs_lists[nl].dist_list[m];
                  Neighbor nn(idn, dist);
@@ -268,187 +460,3 @@
                  uint32_t removed_vec_id;
                  bool is_removed;
                  retset.insert_with_rem_info(nn, is_removed, removed_vec_id);
---- a/include/aligned_file_reader.h
-+++ b/include/aligned_file_reader.h
-@@ -76,6 +76,10 @@
-     uint64_t offset; // where to read from
-     uint64_t len;    // how much to read
-     void *buf;       // where to read into
-+    // Linux: optional buffered-file descriptor; -1 uses the reader's direct-I/O fd.
-+    int fd_override = -1;
-+    int64_t result = -1; // completed bytes, or negative errno (Linux)
-+
- 
-     AlignedRead() : offset(0), len(0), buf(nullptr)
-     {
---- a/src/linux_aligned_file_reader.cpp
-+++ b/src/linux_aligned_file_reader.cpp
-@@ -15,83 +15,61 @@
- typedef struct io_event io_event_t;
- typedef struct iocb iocb_t;
- 
--void execute_io(io_context_t ctx, int fd, std::vector<AlignedRead> &read_reqs, uint64_t n_retries = 0)
--{
--#ifdef DEBUG
--    for (auto &req : read_reqs)
--    {
--        assert(IS_ALIGNED(req.len, 512));
--        // std::cout << "request:"<<req.offset<<":"<<req.len << std::endl;
--        assert(IS_ALIGNED(req.offset, 512));
--        assert(IS_ALIGNED(req.buf, 512));
--        // assert(malloc_usable_size(req.buf) >= req.len);
--    }
--#endif
--
--    // break-up requests into chunks of size MAX_EVENTS each
--    uint64_t n_iters = ROUND_UP(read_reqs.size(), MAX_EVENTS) / MAX_EVENTS;
--    for (uint64_t iter = 0; iter < n_iters; iter++)
--    {
--        uint64_t n_ops = std::min((uint64_t)read_reqs.size() - (iter * MAX_EVENTS), (uint64_t)MAX_EVENTS);
--        std::vector<iocb_t *> cbs(n_ops, nullptr);
--        std::vector<io_event_t> evts(n_ops);
--        std::vector<struct iocb> cb(n_ops);
--        for (uint64_t j = 0; j < n_ops; j++)
--        {
--            io_prep_pread(cb.data() + j, fd, read_reqs[j + iter * MAX_EVENTS].buf, read_reqs[j + iter * MAX_EVENTS].len,
--                          read_reqs[j + iter * MAX_EVENTS].offset);
--        }
--
--        // initialize `cbs` using `cb` array
--        //
--
--        for (uint64_t i = 0; i < n_ops; i++)
--        {
--            cbs[i] = cb.data() + i;
--        }
--
--        uint64_t n_tries = 0;
--        while (n_tries <= n_retries)
--        {
--            // issue reads
--            int64_t ret = io_submit(ctx, (int64_t)n_ops, cbs.data());
--            // if requests didn't get accepted
--            if (ret != (int64_t)n_ops)
--            {
--                std::cerr << "io_submit() failed; returned " << ret << ", expected=" << n_ops << ", ernno=" << errno
--                          << "=" << ::strerror(-ret) << ", try #" << n_tries + 1;
--                std::cout << "ctx: " << ctx << "\n";
--                exit(-1);
--            }
--            else
--            {
--                // wait on io_getevents
--                uint32_t remaining = n_ops;
--                do {
--                    ret = io_getevents(ctx, (int64_t)remaining, (int64_t)remaining, evts.data(), nullptr);
--                    // if requests didn't complete
--                    if (ret <= 0) {
--                        if (ret == -EINTR){
--                            continue;
--                        }
--                        std::cerr << "io_getevents() failed; returned " << ret << ", expected=" << remaining
--                                  << ", ertor=" << ::strerror(-ret) << ", try #" << n_tries + 1 << std::endl;
--                        exit(-1);
--                    }
--                    remaining-= ret;
--                } while (remaining > 0);
--                break;
--            }
--        }
--        // disabled since req.buf could be an offset into another buf
--        /*
--        for (auto &req : read_reqs) {
--          // corruption check
--          assert(malloc_usable_size(req.buf) >= req.len);
--        }
--        */
--    }
--}
-+void execute_io(io_context_t ctx, int fd, std::vector<AlignedRead> &read_reqs, uint64_t = 0)
-+{
-+    for (size_t start = 0; start < read_reqs.size(); start += MAX_EVENTS) {
-+        const size_t count = std::min(read_reqs.size() - start, (size_t)MAX_EVENTS);
-+        std::vector<iocb_t> cb(count);
-+        std::vector<iocb_t *> cbs(count);
-+        std::vector<io_event_t> events(count);
-+        for (size_t j = 0; j < count; ++j) {
-+            auto &req = read_reqs[start + j];
-+            if (req.fd_override < 0) {
-+                assert(IS_ALIGNED(req.len, 512));
-+                assert(IS_ALIGNED(req.offset, 512));
-+                assert(IS_ALIGNED(req.buf, 512));
-+            }
-+            req.result = -EIO;
-+            io_prep_pread(&cb[j], req.fd_override >= 0 ? req.fd_override : fd,
-+                          req.buf, req.len, req.offset);
-+            cb[j].data = &req;
-+            cbs[j] = &cb[j];
-+        }
-+        size_t submitted = 0, completed = 0;
-+        while (submitted < count || completed < submitted) {
-+            if (submitted < count) {
-+                const long n = io_submit(ctx, count - submitted, cbs.data() + submitted);
-+                if (n > 0) submitted += n;
-+                else if (n == -EINTR) continue;
-+                else if (n != -EAGAIN || submitted == completed) {
-+                    // Retain the error for this request; drain accepted requests safely.
-+                    read_reqs[start + submitted].result = n < 0 ? n : -EIO;
-+                    ++submitted;
-+                    ++completed;
-+                }
-+            }
-+            if (completed < submitted) {
-+                const long n = io_getevents(ctx, 1, submitted - completed, events.data(), nullptr);
-+                if (n == -EINTR) continue;
-+                if (n <= 0) {
-+                    std::cerr << "io_getevents failed: " << n << std::endl;
-+                    std::abort(); // Outstanding buffers cannot safely be released.
-+                }
-+                for (long j = 0; j < n; ++j) {
-+                    auto *req = static_cast<AlignedRead *>(events[j].data);
-+                    req->result = events[j].res2 ? -EIO : (int64_t)events[j].res;
-+                }
-+                completed += n;
-+            }
-+        }
-+        for (size_t j = 0; j < count; ++j) {
-+            const auto &req = read_reqs[start + j];
-+            if (req.fd_override < 0 && req.result != (int64_t)req.len)
-+                throw std::runtime_error("Base-index read failed or was short");
-+        }
-+    }
-+}
-+
- } // namespace
- 
- LinuxAlignedFileReader::LinuxAlignedFileReader()
---- a/include/neighbor.h
-+++ b/include/neighbor.h
-@@ -14,6 +14,7 @@
- struct Neighbor
- {
-     unsigned id;
-+    uint32_t nc_parent = UINT32_MAX;
-     unsigned rid;       /* aisaq: used with rearranged index */
-     float distance;
-     bool expanded;
-@@ -88,7 +89,8 @@
-         {
-             std::memmove(&_data[lo + 1], &_data[lo], (_size - lo) * sizeof(Neighbor));
-         }
--        _data[lo] = {nbr.id, nbr.distance};
-+        _data[lo] = nbr;
-+        _data[lo].expanded = false;
-         if (_size < _capacity)
-         {
-             _size++;
-@@ -131,7 +133,8 @@
-         if (lo < _capacity) {
-             std::memmove(&_data[lo + 1], &_data[lo], (_size - lo) * sizeof(Neighbor));
-         }
--        _data[lo] = {nbr.id, nbr.distance};
-+        _data[lo] = nbr;
-+        _data[lo].expanded = false;
-         if (_size < _capacity) {
-             _size++;
-         }

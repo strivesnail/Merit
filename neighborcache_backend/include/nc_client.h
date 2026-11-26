@@ -33,12 +33,8 @@ class Client {
     const NCBackend *api_ = nullptr;
     void *cache_ = nullptr;
     size_t bytes_ = 0;
-    bool parent_metadata_ = true;
-    using PageMembers = int (*)(void *,void *,uint32_t,uint32_t *,char *,uint32_t);
-    PageMembers page_members_ = nullptr;
     using ShareRead = int (*)(void*,void*,const NCRead*,NCRead*);
     ShareRead share_read_ = nullptr;
-    uint32_t page_slots_ = 0;
     std::function<void(uint32_t, const char *)> verifier_;
     static std::unordered_map<const Client *, void *> &queries() {
         static thread_local std::unordered_map<const Client *, void *> q; return q;
@@ -60,7 +56,7 @@ class Client {
     void set_verifier(std::function<void(uint32_t, const char *)> f) { verifier_ = std::move(f); }
     bool enabled() const { return cache_ != nullptr; }
     size_t node_len() const { return bytes_; }
-    bool needs_parent_metadata() const { return parent_metadata_; }
+    bool needs_parent_metadata() const { return enabled(); }
     void init(const NCConfig &c) {
         const char *path = std::getenv("NEIGHBORCACHE_BACKEND_LIBRARY");
         if (!path) path = "libneighborcache_backend.so";
@@ -70,19 +66,8 @@ class Client {
         auto get = reinterpret_cast<const NCBackend *(*)()>(dlsym(lib, "nc_backend_api"));
         if (!get || !(api_ = get()) || api_->abi != NC_BACKEND_ABI)
             throw std::runtime_error("NeighborCache backend ABI mismatch");
-        const bool ncache_only = env("NEIGHBORCACHE_NCACHE_ONLY", 0) != 0;
-        if (!ncache_only && std::getenv("MERIT_PATH_SEED")) {
-            share_read_=reinterpret_cast<ShareRead>(dlsym(lib,"nc_share_path_read"));
-            if (!share_read_) throw std::runtime_error("Backend lacks shared path pages");
-        } else if (!ncache_only && env("NEIGHBORCACHE_EXPAND_PREFETCH_PAGE",0)) {
-            page_members_=reinterpret_cast<PageMembers>(dlsym(lib,"nc_prefetch_page_members"));
-            if (!page_members_) throw std::runtime_error("Backend lacks prefetch-page expansion extension");
-        }
-        // One seed may span two immutable pages; duplicate seed/padding slots
-        // are removed by the backend before returning the snapshot.
-        page_slots_=c.nodes_per_page * (env("NEIGHBORCACHE_DCACHE_SECOND_PAGE",0) ? 2u : 1u);
-        parent_metadata_ = !ncache_only && (share_read_ || env("NEIGHBORCACHE_FREEZE_MAINTENANCE", 2) != 1 ||
-            env("NEIGHBORCACHE_RESOLVE_PARENT", 0) != 0);
+        share_read_=reinterpret_cast<ShareRead>(dlsym(lib,"nc_share_path_read"));
+        if (!share_read_) throw std::runtime_error("Backend lacks shared path pages");
         bytes_ = c.record_bytes;
         cache_ = api_->create(&c);
         if (!cache_) throw std::runtime_error(api_->error());
@@ -113,7 +98,7 @@ class Client {
         }
     };
     void prepare_parent(uint32_t parent, uint32_t child) {
-        if (enabled() && parent_metadata_) check(api_->visit(cache_, query(), parent, child));
+        if (enabled()) check(api_->visit(cache_, query(), parent, child));
     }
     int resolve(uint32_t id, char *dst, NCRead &r, uint32_t parent = UINT32_MAX) {
         if (!enabled()) return 0;
@@ -122,21 +107,8 @@ class Client {
         if ((k == 1 || k == 2) && verifier_) verifier_(id, dst);
         return k;
     }
-    bool has_path_pages() const { return share_read_!=nullptr; }
     bool share_path_read(const NCRead &primary,NCRead &other) {
         return share_read_ && check(share_read_(cache_,query(),&primary,&other));
-    }
-    bool expands_prefetch_page() const { return page_members_ != nullptr; }
-    void append_prefetch_members(uint32_t target,std::vector<std::pair<uint32_t,std::vector<char>>> &hits) {
-        if (!page_members_) return;
-        std::vector<uint32_t> ids(page_slots_);
-        std::vector<char> records(size_t(page_slots_)*bytes_);
-        const int n=check(page_members_(cache_,query(),target,ids.data(),records.data(),page_slots_));
-        for (int i=0;i<n;++i) {
-            const char *raw=records.data()+size_t(i)*bytes_;
-            if (verifier_) verifier_(ids[i],raw);
-            hits.emplace_back(ids[i],std::vector<char>(raw,raw+bytes_));
-        }
     }
     bool complete(NCRead &r, int64_t got, char *dst) {
         bool ok = check(api_->complete(cache_, query(), &r, got, dst)) != 0;
@@ -158,9 +130,8 @@ class Client {
         if (!enabled()) return;
         auto s = stats();
         std::fprintf(stderr, "NeighborCache shared backend: N=%lu prefetch=%lu D_attempts=%lu D_hits=%lu "
-            "D_reads=%lu base_miss=%lu seeds=%lu/%lu M=%lu opens=%lu appends=%lu replaces=%lu writes=%lu\n",
-            s.n_hits, s.prefetch_hits, s.d_attempts, s.d_hits, s.d_reads, s.base_misses,
-            s.seeds, s.capacity, s.m_entries, s.opens, s.appends, s.replaces, s.writes);
+            "D_reads=%lu base_miss=%lu pages=%lu writes=%lu\n",
+            s.n_hits, s.prefetch_hits, s.d_attempts, s.d_hits, s.d_reads, s.base_misses, s.seeds, s.writes);
     }
 };
 
@@ -174,13 +145,7 @@ class NMDCache : public Client {
     uint64_t points_ = 0;
   public:
     ~NMDCache() { write_profile(); }
-    struct PendingDRead : NCRead {
-        // Compatibility fields; the backend owns page decoding and coverage.
-        uint16_t slot = 0, cov_count = 0;
-        uint32_t cov[16]{};
-        uint32_t len = 0;
-        PendingDRead() : NCRead{-1, 0, 0, nullptr, nullptr, UINT32_MAX} {}
-    };
+    using PendingDRead = NCRead;
     void init(const char *prefix, uint32_t count_bytes, uint64_t points, uint64_t record,
               uint64_t nps, uint64_t vector, uint64_t degree, const std::string &path, uint32_t medoid) {
         std::string p(prefix);
@@ -191,18 +156,12 @@ class NMDCache : public Client {
         if (env((p + "_PREFILL").c_str(), 0))
             throw std::runtime_error("Legacy NMD PREFILL is not the online NeighborCache experiment; set PREFILL=0");
         uint64_t ncap = env("NEIGHBORCACHE_NCACHE_CAP_NODES", env((p + "_NMB").c_str(), 32) * 1024 * 1024 / record);
-        const uint64_t pcap = env("NEIGHBORCACHE_NCACHE_ONLY", 0) ? 0 :
-            env("NEIGHBORCACHE_SHARED_PAGE_CACHE_PAGES", env((p + "_PMB").c_str(), 4) * 256);
+        const uint64_t pcap = env("NEIGHBORCACHE_SHARED_PAGE_CACHE_PAGES", env((p + "_PMB").c_str(), 4) * 256);
         const char *override_path = std::getenv((p + "_PATH").c_str());
         std::string use_path = override_path ? override_path : path;
         NCConfig c{NC_BACKEND_ABI, count_bytes, points, record, vector, degree, nps,
             ncap, pcap, env("NEIGHBORCACHE_THREADS", 64), use_path.c_str(), &medoid, 1};
         Client::init(c);
-    }
-    int resolve(uint32_t id, char *dst, PendingDRead &r, uint32_t parent = UINT32_MAX) {
-        int k = Client::resolve(id, dst, r, parent);
-        r.len = r.bytes;
-        return k;
     }
     bool lookup(uint32_t id, char *dst, int &kind) {
         PendingDRead r;
@@ -220,9 +179,6 @@ class NMDCache : public Client {
         }
         expand(id, raw, 0, parent);
     }
-    void count_d_hit(const char *, const uint32_t *, int) {}
-    void count_d_read() {}
-    void count_d_read_failure() {}
     // Same on-disk visit profile as the original adapter: u64 points, u32 counts.
     // Called after the host has joined all query threads.
     void write_profile() const {

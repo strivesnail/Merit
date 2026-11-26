@@ -91,37 +91,8 @@ template <typename T> void SSDQueryScratch<T>::reset()
     visited.clear();
     retset.clear();
     full_retset.clear();
-    profile_parent.clear();
-    neighborcache_beam_parents.clear();
-    neighborcache_candidate_id = neighborcache_candidate_parent = UINT32_MAX;
-    neighborcache_dcache_loc_cache.clear();
-    neighborcache_dcache_member_packed_loc.clear();
-    neighborcache_prefetched_page_gen.clear();
-    neighborcache_dcache_seed_members.clear();
-    neighborcache_dcache_seed_extra.clear();
-    neighborcache_dyn_full_span.clear();
-    neighborcache_dcache_member_to_seed.clear();
-    neighborcache_dcache_patch_new.clear();
-    neighborcache_repack_sectors.clear();
-    neighborcache_repack_used = 0;
     read_sectors.clear();
-    read_neighborcache_disk_cache_sectors.clear();
-    neighborcache_avoided_base_sectors.clear();
-    neighborcache_dyn_pinned_sectors.clear();
-    clear_neighborcache_heap_dirty();
-    neighborcache_heap_dirty_nodes.clear();
-    neighborcache_heap_dirty_scores.clear();
-    neighborcache_heap_dirty_eligible.clear();
-    neighborcache_dcache_lookup_enabled = false;
-    neighborcache_dcache_maintenance_enabled = false;
-    neighborcache_dcache_probe = false;
-    neighborcache_dyn_physical_reads = 0;
-    neighborcache_dyn_served_nodes = 0;
-    neighborcache_expand_count = 0;
-    neighborcache_record_real_io = false;
-    neighborcache_storage_node_order.clear();
-    neighborcache_storage_nbrs.clear();
-    neighborcache_storage_nbr_off.assign(1, 0);
+    disk_read_sector_order.clear();
 }
 
 template <typename T> SSDQueryScratch<T>::SSDQueryScratch(size_t aligned_dim, size_t visited_reserve)

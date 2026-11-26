@@ -1,19 +1,10 @@
-# NeighborCache 共用实现与验证
+# NeighborCache 适配和实验
 
-2026-10-27：已完成当前默认在线 N/M/prefetch/D 路径的共用实现迁移。
-PipeANN、AiSAQ、Starling、MARGO 的适配层现在调用同一个
-[`neighborcache_backend`](../../neighborcache_backend/README.md)，该库直接编译
-`diskann/src/pq_flash_index.cpp` 中的真实 NeighborCache 缓存实现。
+当前版本和验证结果见[实验台账](EXPERIMENTS.md)。DiskANN 和 PipeANN 在仓库内构建。AiSAQ、Starling 和 MARGO 的上游提交及补丁校验值见 [adapters.json](adapters.json)。
 
-这次不再分别仿写 seed 热度门限、M 候选堆、prefetch 管理和 D 替换规则。
-适配层负责记录布局、候选来源 ID、实际取得记录后的登记、查询结束和读请求完成事件。
-N 的默认 LRU、M 状态机、按图邻接顺序建页、N/stash 取邻居、已有 seed
-增量更新、prefetch LRU、脏页淘汰写回、D 读回和有界替换都走参考代码。
-新邻居是否能补入 seed 页由图关系和 owner 关系决定，不要求实际遍历父节点就是该 seed。
+Starling 和 MARGO 在对应基准提交上应用本目录中的补丁，再把 `neighborcache_backend/include` 中的 `nc_backend.h`、`nc_client.h` 和 `page_neighbor_cache.h` 复制到宿主的 `include` 目录后重新编译。AiSAQ 使用[自己的记录适配器](../aisaq_nmd/README.md)。
 
-四个引擎仍产生各自的访问序列，因此“共用缓存实现”不意味着缓存状态、
-命中率、ANN 输出或 QPS 必然相同。此次范围是默认在线 LRU 配置；可选
-hop/shadow 控制器、更新/过滤索引等未验证模式见后端 README。
+以下为旧版本实验记录。其运行脚本可从清理前的 Git 提交 `4efb25d` 获取。
 
 ## 验证结果
 
@@ -54,43 +45,6 @@ PipeANN 无 NC 重复运行本身有差异；这不能证明启用 NC 后的所�
 - `io_getevents` 收到 EINTR 时退出进程，导致其他查询线程继续访问已经析构的
   PipeANN 全局 page-cache。修复为等待剩余完成项，不重新提交已完成请求。
   原回溯并非“未分区页锁”本身导致的崩溃；临时 libcuckoo 调试修改已撤回。
-
-## 重现
-
-先按后端 README 编译共享库，重新编译各引擎，再运行：
-
-```sh
-python3 experiments/neighborcache_alignment/validate_shared.py
-```
-
-脚本默认使用本机已有索引路径。支持 `--root`、`--backend`、`--engines`、
-`--pressure-runs`。会裁出一致的 1K 查询和真值，分别运行两次无 NC、一次
-在线 NC，再执行 PipeANN 压力测试及 AiSAQ 1K/5K 比较。不会沿用历史
-command.json 中过时的 seed/N/prefetch 百分比标签。
-
-## 外部适配补丁
-
-版本和补丁 SHA-256 记录在 `adapters.json`。
-
-- PipeANN 修改直接在本仓库 `pipeann/`，已同步并编译 `/tmp/PipeANN`。
-- AiSAQ：见 `../aisaq_nmd/README.md` 和 `aisaq.patch`。
-- Starling：`starling_shared.patch`，基准 `68aec13e854219bb2baf39b94d56d2bbda689696`。
-- MARGO：`margo_shared.patch`，基准 `485a9c25facea68bb3b6c44eb280b95c14ee5076`。
-
-Starling/MARGO 在对应基准 checkout 中应用补丁，再把下面三个文件复制到
-其 include/ 后重新编译：
-
-```text
-neighborcache_backend/include/page_neighbor_cache.h
-neighborcache_backend/include/nc_client.h
-neighborcache_backend/include/nc_backend.h
-```
-
-补丁只包含本轮缓存接口/事件/在线启动迁移，不收录外部仓库已有的离线预填装
-多页修改或其他构建/测试修改。活动 checkout 中的既有工作仍保留。
-
-`historical/` 保存改造前审计和上轮局部修补，不能作为当前状态或当前测试入口。
-旧三数据集 QPS 图和 SIFT100M 扫描图未改动。后续已完成 SIFT10M 和 AiSAQ SIFT100K 的关闭/开启 NC 三轮 QPS 对比，见 [QPS 报告](qps_20261027.md)；SIFT100M、DEEP10M 和 Zipf 尚未重跑。
 
 ## Visited hot20 静态预填充（本轮）
 

@@ -1,49 +1,7 @@
 # Benchmark and test scripts
 
-Repeatable **SIFT1M / SIFT100M / NEIGHBORCACHE** benchmarks live here.  
-Full Run1/Run2/Run3 relayout pipelines are under [`../relayout/`](../relayout/).
+This directory contains dataset preparation, index builds, baseline searches and I/O diagnostics. For example, `build_sift100m_index_and_profile.sh` builds and profiles a SIFT100M index, and `run_100m_x1_diskann_bfs_sweep.sh` runs the DiskANN BFS baseline.
 
-## Environment variables
+Use the [path cache guide](../../diskann/README-path-seed.md) for the current NeighborCache. Before a disk measurement, consult the [experiment ledger](../neighborcache_alignment/EXPERIMENTS.md) and record a successful TRIM for every participating SSD.
 
-| Variable | Default |
-|----------|---------|
-| `REPO_ROOT` | Repo root (auto) |
-| `DISKANN_BUILD` | `$REPO_ROOT/diskann/build` |
-| `DATA_DIR` | `$REPO_ROOT/data/sift1m` (or `sift100m` in 100M scripts) |
-| `THREADS` | `16` |
-| `L` / `K` / `W` | `100` / `10` / `2` |
-
-## NEIGHBORCACHE
-
-| Script | Description |
-|--------|-------------|
-| `run_neighborcache_five_way.sh` | Core five-way: baseline / BFS / mem / disk / mem+disk |
-| `run_sift1m_neighborcache_five_way.sh` | SIFT1M wrapper for five-way |
-| `run_sift1m_neighborcache_same_trace.sh` | Profile then search on the same query trace |
-| `run_sift1m_neighborcache_combined.sh` | baseline / disk-only / memory-only / combined |
-| `run_sift1m_neighborcache_eviction.sh` | Disjoint vs overlapping tiers; batch eviction |
-| `run_sift1m_neighborcache_full_verify.sh` | Feature check + summary table |
-| `run_sift1m_neighborcache_vs_diskann_cache.sh` | ~0.01 GB: baseline vs BFS vs NEIGHBORCACHE pool |
-| `run_sift1m_neighborcache_mem001_disk01.sh` | Mem 0.01 GB + disk ratio 0.1 |
-| `run_sift1m_layout_ab_disk50.sh` | Layout A (kh0) vs B (kh2) at 50% disk |
-| `run_sift100m_neighborcache_background.sh` | 100M five-way (mem 2 GB, disk 0.1) |
-| `build_sift100m_index_and_profile.sh` | Build uint8 index + same-trace profile |
-
-```bash
-bash experiments/test-scripts/run_sift1m_neighborcache_five_way.sh
-bash experiments/test-scripts/run_neighborcache_five_way.sh
-```
-
-## Relayout / IO comparisons
-
-| Script | Description |
-|--------|-------------|
-| `run_sift1m_cold_compare.sh` | Drop page cache each run; baseline / edge / node |
-| `run_sift1m_sector_cache_compare.sh` | Cold-ish + per-query sector cache |
-| `run_sift1m_k5_compare.sh` | Offline relayout with k_hops=5 |
-
-## Prerequisites
-
-- Built `search_disk_index` (and `build_disk_index` for index construction)
-- Dataset under `data/` (not shipped in this repo)
-- Optional: `scripts/drop_system_caches.sh` for cold runs (sudo)
+The [older benchmark scripts](https://github.com/strivesnail/Merit/tree/4efb25d/experiments/test-scripts) accompany measurements made with earlier cache implementations.

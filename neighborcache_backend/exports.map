@@ -1,1 +1,1 @@
-{ global: nc_backend_api; nc_prefetch_page_members; nc_share_path_read; local: *; };
+{ global: nc_backend_api; nc_share_path_read; local: *; };

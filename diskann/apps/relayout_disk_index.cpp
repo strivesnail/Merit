@@ -91,7 +91,7 @@ int main(int argc, char **argv)
         }
     }
 
-    const std::string layout = diskann::normalize_disk_cache_layout(layout_mode);
+    const std::string layout = diskann::normalize_relayout(layout_mode);
     std::vector<uint32_t> order;
     int rc = -1;
     if (layout == "edge" || layout == "jiang")

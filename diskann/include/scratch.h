@@ -152,96 +152,10 @@ template <typename T> class SSDQueryScratch : public AbstractScratch<T>
     tsl::robin_set<size_t> visited;
     NeighborPriorityQueue retset;
     std::vector<Neighbor> full_retset;
-    // Contains only acquired/expanded records, never discovery-only neighbors.
-    tsl::robin_map<uint32_t, uint32_t> profile_parent;
-    uint32_t neighborcache_candidate_id = UINT32_MAX;
-    uint32_t neighborcache_candidate_parent = UINT32_MAX;
-    std::vector<std::pair<uint32_t,uint32_t>> neighborcache_beam_parents;
-    std::optional<uint32_t> parent_of(uint32_t id) const {
-        auto it = profile_parent.find(id);
-        if (it != profile_parent.end()) return it->second;
-        if (neighborcache_candidate_id == id && neighborcache_candidate_parent != UINT32_MAX)
-            return neighborcache_candidate_parent;
-        for (const auto &v : neighborcache_beam_parents)
-            if (v.first == id && v.second != UINT32_MAX) return v.second;
-        return std::nullopt;
-    }
-    // node_id -> packed D-loc from lookup (sector in high 32, slot in low 16).
-    tsl::robin_map<uint32_t, uint64_t> neighborcache_dcache_loc_cache;
-    // Same-query members already packed when a seed page was served (prefetch buffer).
-    tsl::robin_map<uint32_t, uint64_t> neighborcache_dcache_member_packed_loc;
-    // page index -> generation last copied into neighborcache_dcache_member_packed_loc.
-    tsl::robin_map<uint32_t, uint32_t> neighborcache_prefetched_page_gen;
-    // Query patch: seed -> members seen on a served D page, and the reverse map.
-    tsl::robin_map<uint32_t, std::vector<uint32_t>> neighborcache_dcache_seed_members;
-    // Later pages of the same seed, allocated only when the previous page is full.
-    tsl::robin_map<uint32_t, std::vector<std::vector<uint32_t>>> neighborcache_dcache_seed_extra;
-    tsl::robin_set<uint32_t> neighborcache_dyn_full_span;
-    tsl::robin_map<uint32_t, uint32_t> neighborcache_dcache_member_to_seed;
-    tsl::robin_map<uint32_t, std::vector<uint32_t>> neighborcache_dcache_patch_new;
-    tsl::robin_set<uint32_t> neighborcache_repack_sectors;
-    uint32_t neighborcache_repack_used = 0;
-    tsl::robin_set<uint64_t> read_sectors; // distinct base _disk.index sectors (frontier reads / base sector cache)
-    tsl::robin_set<uint32_t> read_neighborcache_disk_cache_sectors; // distinct NEIGHBORCACHE disk cache file sectors
-    tsl::robin_set<uint64_t> neighborcache_avoided_base_sectors;
-    // Per-query sector cache: key = base _disk.index sector id
-    tsl::robin_map<uint64_t, std::array<char, defaults::SECTOR_LEN>> sector_cache;
-    // Per-query NEIGHBORCACHE disk cache: key = disk cache sector id (not base sector).
-    // With the shared page cache on, only dynamic D-cache sectors live here.
-    tsl::robin_map<uint32_t, std::array<char, defaults::SECTOR_LEN>> neighborcache_sector_cache;
-    // Static D-cache sectors this query read from disk itself.
-    tsl::robin_set<uint32_t> neighborcache_fetched_sectors;
-    std::vector<uint32_t> neighborcache_dyn_pinned_sectors;
-    std::vector<uint32_t> neighborcache_heap_dirty_slots;
-    std::vector<uint32_t> neighborcache_heap_dirty_nodes;
-    std::vector<uint16_t> neighborcache_heap_dirty_scores;
-    std::vector<uint8_t> neighborcache_heap_dirty_eligible;
-    tsl::robin_set<uint32_t> neighborcache_heap_dirty_set;
-    bool neighborcache_dcache_lookup_enabled = false;
-    bool neighborcache_dcache_maintenance_enabled = false;
-    bool neighborcache_dcache_probe = false;
-    uint32_t neighborcache_dyn_physical_reads = 0;
-    uint32_t neighborcache_dyn_served_nodes = 0;
-    uint32_t neighborcache_expand_count = 0;
-    // This query was chosen for the 1/N real-IO coaccess sample.
-    bool neighborcache_record_real_io = false;
-    // Nodes actually served from base storage or D-cache, in per-query order.
-    std::vector<uint32_t> neighborcache_storage_node_order;
-    // Adjacency of each node in neighborcache_storage_node_order: nbrs[off[i] .. off[i+1]).
-    std::vector<uint32_t> neighborcache_storage_nbrs;
-    std::vector<uint32_t> neighborcache_storage_nbr_off;
-    // Temporal order of sector ids for cache-miss disk reads (one query)
+    tsl::robin_set<uint64_t> read_sectors;
     std::vector<uint64_t> disk_read_sector_order;
-    // Own the Prefetch records until this hop completes, even if their
-    // source page is evicted. Keep storage for later hops and queries.
-    struct PrefetchRecord
-    {
-        std::vector<T> coords;
-        std::vector<uint32_t> neighbors;
-    };
-    // A shared N-cache slot may be reused by another search worker after
-    // lookup. Keep the copied record in scratch through expansion.
-    std::vector<PrefetchRecord> neighborcache_ncache_records;
-    std::deque<PrefetchRecord> neighborcache_prefetch_records;
-
     SSDQueryScratch(size_t aligned_dim, size_t visited_reserve);
     ~SSDQueryScratch();
-
-    bool mark_neighborcache_heap_dirty(uint32_t slot_id)
-    {
-        if (neighborcache_heap_dirty_set.insert(slot_id).second)
-        {
-            neighborcache_heap_dirty_slots.push_back(slot_id);
-            return true;
-        }
-        return false;
-    }
-
-    void clear_neighborcache_heap_dirty()
-    {
-        neighborcache_heap_dirty_set.clear();
-        neighborcache_heap_dirty_slots.clear();
-    }
 
     void reset();
 };

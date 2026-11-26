@@ -1,7 +1,7 @@
 {
   "repository": "https://github.com/kioxia-jp/aisaq-diskann",
   "commit": "32881764fad3d2a56b337f17d26cbdd2dca4b554",
-  "cache_implementation": "neighborcache_backend/src/backend.cpp compiles diskann/src/pq_flash_index.cpp",
+  "cache_implementation": "neighborcache_backend/src/backend.cpp with the DiskANN node and path cache headers",
   "adapter": "experiments/aisaq_nmd/nmd_cache.h",
   "constraints": [
     "full inline PQ",
@@ -12,6 +12,6 @@
     "unlimited search IO budget in validation",
     "online cold start, PREFILL=0"
   ],
-  "current_validation": "/mnt/nvme2/nc_shared_backend_20261027/final",
-  "historical_notes": "historical/README.md"
+  "historical_notes": "historical/README.md",
+  "historical_validation": "/mnt/nvme2/nc_shared_backend_20261027/final"
 }

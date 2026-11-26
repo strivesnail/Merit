@@ -1,5 +1,5 @@
-#include "residual_probe.h"
 #pragma once
+#include "residual_probe.h"
 #include "aligned_file_reader.h"
 #include <algorithm>
 #include <array>
@@ -21,6 +21,45 @@
 #include <unistd.h>
 
 namespace diskann {
+inline void neighborcache_pin_background_thread()
+{
+#ifndef _WINDOWS
+    const char *spec = std::getenv("NEIGHBORCACHE_BG_CPUS");
+    if (spec == nullptr || *spec == '\0')
+        return;
+    std::vector<int> cpus;
+    const char *p = spec;
+    while (*p != '\0')
+    {
+        char *end = nullptr;
+        const long lo = std::strtol(p, &end, 10);
+        long hi = lo;
+        if (end != nullptr && *end == '-')
+            hi = std::strtol(end + 1, &end, 10);
+        if (end == p)
+            break;
+        for (long c = lo; c <= hi; ++c)
+            if (c >= 0 && c < CPU_SETSIZE)
+                cpus.push_back(static_cast<int>(c));
+        p = end;
+        if (*p == ',')
+            ++p;
+        else if (*p != '\0')
+            break;
+    }
+    if (cpus.empty())
+        return;
+    static std::atomic<int> next{0};
+    const int cpu = cpus[static_cast<size_t>(next.fetch_add(1, std::memory_order_relaxed)) % cpus.size()];
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    CPU_SET(cpu, &set);
+    if (pthread_setaffinity_np(pthread_self(), sizeof(set), &set) == 0)
+        std::cout << "NEIGHBORCACHE pin background cpu=" << cpu << std::endl;
+#endif
+}
+
+
 class PathSeedCache {
     static constexpr unsigned block=4096, shards=64;
     struct alignas(block) Bytes { char data[block]{}; };
@@ -71,7 +110,7 @@ class PathSeedCache {
     Directory dir[shards];
     std::unique_ptr<Cache[]> buffers;
     unsigned width, slots;
-    bool shared;
+
     std::array<int, 2> files{-1, -1};
     std::array<std::atomic<uint64_t>, 2> writes_per_disk{};
     int page_file(uint64_t page) const {
@@ -103,7 +142,7 @@ class PathSeedCache {
         for(auto& writer : writers) writer.join();
     }
     static unsigned shard(uint32_t n){n^=n>>16;n*=0x7feb352du;n^=n>>15;return n&(shards-1);}
-    Cache& cache(uint32_t owner,int worker){return buffers[shared?shard(owner):worker];}
+    Cache& cache(uint32_t owner,int worker){return buffers[shard(owner)];}
     Seed* find(uint32_t id,bool create=false){
         if(id==UINT32_MAX)return nullptr;
         auto& d=dir[shard(id)];
@@ -209,20 +248,14 @@ public:
     };
     struct Location {Page* p=nullptr;uint32_t owner=0,slot=0;Image image;};
     struct Request {uint32_t node;Location location;};
-    PathSeedCache(const std::string& file,unsigned rec,unsigned capacity,unsigned workers,bool sharing,void(*pin)())
-        :width(rec),slots(std::min<unsigned>(10,block/rec)),shared(sharing){
-        unsigned count=shared?shards:workers;
+    PathSeedCache(const std::string& file,unsigned rec,unsigned capacity,void(*pin)())
+        :width(rec),slots(rec ? std::min<unsigned>(10,block/rec) : 0){
+        unsigned count=shards;
         if(slots<2 || capacity<count)throw std::runtime_error("invalid path page capacity");
         buffers=std::make_unique<Cache[]>(count);
         for(unsigned i=0;i<count;i++)buffers[i].cap=capacity/count+(i<capacity%count);
-        files[0]=open(file.c_str(),O_CREAT|O_EXCL|O_RDWR|O_DIRECT|O_CLOEXEC,0600);
-        if(files[0]<0)throw std::runtime_error("cannot create path cache "+file);
-        if (const char* second = std::getenv("MERIT_D_ODD")) {
-            files[1] = ::open(second, O_CREAT|O_EXCL|O_RDWR|O_DIRECT|O_CLOEXEC, 0600);
-            if (files[1] < 0) { close_files(); throw std::runtime_error("cannot create second D stripe"); }
-        }
         const char* setting=std::getenv("NEIGHBORCACHE_DCACHE_WRITER_THREADS");
-        unsigned count_writers=setting ? std::stoul(setting) : 1;
+        unsigned count_writers=setting ? std::stoul(setting) : 4;
         if(!count_writers) throw std::invalid_argument("zero path writers");
         if(const char* limit=std::getenv("MERIT_PATH_QUEUE_PAGES")) {
             queue_capacity=std::stoul(limit);
@@ -230,6 +263,12 @@ public:
         }
         std::cout<<"producer_queue_limit="<<queue_capacity<<std::endl;
         writers.reserve(count_writers);
+        files[0]=open(file.c_str(),O_CREAT|O_EXCL|O_RDWR|O_DIRECT|O_CLOEXEC,0600);
+        if(files[0]<0)throw std::runtime_error("cannot create path cache "+file);
+        if (const char* second = std::getenv("MERIT_D_ODD")) {
+            files[1] = ::open(second, O_CREAT|O_EXCL|O_RDWR|O_DIRECT|O_CLOEXEC, 0600);
+            if (files[1] < 0) { close_files(); throw std::runtime_error("cannot create second D stripe"); }
+        }
         try {
             for(unsigned i=0;i<count_writers;++i)
                 writers.emplace_back([this,pin]{write_loop(pin);});
@@ -312,10 +351,10 @@ public:
             // An old prefix can remain resident while newer slots become readable.
             job.image=cache(p->owner,worker).get(p,p->saved-1);
             if(!job.image.bytes){
-                if(shared&&p->flight.valid()){job.future=p->flight;++flights;}
+                if(p->flight.valid()){job.future=p->flight;++flights;}
                 else {
                     job.promise=std::make_shared<std::promise<Image>>();job.future=job.promise->get_future().share();
-                    if(shared)p->flight=job.future;
+                    p->flight=job.future;
                     job.image={std::make_shared<Bytes>(),p->saved,worker};
                     ops.push_back({p,job.image});
                 }
@@ -327,7 +366,7 @@ public:
         if (!combined.empty()) reader.read_multi(combined,ctx);
         for(auto& it:loads){
             auto& j=it.second;if(!j.promise)continue;
-            {std::lock_guard lock(it.first->io);cache(j.owner,worker).put(it.first,j.image);if(shared)it.first->flight={};}
+            {std::lock_guard lock(it.first->io);cache(j.owner,worker).put(it.first,j.image);it.first->flight={};}
             j.promise->set_value(j.image);
         }
         for(auto& r:req){

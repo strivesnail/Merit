@@ -291,9 +291,6 @@ namespace pipeann {
         return read_req->finished;
       }
       bool from_d = false;
-      uint16_t dslot = 0;
-      uint16_t cov_count = 0;
-      uint32_t cov[16] = {};
     };
     std::queue<io_t> on_flight_ios;
 
@@ -317,36 +314,29 @@ namespace pipeann {
       if (nc_enabled && !retry) {
         NMDCache::PendingDRead pending;
         int kind = this->nmd_.resolve(item.id, nmd_tmp.data(), pending, item.nc_parent);
-        if (kind == 1 || kind == 2 || (kind == 3 && pending.fd < 0)) {
+        if (kind == 1 || kind == 2) {
           item.flag = false;
           nmd_hit_bufs.emplace_back(nmd_tmp.begin(), nmd_tmp.end());
           id_buf_map.erase(item.id);
           id_buf_map.emplace(item.id, DiskNode<T>(nmd_hit_bufs.back().data(), 0, this->meta_));
-          if (kind == 3) {
-            this->nmd_.count_d_hit(nmd_hit_bufs.back().data(), pending.cov, pending.cov_count);
-          }
           if (stats != nullptr) {
             if (kind == 1) {
               stats->n_ncache += 1;
-            } else if (kind == 2) {
-              stats->n_pref += 1;
             } else {
-              stats->n_dcache += 1;
+              stats->n_pref += 1;
             }
           }
           return true;
         }
-        // D pages are smaller than one index sector. Post the read on the same
+        // Post the D page on the same
         // ring as the base index and let the beam submit once.
-        if (kind == 3 && pending.fd >= 0 && pending.len > 0 && pending.len <= 128 * SECTOR_LEN) {
+        if (kind == 3) {
           item.flag = false;
-          if (this->nmd_.has_path_pages()) {
-            for (const auto &primary : nc_pending) {
-              if (pending.fd == primary.second.fd && pending.offset == primary.second.offset &&
-                  this->nmd_.share_path_read(primary.second, pending)) {
-                joined_reads[primary.first].emplace_back(item, pending);
-                return true;
-              }
+          for (const auto &primary : nc_pending) {
+            if (pending.fd == primary.second.fd && pending.offset == primary.second.offset &&
+                this->nmd_.share_path_read(primary.second, pending)) {
+              joined_reads[primary.first].emplace_back(item, pending);
+              return true;
             }
           }
           uint64_t &cur_buf_idx = query_buf->sector_idx;
@@ -355,22 +345,17 @@ namespace pipeann {
           auto &req = query_buf->reqs[cur_buf_idx];
           req = IORequest();
           req.offset = pending.offset;
-          req.len = pending.len;
+          req.len = pending.bytes;
           req.buf = buf;
           req.fd = pending.fd;
           req.base = sector_scratch;
           req.finished = false;
           req.io_res = 0;
           nmd_reader->enqueue_io(req, ctx, false);
-          if (stats != nullptr) stats->n_nc_disk_pages += pending.len / SECTOR_LEN;
+          if (stats != nullptr) stats->n_nc_disk_pages += pending.bytes / SECTOR_LEN;
           nmd_sq_pending = true;
           io_t io{item, 0, 0, &req, UINT32_MAX};
           io.from_d = true;
-          io.dslot = pending.slot;
-          io.cov_count = pending.cov_count;
-          if (pending.cov_count > 0) {
-            std::memcpy(io.cov, pending.cov, sizeof(uint32_t) * pending.cov_count);
-          }
           on_flight_ios.push(io);
           cur_buf_idx = (cur_buf_idx + 1) % MAX_N_SECTOR_READS;
           return true;

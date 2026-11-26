@@ -72,5 +72,4 @@ mkdir -p "${DATA_DIR}"
   fi
 
   echo "Done $(date -Is)"
-  echo "Next: bash ${SCRIPT_DIR}/run_sift100m_neighborcache_background.sh"
 } 2>&1 | tee -a "${LOG}"

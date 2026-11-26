@@ -1,4 +1,4 @@
-#include "nc_client.h"
+#include "page_neighbor_cache.h"
 #include <array>
 #include <cassert>
 #include <filesystem>
@@ -15,15 +15,20 @@ static Record payload(uint32_t id) {
     return raw;
 }
 
-int main() {
+int main(int argc, char**) {
     const std::string prefix = (std::filesystem::temp_directory_path() /
                                 ("path-seed-"+std::to_string(getpid()))).string();
-    setenv("MERIT_PATH_SEED","shared",1);
-    setenv("NEIGHBORCACHE_NCACHE_ADMISSION","mru",1);
     NCConfig cfg{NC_BACKEND_ABI,2,20000,260,128,32,15,256,64,1,prefix.c_str()};
     {
-        neighborcache::Client cache;
-        cache.init(cfg);
+        diskann::PageNeighborCache<char> cache;
+        const bool page_adapter = argc > 1;
+        if (page_adapter) {
+            setenv("NEIGHBORCACHE_NCACHE_CAP_NODES","256",1);
+            setenv("NEIGHBORCACHE_SHARED_PAGE_CACHE_PAGES","64",1);
+            assert(cache.init(260,128,32,prefix,20000,15,nullptr,0));
+        } else {
+            cache.Client::init(cfg);
+        }
         auto expand=[&](uint32_t id,uint32_t parent) {
             auto raw=payload(id);
             cache.expand(id,raw.data(),0,parent);
@@ -57,15 +62,24 @@ int main() {
             neighborcache::Client::QueryGuard q(cache);
             assert(cache.resolve(6,out.data(),primary,3)==3);
             assert(cache.resolve(8,out.data(),other,5)==3);
-            assert(cache.share_path_read(primary,other));
-            assert(cache.stats().d_reads==1 && primary.buffer==other.buffer);
-            auto bytes=pread(primary.fd,primary.buffer,primary.bytes,primary.offset);
-            assert(cache.complete(primary,bytes,out.data()) && out==payload(6));
-            assert(cache.complete(other,bytes,out.data()) && out==payload(8));
+            if (page_adapter) {
+                std::vector<decltype(cache)::DiskNode> nodes{{6, primary}, {8, other}};
+                assert(cache.submit_disk_nodes(nodes) == 1);
+                std::vector<std::pair<uint32_t,std::vector<char>>> hits;
+                assert(cache.finish_disk_nodes(hits) == 1 && hits.size() == 2);
+                for (const auto &hit : hits)
+                    assert(!memcmp(hit.second.data(), payload(hit.first).data(), out.size()));
+            } else {
+                assert(cache.share_path_read(primary,other));
+                assert(cache.stats().d_reads==1 && primary.buffer==other.buffer);
+                auto bytes=pread(primary.fd,primary.buffer,primary.bytes,primary.offset);
+                assert(cache.complete(primary,bytes,out.data()) && out==payload(6));
+                assert(cache.complete(other,bytes,out.data()) && out==payload(8));
+            }
             assert(cache.resolve(7,out.data(),other,4)==2 && out==payload(7));
             assert(cache.resolve(109,out.data(),other,3)==2 && out==payload(109));
             assert(cache.resolve(149,out.data(),other,3)==3);
-            bytes=pread(other.fd,other.buffer,other.bytes,other.offset);
+            auto bytes=pread(other.fd,other.buffer,other.bytes,other.offset);
             assert(cache.complete(other,bytes,out.data()) && out==payload(149));
         }
     }
